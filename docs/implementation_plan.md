@@ -130,11 +130,15 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardOperations.test.js`, full `npm test`, and `npm run lint` after the Phase 1 model changes.
 - Added `src/serialization.ts` with dependency-free card-markdown and `columns.json` round-trip helpers plus focused serialization tests.
 - Added a pure card-position helper to support file-backed ordering in the upcoming `.mwnn/` store.
-- Deferred the global board-state version bump until the file-store migration lands so the current memento-backed board does not get invalidated mid-phase.
+- Deferred the global board-state version bump until the file-store migration lands so the current memento-backed board did not get invalidated mid-phase.
 - Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/serialization.test.js dist-test/test/unit/boardOperations.test.js`, full `npm test`, and `npm run lint` after the serialization layer landed.
 - Phase 1 is now complete enough to start replacing the memento store with the `.mwnn/` file-backed store.
+- Started Phase 2 by replacing the old memento-only board store with a testable file-backed store abstraction rooted at `.mwnn/`.
+- Added the first migration path from legacy memento state into `.mwnn/columns.json` and markdown card files, and bumped the live board-state version to 2 now that the file-backed path exists.
+- Updated activation wiring so the extension awaits the file-backed store and shows an informational message when no workspace folder is open.
+- Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardStore.test.js dist-test/test/unit/serialization.test.js`, full `npm test`, and `npm run lint` after the first Phase 2 store migration pass.
 
 ## Next Focus
 
-- Start Phase 2 by replacing the memento-backed store with a file-backed `.mwnn/` board store behind the existing `BoardStore` interface.
-- Add the v1-to-files migration path and a testable filesystem abstraction before wiring watchers and command-level behavior.
+- Finish Phase 2 by wiring a `FileSystemWatcher` on `.mwnn/**` so external edits live-refresh the open board.
+- Then continue into the remaining command and UI wiring that depends on the new file-backed store.

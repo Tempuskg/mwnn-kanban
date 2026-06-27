@@ -1,6 +1,6 @@
-import { type Assignee, type Card, type Column, type ColumnRole, isAssignee } from './types';
+import { BOARD_STATE_VERSION, type Assignee, type Card, type Column, type ColumnRole, isAssignee } from './types';
 
-export const BOARD_FILE_VERSION = 2 as const;
+export const BOARD_FILE_VERSION = BOARD_STATE_VERSION;
 
 export type ColumnConfig = Pick<Column, 'id' | 'title' | 'role' | 'wipLimit' | 'reverseWip'>;
 

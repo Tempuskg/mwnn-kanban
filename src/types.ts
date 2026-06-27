@@ -6,7 +6,7 @@
  * same contract. The webview script (media/board.js) mirrors these shapes.
  */
 
-export const BOARD_STATE_VERSION = 1 as const;
+export const BOARD_STATE_VERSION = 2 as const;
 
 export type AssigneeKind = 'human' | 'ai';
 export type ColumnRole = 'backlog' | 'ready' | 'in-progress' | 'done' | 'custom';

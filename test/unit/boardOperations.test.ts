@@ -227,18 +227,18 @@ suite('board operations', () => {
 
   test('isBoardState rejects malformed input', () => {
     assert.equal(isBoardState(null), false);
-    assert.equal(isBoardState({ version: 1 }), false);
+    assert.equal(isBoardState({ version: 2 }), false);
     assert.equal(isBoardState({ version: 999, columns: [] }), false);
     assert.equal(
       isBoardState({
-        version: 1,
+        version: 2,
         columns: [{ id: 'col-1', title: 'Ready', cards: [], role: 'ready', wipLimit: 3, reverseWip: 2 }],
       }),
       true,
     );
     assert.equal(
       isBoardState({
-        version: 1,
+        version: 2,
         columns: [{ id: 'col-1', title: 'Ready', cards: [], role: 'mystery' }],
       }),
       false,
