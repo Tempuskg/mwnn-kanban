@@ -34,6 +34,11 @@ export interface ReadyState {
   readonly under: boolean;
 }
 
+export interface PositionBounds {
+  readonly previous?: number;
+  readonly next?: number;
+}
+
 /** Generate a process-unique id. Deterministic within a run, good enough for board entities. */
 export function makeId(prefix: string): string {
   idCounter += 1;
@@ -124,6 +129,12 @@ function cloneCard(card: Card): Card {
   }
   if (card.description !== undefined) {
     clone.description = card.description;
+  }
+  if (card.acceptanceCriteria !== undefined) {
+    clone.acceptanceCriteria = card.acceptanceCriteria;
+  }
+  if (card.activity !== undefined) {
+    clone.activity = card.activity;
   }
   if (card.assignee !== undefined) {
     clone.assignee = cloneAssignee(card.assignee);
@@ -371,4 +382,20 @@ export function readyState(column: Column): ReadyState {
     min,
     under: min !== null && defined < min,
   };
+}
+
+export function calculateCardPosition(bounds: PositionBounds): number {
+  const step = 1000;
+  const { previous, next } = bounds;
+
+  if (previous === undefined && next === undefined) {
+    return step;
+  }
+  if (previous === undefined) {
+    return (next ?? step) - step;
+  }
+  if (next === undefined) {
+    return previous + step;
+  }
+  return previous + (next - previous) / 2;
 }

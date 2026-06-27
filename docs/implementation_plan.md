@@ -98,7 +98,7 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 
 ## Milestones
 
-- [ ] Phase 1 - Pure serialization + model
+- [x] Phase 1 - Pure serialization + model
 - [ ] Phase 2 - File-backed store + migration
 - [ ] Phase 3 - Extension wiring + commands
 - [ ] Phase 4 - Webview UI for assignees and methodology
@@ -128,8 +128,13 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - Added pure utility operations for assignee updates, description updates, column config changes, column removal/reordering, and WIP/reverse-WIP calculations.
 - Extended unit coverage for the new methodology helpers and metadata guards.
 - Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardOperations.test.js`, full `npm test`, and `npm run lint` after the Phase 1 model changes.
+- Added `src/serialization.ts` with dependency-free card-markdown and `columns.json` round-trip helpers plus focused serialization tests.
+- Added a pure card-position helper to support file-backed ordering in the upcoming `.mwnn/` store.
+- Deferred the global board-state version bump until the file-store migration lands so the current memento-backed board does not get invalidated mid-phase.
+- Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/serialization.test.js dist-test/test/unit/boardOperations.test.js`, full `npm test`, and `npm run lint` after the serialization layer landed.
+- Phase 1 is now complete enough to start replacing the memento store with the `.mwnn/` file-backed store.
 
 ## Next Focus
 
-- Finish Phase 1 by adding `src/serialization.ts` and round-trip tests for card markdown and `columns.json`.
-- After the pure serialization layer is green, replace the memento store with the file-backed `.mwnn/` board store and migration flow.
+- Start Phase 2 by replacing the memento-backed store with a file-backed `.mwnn/` board store behind the existing `BoardStore` interface.
+- Add the v1-to-files migration path and a testable filesystem abstraction before wiring watchers and command-level behavior.

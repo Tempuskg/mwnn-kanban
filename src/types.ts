@@ -22,6 +22,8 @@ export interface Card {
   readonly createdAt: number;
   updatedAt?: number;
   description?: string;
+  acceptanceCriteria?: string;
+  activity?: string;
   assignee?: Assignee;
 }
 
@@ -129,6 +131,8 @@ function isCard(value: unknown): value is Card {
     typeof candidate['createdAt'] === 'number' &&
     (candidate['updatedAt'] === undefined || typeof candidate['updatedAt'] === 'number') &&
     (candidate['description'] === undefined || typeof candidate['description'] === 'string') &&
+    (candidate['acceptanceCriteria'] === undefined || typeof candidate['acceptanceCriteria'] === 'string') &&
+    (candidate['activity'] === undefined || typeof candidate['activity'] === 'string') &&
     (candidate['assignee'] === undefined || isAssignee(candidate['assignee']))
   );
 }

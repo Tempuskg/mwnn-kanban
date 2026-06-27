@@ -4,6 +4,7 @@ import { isAssignee, isBoardState } from '../../src/types';
 import {
   addCard,
   addColumn,
+  calculateCardPosition,
   defaultBoard,
   deleteCard,
   editCard,
@@ -215,6 +216,13 @@ suite('board operations', () => {
       next.columns.map((column) => column.title),
       ['Ready', 'Backlog', 'Done'],
     );
+  });
+
+  test('calculateCardPosition uses a midpoint or the next open slot', () => {
+    assert.equal(calculateCardPosition({}), 1000);
+    assert.equal(calculateCardPosition({ previous: 1000 }), 2000);
+    assert.equal(calculateCardPosition({ next: 1000 }), 0);
+    assert.equal(calculateCardPosition({ previous: 1000, next: 2000 }), 1500);
   });
 
   test('isBoardState rejects malformed input', () => {
