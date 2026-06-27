@@ -38,10 +38,10 @@ export type HostToWebviewMessage = { readonly type: 'state'; readonly board: Boa
 
 /** Runtime type guard for persisted/posted board state. */
 export function isBoardState(value: unknown): value is BoardState {
-  if (typeof value !== 'object' || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
-  const candidate = value as Record<string, unknown>;
+  const candidate = value;
   if (candidate['version'] !== BOARD_STATE_VERSION) {
     return false;
   }
@@ -51,11 +51,37 @@ export function isBoardState(value: unknown): value is BoardState {
   return candidate['columns'].every(isColumn);
 }
 
-function isColumn(value: unknown): value is Column {
-  if (typeof value !== 'object' || value === null) {
+/** Runtime type guard for messages arriving from the webview. */
+export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
+  if (!isRecord(value) || typeof value['type'] !== 'string') {
     return false;
   }
-  const candidate = value as Record<string, unknown>;
+
+  switch (value['type']) {
+    case 'ready':
+      return true;
+    case 'addCard':
+      return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';
+    case 'editCard':
+      return typeof value['cardId'] === 'string' && typeof value['title'] === 'string';
+    case 'deleteCard':
+      return typeof value['cardId'] === 'string';
+    case 'moveCard':
+      return (
+        typeof value['cardId'] === 'string' &&
+        typeof value['toColumnId'] === 'string' &&
+        Number.isInteger(value['toIndex'])
+      );
+    default:
+      return false;
+  }
+}
+
+function isColumn(value: unknown): value is Column {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const candidate = value;
   return (
     typeof candidate['id'] === 'string' &&
     typeof candidate['title'] === 'string' &&
@@ -65,13 +91,17 @@ function isColumn(value: unknown): value is Column {
 }
 
 function isCard(value: unknown): value is Card {
-  if (typeof value !== 'object' || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
-  const candidate = value as Record<string, unknown>;
+  const candidate = value;
   return (
     typeof candidate['id'] === 'string' &&
     typeof candidate['title'] === 'string' &&
     typeof candidate['createdAt'] === 'number'
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

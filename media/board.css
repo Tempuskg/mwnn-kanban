@@ -12,27 +12,59 @@ body {
 
 #board {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: flex-start;
   overflow-x: auto;
+}
+
+.board-intro {
+  flex: 1 0 100%;
+  padding: 4px 2px 8px;
+}
+
+.board-title {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.board-hint {
+  margin: 4px 0 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+.board-empty {
+  flex: 1 0 100%;
+  padding: 18px;
+  border: 1px dashed var(--vscode-input-border, var(--vscode-descriptionForeground));
+  border-radius: 8px;
+  color: var(--vscode-descriptionForeground);
+  background: color-mix(in srgb, var(--vscode-editorWidget-background) 84%, transparent);
 }
 
 .column {
   flex: 0 0 260px;
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-editorWidget-border, transparent);
-  border-radius: 6px;
-  padding: 8px;
+  border-radius: 10px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
 }
 
 .column-header {
-  font-weight: 600;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+}
+
+.column-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .column-count {
@@ -47,6 +79,15 @@ body {
   min-height: 24px;
 }
 
+.column-empty {
+  margin: 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 82%, transparent);
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.95em;
+}
+
 .cards.drag-over {
   outline: 1px dashed var(--vscode-focusBorder);
   outline-offset: 2px;
@@ -57,11 +98,12 @@ body {
   background: var(--vscode-editor-background);
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 4px;
-  padding: 6px 8px;
+  padding: 8px;
   cursor: grab;
   display: flex;
   justify-content: space-between;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 10px;
   word-break: break-word;
 }
 
@@ -69,15 +111,39 @@ body {
   opacity: 0.4;
 }
 
-.card-delete {
-  background: transparent;
-  border: none;
-  color: var(--vscode-descriptionForeground);
-  cursor: pointer;
-  padding: 0 2px;
+.card-title {
+  flex: 1;
 }
 
-.card-delete:hover {
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.card-action,
+.card-delete {
+  background: transparent;
+  border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+  border-radius: 4px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.card-action:hover,
+.card-delete:hover,
+.card-action:focus-visible,
+.card-delete:focus-visible,
+.add-card:focus-visible {
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+.card-delete:hover,
+.card-delete:focus-visible {
   color: var(--vscode-errorForeground);
 }
 

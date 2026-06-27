@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import type { BoardStore } from './boardStore';
-import type { HostToWebviewMessage, WebviewToHostMessage } from './types';
+import { isWebviewToHostMessage, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
 
 const VIEW_TYPE = 'mwnn-kanban.board';
 
@@ -27,7 +27,13 @@ export class BoardPanel {
     this.panel.webview.html = this.renderHtml(this.panel.webview);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage(
-      (message: WebviewToHostMessage) => void this.handleMessage(message),
+      (message: unknown) => {
+        if (!isWebviewToHostMessage(message)) {
+          return;
+        }
+
+        void this.handleMessage(message);
+      },
       null,
       this.disposables,
     );

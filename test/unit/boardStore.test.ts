@@ -33,6 +33,20 @@ suite('board store', () => {
     assert.equal(reloaded.getState().columns[0]!.cards[0]!.title, 'Task');
   });
 
+  test('falls back to default columns when persisted state is malformed', () => {
+    const store = createBoardStore({
+      memento: fakeMemento({
+        'mwnn-kanban.board': { version: 1, columns: [{ bad: true }] },
+      }),
+      defaultColumns: ['Backlog', 'Done'],
+    });
+
+    assert.deepEqual(
+      store.getState().columns.map((column) => column.title),
+      ['Backlog', 'Done'],
+    );
+  });
+
   test('getState returns a copy that cannot mutate stored state', () => {
     const store = createBoardStore({ memento: fakeMemento(), defaultColumns: ['To Do'] });
     const snapshot = store.getState();
