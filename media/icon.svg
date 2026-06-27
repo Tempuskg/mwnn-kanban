@@ -1,19 +1,48 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <rect width="128" height="128" fill="#1e1e1e" rx="24"/>
-  <g transform="scale(1.25) translate(-12, -5)">
-    <!-- Hat Crown (Pork-pie style with crease) -->
-    <path d="M 42 60 L 44 35 C 50 32, 78 32, 84 35 L 86 60 Z" fill="#d4d4d4"/>
-    <!-- Crown Crease -->
-    <path d="M 48 34 C 64 38, 80 34, 80 34" stroke="#1e1e1e" stroke-width="2" fill="none"/>
-    <!-- Hat Band -->
-    <path d="M 41 55 L 87 55 L 87 60 L 41 60 Z" fill="#333333"/>
-    <!-- Hat Brim (Large, curled edge) -->
-    <path d="M 12 62 C 12 52, 116 52, 116 62 C 116 72, 95 65, 86 60 L 42 60 C 33 65, 12 72, 12 62 Z" fill="#d4d4d4"/>
-    <!-- Face Silhouette -->
-    <path d="M 55 65 L 52 70 L 45 78 L 50 82 L 48 84 L 52 85 L 49 87 L 47 92 L 55 98 L 75 98 L 75 65 Z" fill="#d4d4d4"/>
-    <!-- Cigar -->
-    <rect x="30" y="85" width="22" height="3" fill="#d4d4d4" transform="rotate(15 52 85)"/>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b23a0e"/>
+      <stop offset="38%" stop-color="#f47a14"/>
+      <stop offset="66%" stop-color="#ffb52b"/>
+      <stop offset="100%" stop-color="#ffd255"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fff6cf"/>
+      <stop offset="52%" stop-color="#ffd84e"/>
+      <stop offset="100%" stop-color="#ffb52b" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vig" cx="50%" cy="40%" r="80%">
+      <stop offset="60%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1c0a04" stop-opacity="0.38"/>
+    </radialGradient>
+    <clipPath id="clip"><rect x="4" y="4" width="120" height="120" rx="26"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#clip)">
+    <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#sky)"/>
+    <circle cx="64" cy="54" r="40" fill="url(#sun)"/>
+
+    <!-- cowboy hat silhouette: wide curled brim + tall cattleman crown w/ dent -->
+    <g fill="#1a0a06">
+      <path d="M18 70 C30 64 48 62 64 62 C80 62 98 64 110 70
+               C98 75 80 77 64 77 C48 77 30 75 18 70 Z"/>
+      <path d="M46 70 L47 49 C47 41 53 36 56 36 C58 41 70 41 72 36
+               C75 36 81 41 81 49 L82 70 Z"/>
+    </g>
+    <!-- hat band -->
+    <path d="M47 62 C55 60 73 60 81 62 L80.5 67 C73 65 55 65 47.5 67 Z" fill="#c8420f"/>
+
+    <!-- kanban board strip -->
+    <rect x="4" y="84" width="120" height="40" fill="#3a1308"/>
+    <rect x="4" y="84" width="120" height="3" fill="#5a1e0b"/>
+    <rect x="14" y="91" width="30" height="6" rx="2" fill="#ffce7a"/>
+    <rect x="14" y="100" width="30" height="6" rx="2" fill="#f0b066"/>
+    <rect x="49" y="91" width="30" height="6" rx="2" fill="#ffce7a"/>
+    <rect x="84" y="91" width="30" height="6" rx="2" fill="#ffce7a"/>
+    <rect x="84" y="100" width="30" height="6" rx="2" fill="#f0b066"/>
+    <rect x="84" y="109" width="30" height="6" rx="2" fill="#d98c46"/>
+
+    <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#vig)"/>
   </g>
-  <!-- Poncho Silhouette (Smaller) -->
-  <path d="M 56 117 C 48 122, 40 125, 35 128 L 93 128 C 88 125, 80 122, 72 117 Z" fill="#d4d4d4"/>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="none" stroke="#1c0b08" stroke-width="2"/>
 </svg>
