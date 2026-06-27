@@ -1,4 +1,11 @@
 import * as vscode from 'vscode';
+import {
+  buildCardPrompt,
+  findAiCardSelection,
+  formatActivityEntry,
+  listAiCardSelections,
+  summarizeCardDescription,
+} from './aiCards';
 import { BoardPanel } from './boardPanel';
 import { createBoardStore, type FileSystemLike } from './boardStore';
 import type { BoardState } from './types';
@@ -327,17 +334,12 @@ async function pickColumn(
 async function pickAiCard(
   state: BoardState,
 ): Promise<{ readonly card: BoardCard; readonly nextColumn?: BoardColumn } | undefined> {
-  const items = state.columns.flatMap((column, columnIndex) =>
-    column.cards
-      .filter((card) => card.assignee?.kind === 'ai')
-      .map((card) => ({
-        label: card.title,
-        description: `${column.title} • ${(card.assignee?.name ?? 'AI').trim()}`,
-        detail: summarizeCardDescription(card.description),
-        card,
-        nextColumn: state.columns[columnIndex + 1],
-      })),
-  );
+  const items = listAiCardSelections(state).map((selection) => ({
+    label: selection.card.title,
+    description: `${findCardColumn(state, selection.card.id)?.title ?? 'Unknown'} - ${(selection.card.assignee?.name ?? 'AI').trim()}`,
+    detail: summarizeCardDescription(selection.card.description),
+    ...selection,
+  }));
 
   if (items.length === 0) {
     void vscode.window.showInformationMessage('Assign a card to AI before running it with AI.');
@@ -356,26 +358,8 @@ async function pickAiCard(
     : { card: choice.card };
 }
 
-function findAiCardSelection(
-  state: BoardState,
-  cardId: string,
-): { readonly card: BoardCard; readonly nextColumn?: BoardColumn } | undefined {
-  for (let columnIndex = 0; columnIndex < state.columns.length; columnIndex += 1) {
-    const column = state.columns[columnIndex];
-    if (!column) {
-      continue;
-    }
-
-    const card = column.cards.find((candidate) => candidate.id === cardId);
-    if (!card || card.assignee?.kind !== 'ai') {
-      continue;
-    }
-
-    const nextColumn = state.columns[columnIndex + 1];
-    return nextColumn ? { card, nextColumn } : { card };
-  }
-
-  return undefined;
+function findCardColumn(state: BoardState, cardId: string): BoardColumn | undefined {
+  return state.columns.find((column) => column.cards.some((card) => card.id === cardId));
 }
 
 async function pickLanguageModel(
@@ -406,7 +390,7 @@ async function pickLanguageModel(
   const choice = await vscode.window.showQuickPick(
     availableModels.map((model) => ({
       label: model.name,
-      description: `${model.vendor} • ${model.family}`,
+      description: `${model.vendor} - ${model.family}`,
       detail: `Version ${model.version}`,
       model,
     })),
@@ -469,43 +453,6 @@ async function runCardWithAI(model: vscode.LanguageModelChat, card: BoardCard): 
       return output.trim();
     },
   );
-}
-
-function buildCardPrompt(card: BoardCard): string {
-  return [
-    'You are assisting with a Methodology With No Name Kanban card inside VS Code.',
-    'Respond with concise markdown that can be appended directly to the card Activity section.',
-    'Include the next actions, any notable risks or blockers, and a brief completion note if the slice appears done.',
-    '',
-    `Title: ${card.title}`,
-    '',
-    'Description:',
-    card.description?.trim() || 'No description provided.',
-    '',
-    'Acceptance criteria:',
-    card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
-  ].join('\n');
-}
-
-function formatActivityEntry(model: vscode.LanguageModelChat, responseText: string): string {
-  return [
-    `### ${new Date().toISOString()} - Run with AI (${model.name})`,
-    `Model: ${model.vendor}/${model.family}`,
-    '',
-    responseText.trim(),
-  ].join('\n');
-}
-
-function summarizeCardDescription(description: string | undefined): string {
-  if (!description) {
-    return 'No description yet';
-  }
-
-  const singleLine = description.replace(/\s+/g, ' ').trim();
-  if (singleLine.length <= 80) {
-    return singleLine;
-  }
-  return `${singleLine.slice(0, 77)}...`;
 }
 
 function describeLanguageModelError(error: unknown): string {

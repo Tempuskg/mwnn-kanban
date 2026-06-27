@@ -160,8 +160,12 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - Added unit coverage for older workspaces that already have board files but are missing the new `.mwnn/README.md` artifact.
 - Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardStore.test.js`, full `npm test`, and `npm run lint` after the Phase 5 contract-doc pass.
 - Phase 5 is now complete in code and docs.
+- Started another Phase 6 pass by extracting the AI card-selection, prompt-building, activity-formatting, and quick-pick summary logic into a pure `src/aiCards.ts` module.
+- Added focused unit coverage for the AI-assigned card selection path and the LM prompt/activity formatting helpers instead of leaving that behavior extension-host-only and untested.
+- Confirmed on 2026-06-27 that the installed `code.cmd --help` output does not advertise extension-test CLI flags, and the desktop automation runtime is still failing before connection with `codex/sandbox-state-meta: missing field sandboxPolicy`.
+- The remaining live Development Host smoke tests are therefore still blocked in this environment even though compile/test/lint coverage keeps expanding.
 
 ## Next Focus
 
-- Finish Phase 6 with the remaining Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, column controls, and the LM consent/model-selection path.
-- After that validation pass, decide whether any final test gaps or documentation polish remain before considering the implementation plan complete.
+- Finish Phase 6 by running the remaining Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, column controls, and the LM consent/model-selection path once an interactive VS Code session or working automation path is available.
+- After that live validation pass, decide whether any final test gaps or documentation polish remain before considering the implementation plan complete.
