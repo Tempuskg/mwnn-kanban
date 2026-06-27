@@ -92,16 +92,18 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 
 ## Status
 
-- Date: 2026-06-26
+- Date: 2026-06-27
 - Mode: Active implementation
-- Note: `docs/implementation_plan.md` was empty at the start of this turn, so this plan is being seeded from the current repository state and updated as implementation progresses.
+- Note: The pasted plan above now supersedes the earlier bootstrap checklist; live progress continues below.
 
 ## Milestones
 
-- [x] Harden core board operations against blank titles and invalid move targets.
-- [x] Expand unit coverage around board-store and protocol edge cases.
-- [x] Improve webview UX and accessibility for card and column interactions.
-- [ ] Run broader validation and capture follow-up cleanup.
+- [ ] Phase 1 - Pure serialization + model
+- [ ] Phase 2 - File-backed store + migration
+- [ ] Phase 3 - Extension wiring + commands
+- [ ] Phase 4 - Webview UI for assignees and methodology
+- [ ] Phase 5 - AI contract docs
+- [ ] Phase 6 - Expanded tests + end-to-end validation
 
 ## Progress Log
 
@@ -118,7 +120,16 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - Refreshed the webview with a visible board intro, empty states, explicit Edit and Delete buttons, and improved ARIA labeling for columns and cards.
 - Validation passed for `node --check media/board.js`, `npm run compile-tests`, `npm run compile`, `npm test`, and `npm run lint` after the webview refresh.
 
+### 2026-06-27
+
+- Re-read the pasted plan and switched implementation tracking from the bootstrap checklist to the plan's six phases.
+- Started Phase 1 on the pure shared-model side instead of touching VS Code storage or the webview boundary first.
+- Expanded the shared board model to carry assignee, description, updatedAt, column role, and WIP metadata while staying backward-compatible with the current memento-backed store.
+- Added pure utility operations for assignee updates, description updates, column config changes, column removal/reordering, and WIP/reverse-WIP calculations.
+- Extended unit coverage for the new methodology helpers and metadata guards.
+- Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardOperations.test.js`, full `npm test`, and `npm run lint` after the Phase 1 model changes.
+
 ## Next Focus
 
-- Run a manual Development Host smoke test for drag/drop, edit, delete, and empty-column flows.
-- Capture any follow-up cleanup that appears during interactive testing.
+- Finish Phase 1 by adding `src/serialization.ts` and round-trip tests for card markdown and `columns.json`.
+- After the pure serialization layer is green, replace the memento store with the file-backed `.mwnn/` board store and migration flow.

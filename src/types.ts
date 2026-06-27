@@ -8,16 +8,30 @@
 
 export const BOARD_STATE_VERSION = 1 as const;
 
+export type AssigneeKind = 'human' | 'ai';
+export type ColumnRole = 'backlog' | 'ready' | 'in-progress' | 'done' | 'custom';
+
+export interface Assignee {
+  readonly kind: AssigneeKind;
+  readonly name?: string;
+}
+
 export interface Card {
   readonly id: string;
   title: string;
   readonly createdAt: number;
+  updatedAt?: number;
+  description?: string;
+  assignee?: Assignee;
 }
 
 export interface Column {
   readonly id: string;
   title: string;
   cards: Card[];
+  role?: ColumnRole;
+  wipLimit?: number | null;
+  reverseWip?: number | null;
 }
 
 export interface BoardState {
@@ -77,6 +91,17 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   }
 }
 
+export function isAssignee(value: unknown): value is Assignee {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isAssigneeKind(value['kind']) &&
+    (value['name'] === undefined || typeof value['name'] === 'string')
+  );
+}
+
 function isColumn(value: unknown): value is Column {
   if (!isRecord(value)) {
     return false;
@@ -86,7 +111,10 @@ function isColumn(value: unknown): value is Column {
     typeof candidate['id'] === 'string' &&
     typeof candidate['title'] === 'string' &&
     Array.isArray(candidate['cards']) &&
-    candidate['cards'].every(isCard)
+    candidate['cards'].every(isCard) &&
+    (candidate['role'] === undefined || isColumnRole(candidate['role'])) &&
+    isOptionalLimit(candidate['wipLimit']) &&
+    isOptionalLimit(candidate['reverseWip'])
   );
 }
 
@@ -98,8 +126,29 @@ function isCard(value: unknown): value is Card {
   return (
     typeof candidate['id'] === 'string' &&
     typeof candidate['title'] === 'string' &&
-    typeof candidate['createdAt'] === 'number'
+    typeof candidate['createdAt'] === 'number' &&
+    (candidate['updatedAt'] === undefined || typeof candidate['updatedAt'] === 'number') &&
+    (candidate['description'] === undefined || typeof candidate['description'] === 'string') &&
+    (candidate['assignee'] === undefined || isAssignee(candidate['assignee']))
   );
+}
+
+function isAssigneeKind(value: unknown): value is AssigneeKind {
+  return value === 'human' || value === 'ai';
+}
+
+function isColumnRole(value: unknown): value is ColumnRole {
+  return (
+    value === 'backlog' ||
+    value === 'ready' ||
+    value === 'in-progress' ||
+    value === 'done' ||
+    value === 'custom'
+  );
+}
+
+function isOptionalLimit(value: unknown): value is number | null | undefined {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isInteger(value) && value >= 0);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
