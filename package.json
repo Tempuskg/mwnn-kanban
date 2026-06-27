@@ -33,6 +33,26 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.renameColumn",
+        "title": "Rename Column",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.deleteColumn",
+        "title": "Delete Column",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.setColumnLimits",
+        "title": "Set Column Limits",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.runCardWithAI",
+        "title": "Run Card with AI",
+        "category": "MWNN Kanban"
+      },
+      {
         "command": "mwnn-kanban.resetBoard",
         "title": "Reset Board",
         "category": "MWNN Kanban"
@@ -47,17 +67,36 @@
           "description": "Ask for confirmation before deleting a card.",
           "scope": "resource"
         },
+        "mwnn-kanban.boardFolder": {
+          "type": "string",
+          "default": ".mwnn",
+          "description": "Workspace-relative folder where the Kanban board files are stored.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.defaultReadyReverseWip": {
+          "type": "number",
+          "default": 3,
+          "description": "Minimum number of defined cards the Ready column should keep available by default.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.enableRunWithAI": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable AI-assisted board actions when those commands are available.",
+          "scope": "resource"
+        },
         "mwnn-kanban.defaultColumns": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [
-            "To Do",
+            "Backlog",
+            "Ready",
             "In Progress",
             "Done"
           ],
-          "description": "Column titles used when a board is first created or reset.",
+          "description": "Column titles used when a board is first created or reset. Roles are inferred from these titles, and the default set includes a Ready column for reverse-WIP tracking.",
           "scope": "resource"
         }
       }
@@ -69,6 +108,19 @@
         },
         {
           "command": "mwnn-kanban.addColumn"
+        },
+        {
+          "command": "mwnn-kanban.renameColumn"
+        },
+        {
+          "command": "mwnn-kanban.deleteColumn"
+        },
+        {
+          "command": "mwnn-kanban.setColumnLimits"
+        },
+        {
+          "command": "mwnn-kanban.runCardWithAI",
+          "when": "config.mwnn-kanban.enableRunWithAI"
         },
         {
           "command": "mwnn-kanban.resetBoard"

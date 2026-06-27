@@ -18,6 +18,7 @@ import { BOARD_STATE_VERSION, type BoardState, type Card, type Column, type Colu
 import {
   addCard,
   addColumn,
+  appendActivity,
   calculateCardPosition,
   cloneBoard,
   defaultBoard,
@@ -28,6 +29,7 @@ import {
   renameColumn,
   reorderColumns,
   setAssignee,
+  setAcceptanceCriteria,
   setColumnConfig,
   setDescription,
   type SetColumnConfig,
@@ -62,6 +64,7 @@ export interface BoardStoreDeps {
 
 export interface BoardStore {
   getState(): BoardState;
+  reload(): Promise<BoardState>;
   addColumn(title: string): Promise<BoardState>;
   addCard(columnId: string, title: string): Promise<BoardState>;
   editCard(cardId: string, title: string): Promise<BoardState>;
@@ -69,6 +72,8 @@ export interface BoardStore {
   moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<BoardState>;
   setAssignee(cardId: string, assignee: Card['assignee']): Promise<BoardState>;
   setDescription(cardId: string, description: string): Promise<BoardState>;
+  setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<BoardState>;
+  appendActivity(cardId: string, entry: string): Promise<BoardState>;
   setColumnConfig(columnId: string, config: SetColumnConfig): Promise<BoardState>;
   renameColumn(columnId: string, title: string): Promise<BoardState>;
   removeColumn(columnId: string, targetColumnId?: string): Promise<BoardState>;
@@ -85,8 +90,24 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     return cloneBoard(state);
   }
 
+  async function reload(): Promise<BoardState> {
+    const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
+    if (!(await deps.fileSystem.exists(columnsPath))) {
+      return cloneBoard(state);
+    }
+
+    try {
+      state = await readBoardState(deps);
+    } catch {
+      return cloneBoard(state);
+    }
+
+    return cloneBoard(state);
+  }
+
   return {
     getState: () => cloneBoard(state),
+    reload,
     addColumn: (title) => commit(addColumn(state, title)),
     addCard: (columnId, title) => commit(addCard(state, columnId, title)),
     editCard: (cardId, title) => commit(editCard(state, cardId, title)),
@@ -94,6 +115,8 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     moveCard: (cardId, toColumnId, toIndex) => commit(moveCard(state, cardId, toColumnId, toIndex)),
     setAssignee: (cardId, assignee) => commit(setAssignee(state, cardId, assignee)),
     setDescription: (cardId, description) => commit(setDescription(state, cardId, description)),
+    setAcceptanceCriteria: (cardId, acceptanceCriteria) => commit(setAcceptanceCriteria(state, cardId, acceptanceCriteria)),
+    appendActivity: (cardId, entry) => commit(appendActivity(state, cardId, entry)),
     setColumnConfig: (columnId, config) => commit(setColumnConfig(state, columnId, config)),
     renameColumn: (columnId, title) => commit(renameColumn(state, columnId, title)),
     removeColumn: (columnId, targetColumnId) => commit(removeColumn(state, columnId, targetColumnId)),

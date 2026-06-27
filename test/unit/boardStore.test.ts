@@ -160,6 +160,25 @@ suite('board store', () => {
     assert.equal(parsedCard.columnId, columnId);
   });
 
+  test('appendActivity persists markdown activity updates', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));
+    const columnId = store.getState().columns[0]!.id;
+
+    await store.addCard(columnId, 'Task');
+    const cardId = store.getState().columns[0]!.cards[0]!.id;
+
+    await store.appendActivity(cardId, 'First note');
+    await store.appendActivity(cardId, 'Second note');
+
+    const snapshot = fileSystem.snapshot();
+    const cardFile = [...snapshot.keys()].find((filePath) => filePath.startsWith('.mwnn/cards/'));
+    assert.ok(cardFile, 'expected a card markdown file to be written');
+
+    const parsedCard = parseCard(snapshot.get(cardFile!) ?? '');
+    assert.equal(parsedCard.card.activity, 'First note\n\nSecond note');
+  });
+
   test('loads existing file-backed cards in their persisted order', async () => {
     const columnsDocument: ColumnsDocument = {
       version: BOARD_FILE_VERSION,
@@ -186,6 +205,37 @@ suite('board store', () => {
     assert.deepEqual(
       store.getState().columns[0]!.cards.map((card) => card.title),
       ['A', 'B'],
+    );
+  });
+
+  test('reload picks up external card edits from disk', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));
+    const columnId = store.getState().columns[0]!.id;
+
+    await store.addCard(columnId, 'Original');
+
+    const cardFile = [...fileSystem.snapshot().keys()].find((filePath) => filePath.startsWith('.mwnn/cards/'));
+    assert.ok(cardFile, 'expected a card markdown file to be written');
+
+    const parsed = parseCard(fileSystem.snapshot().get(cardFile!) ?? '');
+    parsed.card.title = 'Externally edited';
+    await fileSystem.writeFile(cardFile!, serializeCard(parsed));
+
+    await store.reload();
+    assert.equal(store.getState().columns[0]!.cards[0]!.title, 'Externally edited');
+  });
+
+  test('reload keeps the current state when an external edit leaves invalid columns json', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));
+
+    await fileSystem.writeFile('.mwnn/columns.json', '{ not-valid-json');
+
+    const reloaded = await store.reload();
+    assert.deepEqual(
+      reloaded.columns.map((column) => column.title),
+      ['Ready'],
     );
   });
 

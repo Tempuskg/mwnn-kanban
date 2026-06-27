@@ -46,6 +46,10 @@ export type WebviewToHostMessage =
   | { readonly type: 'ready' }
   | { readonly type: 'addCard'; readonly columnId: string; readonly title: string }
   | { readonly type: 'editCard'; readonly cardId: string; readonly title: string }
+  | { readonly type: 'setDescription'; readonly cardId: string; readonly description: string }
+  | { readonly type: 'setAcceptanceCriteria'; readonly cardId: string; readonly acceptanceCriteria: string }
+  | { readonly type: 'setAssignee'; readonly cardId: string; readonly assignee?: Assignee }
+  | { readonly type: 'runCardWithAI'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
   | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number };
 
@@ -80,6 +84,17 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';
     case 'editCard':
       return typeof value['cardId'] === 'string' && typeof value['title'] === 'string';
+    case 'setDescription':
+      return typeof value['cardId'] === 'string' && typeof value['description'] === 'string';
+    case 'setAcceptanceCriteria':
+      return typeof value['cardId'] === 'string' && typeof value['acceptanceCriteria'] === 'string';
+    case 'setAssignee':
+      return (
+        typeof value['cardId'] === 'string' &&
+        (value['assignee'] === undefined || isAssignee(value['assignee']))
+      );
+    case 'runCardWithAI':
+      return typeof value['cardId'] === 'string';
     case 'deleteCard':
       return typeof value['cardId'] === 'string';
     case 'moveCard':

@@ -99,8 +99,8 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 ## Milestones
 
 - [x] Phase 1 - Pure serialization + model
-- [ ] Phase 2 - File-backed store + migration
-- [ ] Phase 3 - Extension wiring + commands
+- [x] Phase 2 - File-backed store + migration
+- [x] Phase 3 - Extension wiring + commands
 - [ ] Phase 4 - Webview UI for assignees and methodology
 - [ ] Phase 5 - AI contract docs
 - [ ] Phase 6 - Expanded tests + end-to-end validation
@@ -137,8 +137,21 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - Added the first migration path from legacy memento state into `.mwnn/columns.json` and markdown card files, and bumped the live board-state version to 2 now that the file-backed path exists.
 - Updated activation wiring so the extension awaits the file-backed store and shows an informational message when no workspace folder is open.
 - Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardStore.test.js dist-test/test/unit/serialization.test.js`, full `npm test`, and `npm run lint` after the first Phase 2 store migration pass.
+- Added a debounced `.mwnn/**` file watcher and a store-level reload path so external edits can refresh the in-memory board state without reopening the panel.
+- Added unit coverage for external file reload and malformed external file edits so the watcher path has a safe store primitive behind it.
+- Phase 2 is now complete enough to shift into command wiring on top of the file-backed store.
+- Started Phase 3 by adding command-palette scaffolding for column rename/delete/limit management and registering the new board-folder / reverse-WIP / AI-enable settings.
+- Finished the remaining Phase 3 command work by adding `mwnn-kanban.runCardWithAI`, model selection / graceful fallback handling, and an activity-append path that records LM output back into each card file.
+- Updated the first-run board defaults to `Backlog`, `Ready`, `In Progress`, and `Done` so reverse-WIP has a Ready column to target without extra setup.
+- Extended unit coverage for the new activity append primitive in both the pure board operations and the file-backed store.
+- Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardOperations.test.js dist-test/test/unit/boardStore.test.js`, full `npm test`, and `npm run lint` after the Phase 3 AI command pass.
+- Phase 3 is now complete in code, with Development Host smoke testing still pending for the LM consent/model-selection flow.
+- Started Phase 4 by extending the host/webview protocol for assignee, description, acceptance criteria, and per-card Run with AI actions.
+- Replaced the in-webview edit prompt with a card detail panel that can edit title, assignee, description, and acceptance criteria while showing the card activity log inline.
+- Added assignee badges, a "needs definition" marker, and WIP/reverse-WIP status badges to the board so methodology signals are visible directly on the webview.
+- Validation passed for `node --check media/board.js`, `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardOperations.test.js dist-test/test/unit/boardStore.test.js dist-test/test/unit/protocol.test.js`, full `npm test`, and `npm run lint` after the first Phase 4 UI slice.
 
 ## Next Focus
 
-- Finish Phase 2 by wiring a `FileSystemWatcher` on `.mwnn/**` so external edits live-refresh the open board.
-- Then continue into the remaining command and UI wiring that depends on the new file-backed store.
+- Continue Phase 4 by adding direct column-management controls in the webview and reducing the remaining command-palette-only flows.
+- After that UI work lands, run Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, and the LM consent/model-selection path.

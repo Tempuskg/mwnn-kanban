@@ -7,6 +7,18 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'ready' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'addCard', columnId: 'col-1', title: 'Task' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 'card-1', title: 'Rename' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'setDescription', cardId: 'card-1', description: 'Defined work' }), true);
+    assert.equal(
+      isWebviewToHostMessage({
+        type: 'setAcceptanceCriteria',
+        cardId: 'card-1',
+        acceptanceCriteria: '- [ ] Ship it',
+      }),
+      true,
+    );
+    assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1', assignee: { kind: 'ai', name: 'Copilot' } }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'runCardWithAI', cardId: 'card-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'deleteCard', cardId: 'card-1' }), true);
     assert.equal(
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 0 }),
@@ -20,6 +32,13 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'ready', extra: true }), true);
     assert.equal(isWebviewToHostMessage({ type: 'addCard', columnId: 'col-1' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 1, title: 'Rename' }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'setDescription', cardId: 'card-1', description: 1 }), false);
+    assert.equal(
+      isWebviewToHostMessage({ type: 'setAcceptanceCriteria', cardId: 'card-1', acceptanceCriteria: 1 }),
+      false,
+    );
+    assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1', assignee: { kind: 'robot' } }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'runCardWithAI', cardId: 1 }), false);
     assert.equal(isWebviewToHostMessage({ type: 'deleteCard', cardId: 1 }), false);
     assert.equal(
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 1.5 }),

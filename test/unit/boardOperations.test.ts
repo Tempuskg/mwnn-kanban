@@ -4,6 +4,7 @@ import { isAssignee, isBoardState } from '../../src/types';
 import {
   addCard,
   addColumn,
+  appendActivity,
   calculateCardPosition,
   defaultBoard,
   deleteCard,
@@ -14,6 +15,7 @@ import {
   renameColumn,
   reorderColumns,
   setAssignee,
+  setAcceptanceCriteria,
   setColumnConfig,
   setDescription,
   wipState,
@@ -31,7 +33,7 @@ suite('board operations', () => {
 
   test('defaultBoard falls back when given no titles', () => {
     const board = defaultBoard([]);
-    assert.equal(board.columns.length, 3);
+    assert.equal(board.columns.length, 4);
   });
 
   test('defaultBoard trims titles and falls back when they are all blank', () => {
@@ -44,7 +46,7 @@ suite('board operations', () => {
     const fallbackBoard = defaultBoard(['   ', '\t']);
     assert.deepEqual(
       fallbackBoard.columns.map((c) => c.title),
-      ['To Do', 'In Progress', 'Done'],
+      ['Backlog', 'Ready', 'In Progress', 'Done'],
     );
   });
 
@@ -162,6 +164,29 @@ suite('board operations', () => {
 
     assert.equal(board.columns[0]!.cards[0]!.description, 'A clearly defined slice.');
     assert.deepEqual(readyState(board.columns[0]!), { defined: 1, min: 2, under: true });
+  });
+
+  test('appendActivity trims entries and preserves older history', () => {
+    let board = defaultBoard(['Ready']);
+    board = addCard(board, board.columns[0]!.id, 'Documented');
+    const cardId = board.columns[0]!.cards[0]!.id;
+
+    board = appendActivity(board, cardId, '  First note  ');
+    board = appendActivity(board, cardId, '\nSecond note\n');
+
+    assert.equal(board.columns[0]!.cards[0]!.activity, 'First note\n\nSecond note');
+  });
+
+  test('setAcceptanceCriteria trims text and clears blank values', () => {
+    let board = defaultBoard(['Ready']);
+    board = addCard(board, board.columns[0]!.id, 'Defined');
+    const cardId = board.columns[0]!.cards[0]!.id;
+
+    board = setAcceptanceCriteria(board, cardId, '  - [ ] Ship it  ');
+    assert.equal(board.columns[0]!.cards[0]!.acceptanceCriteria, '- [ ] Ship it');
+
+    board = setAcceptanceCriteria(board, cardId, '   ');
+    assert.equal(board.columns[0]!.cards[0]!.acceptanceCriteria, undefined);
   });
 
   test('setColumnConfig updates title, role, and limit metadata', () => {

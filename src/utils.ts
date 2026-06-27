@@ -13,7 +13,7 @@ import {
 } from './types';
 
 let idCounter = 0;
-const FALLBACK_COLUMN_TITLES = ['To Do', 'In Progress', 'Done'] as const;
+const FALLBACK_COLUMN_TITLES = ['Backlog', 'Ready', 'In Progress', 'Done'] as const;
 
 export interface SetColumnConfig {
   readonly title?: string;
@@ -234,6 +234,42 @@ export function setDescription(state: BoardState, cardId: string, description: s
       } else {
         delete card.description;
       }
+      card.updatedAt = Date.now();
+      break;
+    }
+  }
+  return next;
+}
+
+export function setAcceptanceCriteria(state: BoardState, cardId: string, acceptanceCriteria: string): BoardState {
+  const next = cloneBoard(state);
+  const normalized = normalizeDescription(acceptanceCriteria);
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      if (normalized) {
+        card.acceptanceCriteria = normalized;
+      } else {
+        delete card.acceptanceCriteria;
+      }
+      card.updatedAt = Date.now();
+      break;
+    }
+  }
+  return next;
+}
+
+export function appendActivity(state: BoardState, cardId: string, entry: string): BoardState {
+  const next = cloneBoard(state);
+  const normalized = entry.trim();
+  if (normalized.length === 0) {
+    return next;
+  }
+
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      card.activity = card.activity ? `${card.activity}\n\n${normalized}` : normalized;
       card.updatedAt = Date.now();
       break;
     }

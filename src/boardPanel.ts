@@ -13,6 +13,7 @@ export interface BoardPanelDeps {
   readonly store: BoardStore;
   readonly extensionUri: vscode.Uri;
   readonly confirmDeletion: () => boolean;
+  readonly runCardWithAI: (cardId?: string) => Promise<void>;
 }
 
 export class BoardPanel {
@@ -54,6 +55,10 @@ export class BoardPanel {
     return BoardPanel.current;
   }
 
+  static postStateIfOpen(): void {
+    BoardPanel.current?.postState();
+  }
+
   /** Push the current store state into the webview. */
   postState(): void {
     const message: HostToWebviewMessage = { type: 'state', board: this.deps.store.getState() };
@@ -70,6 +75,18 @@ export class BoardPanel {
         break;
       case 'editCard':
         await this.deps.store.editCard(message.cardId, message.title);
+        break;
+      case 'setDescription':
+        await this.deps.store.setDescription(message.cardId, message.description);
+        break;
+      case 'setAcceptanceCriteria':
+        await this.deps.store.setAcceptanceCriteria(message.cardId, message.acceptanceCriteria);
+        break;
+      case 'setAssignee':
+        await this.deps.store.setAssignee(message.cardId, message.assignee);
+        break;
+      case 'runCardWithAI':
+        await this.deps.runCardWithAI(message.cardId);
         break;
       case 'deleteCard': {
         if (this.deps.confirmDeletion()) {
