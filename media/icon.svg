@@ -1,15 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
   <rect width="128" height="128" fill="#1e1e1e" rx="24"/>
-  <!-- Hat Crown (Pork-pie style with crease) -->
-  <path d="M 42 60 L 44 35 C 50 32, 78 32, 84 35 L 86 60 Z" fill="#d4d4d4"/>
-  <!-- Crown Crease -->
-  <path d="M 48 34 C 64 38, 80 34, 80 34" stroke="#1e1e1e" stroke-width="2" fill="none"/>
-  <!-- Hat Band -->
-  <path d="M 41 55 L 87 55 L 87 60 L 41 60 Z" fill="#333333"/>
-  <!-- Hat Brim (Large, curled edge) -->
-  <path d="M 12 62 C 12 52, 116 52, 116 62 C 116 72, 95 65, 86 60 L 42 60 C 33 65, 12 72, 12 62 Z" fill="#d4d4d4"/>
-  <!-- Face/Poncho Silhouette -->
-  <path d="M 55 65 L 52 70 L 45 78 L 50 82 L 48 84 L 52 85 L 49 87 L 47 92 L 55 98 C 45 105, 35 115, 30 128 L 98 128 C 90 115, 80 105, 75 98 L 75 65 Z" fill="#d4d4d4"/>
-  <!-- Cigar -->
-  <rect x="30" y="85" width="22" height="3" fill="#d4d4d4" transform="rotate(15 52 85)"/>
+  <g transform="scale(1.25) translate(-12, -5)">
+    <!-- Hat Crown (Pork-pie style with crease) -->
+    <path d="M 42 60 L 44 35 C 50 32, 78 32, 84 35 L 86 60 Z" fill="#d4d4d4"/>
+    <!-- Crown Crease -->
+    <path d="M 48 34 C 64 38, 80 34, 80 34" stroke="#1e1e1e" stroke-width="2" fill="none"/>
+    <!-- Hat Band -->
+    <path d="M 41 55 L 87 55 L 87 60 L 41 60 Z" fill="#333333"/>
+    <!-- Hat Brim (Large, curled edge) -->
+    <path d="M 12 62 C 12 52, 116 52, 116 62 C 116 72, 95 65, 86 60 L 42 60 C 33 65, 12 72, 12 62 Z" fill="#d4d4d4"/>
+    <!-- Face Silhouette -->
+    <path d="M 55 65 L 52 70 L 45 78 L 50 82 L 48 84 L 52 85 L 49 87 L 47 92 L 55 98 L 75 98 L 75 65 Z" fill="#d4d4d4"/>
+    <!-- Cigar -->
+    <rect x="30" y="85" width="22" height="3" fill="#d4d4d4" transform="rotate(15 52 85)"/>
+  </g>
+  <!-- Poncho Silhouette (Smaller) -->
+  <path d="M 56 117 C 48 122, 40 125, 35 128 L 93 128 C 88 125, 80 122, 72 117 Z" fill="#d4d4d4"/>
 </svg>

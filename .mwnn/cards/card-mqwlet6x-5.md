@@ -22,6 +22,7 @@ Model: openrouter/google/gemini-3.1-flash-lite
 - 2026-06-27 Codex: Designed extension icon with a silhouette of a man in a cowboy hat and added it to package.json.
 - 2026-06-27 Codex: Updated icon hat to be a pork-pie-style crown crease, a thin leather band, and a large brim with a slightly curled edge.
 - 2026-06-27 Codex: Updated the face silhouette to be more human-like with a profile showing a nose, lips, and chin, and repositioned the cigar.
+- 2026-06-27 Codex: Scaled up the head and hat, and reduced the size of the body/poncho.
 
 **Next Actions**
 - Draft silhouette concepts based on reference imagery.
