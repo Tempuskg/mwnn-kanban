@@ -10,17 +10,27 @@ suite('chat handoff resolution', () => {
     const target = resolveChatHandoffTarget('copilot', ['workbench.action.chat.open']);
 
     assert.equal(target?.commandId, 'workbench.action.chat.open');
-    assert.equal(target?.supportsQuery, true);
+    assert.equal(target?.promptDelivery, 'query');
   });
 
-  test('resolves Codex and Claude Code to clipboard-paste open commands', () => {
+  test('resolves Claude Code to a prompt-accepting editor command', () => {
+    const claude = resolveChatHandoffTarget('claude-code', [
+      'claude-vscode.editor.open',
+      'claude-vscode.sidebar.open',
+    ]);
+
+    assert.equal(claude?.commandId, 'claude-vscode.editor.open');
+    assert.equal(claude?.promptDelivery, 'positional');
+  });
+
+  test('falls back to clipboard-paste when only a bare open command exists', () => {
     const codex = resolveChatHandoffTarget('codex', ['chatgpt.openSidebar']);
     const claude = resolveChatHandoffTarget('claude-code', ['claude-vscode.sidebar.open']);
 
     assert.equal(codex?.commandId, 'chatgpt.openSidebar');
-    assert.equal(codex?.supportsQuery, false);
+    assert.equal(codex?.promptDelivery, 'clipboard');
     assert.equal(claude?.commandId, 'claude-vscode.sidebar.open');
-    assert.equal(claude?.supportsQuery, false);
+    assert.equal(claude?.promptDelivery, 'clipboard');
   });
 
   test('returns undefined when no provider command is installed', () => {
@@ -41,7 +51,7 @@ suite('chat handoff resolution', () => {
     );
 
     assert.equal(target?.commandId, 'my.custom.claude.command');
-    assert.equal(target?.supportsQuery, false);
+    assert.equal(target?.promptDelivery, 'clipboard');
   });
 
   test('lists only providers whose commands are present', () => {

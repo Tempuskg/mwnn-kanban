@@ -143,7 +143,7 @@
     titleGroup.append(title, role);
     const aside = document.createElement('div');
     aside.className = 'column-header-aside';
-    aside.append(renderColumnMetrics(column), renderColumnActions(column, columnIndex));
+    aside.append(renderColumnMetrics(column), renderColumnActions(column));
 
     header.append(titleGroup, aside);
     el.appendChild(header);
@@ -175,31 +175,9 @@
     return el;
   }
 
-  function renderColumnActions(column, columnIndex) {
+  function renderColumnActions(column) {
     const actions = document.createElement('div');
     actions.className = 'column-header-actions';
-
-    const moveLeft = document.createElement('button');
-    moveLeft.className = 'column-action';
-    moveLeft.type = 'button';
-    moveLeft.textContent = '←';
-    moveLeft.title = `Move ${column.title} left`;
-    moveLeft.setAttribute('aria-label', `Move ${column.title} left`);
-    moveLeft.disabled = columnIndex === 0;
-    moveLeft.addEventListener('click', () => {
-      post({ type: 'reorderColumn', columnId: column.id, toIndex: columnIndex - 1 });
-    });
-
-    const moveRight = document.createElement('button');
-    moveRight.className = 'column-action';
-    moveRight.type = 'button';
-    moveRight.textContent = '→';
-    moveRight.title = `Move ${column.title} right`;
-    moveRight.setAttribute('aria-label', `Move ${column.title} right`);
-    moveRight.disabled = !board || columnIndex >= board.columns.length - 1;
-    moveRight.addEventListener('click', () => {
-      post({ type: 'reorderColumn', columnId: column.id, toIndex: columnIndex + 1 });
-    });
 
     const configure = document.createElement('button');
     configure.className = 'column-action';
@@ -211,7 +189,7 @@
       openColumnDetails(column.id);
     });
 
-    actions.append(moveLeft, moveRight, configure);
+    actions.append(configure);
     return actions;
   }
 
@@ -595,6 +573,7 @@
     form.className = 'card-modal-form';
 
     const titleInput = renderTextInput('Title', column.title);
+    const moveControls = renderColumnMoveControls(column);
     const wipInput = renderLimitInput('WIP limit', column.wipLimit ?? null, 'Leave blank for no maximum.');
     const reverseWipInput = renderLimitInput(
       'Ready reverse-WIP minimum',
@@ -602,7 +581,7 @@
       'Leave blank for none. Useful on Ready columns.',
     );
 
-    form.append(titleInput.wrapper, wipInput.wrapper, reverseWipInput.wrapper);
+    form.append(titleInput.wrapper, moveControls.wrapper, wipInput.wrapper, reverseWipInput.wrapper);
 
     let deleteTarget;
     if (column.cards.length > 0 && board && board.columns.length > 1) {
@@ -676,6 +655,54 @@
 
     wrapper.append(label, input, help);
     return { wrapper, input };
+  }
+
+  function renderColumnMoveControls(column) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = 'Position';
+
+    const columnIndex = board ? board.columns.findIndex((candidate) => candidate.id === column.id) : -1;
+    const columnCount = board ? board.columns.length : 0;
+
+    const row = document.createElement('div');
+    row.className = 'column-move-row';
+
+    const moveLeft = document.createElement('button');
+    moveLeft.className = 'column-action';
+    moveLeft.type = 'button';
+    moveLeft.textContent = '← Move left';
+    moveLeft.title = `Move ${column.title} left`;
+    moveLeft.setAttribute('aria-label', `Move ${column.title} left`);
+    moveLeft.disabled = columnIndex <= 0;
+    moveLeft.addEventListener('click', () => {
+      post({ type: 'reorderColumn', columnId: column.id, toIndex: columnIndex - 1 });
+    });
+
+    const moveRight = document.createElement('button');
+    moveRight.className = 'column-action';
+    moveRight.type = 'button';
+    moveRight.textContent = 'Move right →';
+    moveRight.title = `Move ${column.title} right`;
+    moveRight.setAttribute('aria-label', `Move ${column.title} right`);
+    moveRight.disabled = columnIndex < 0 || columnIndex >= columnCount - 1;
+    moveRight.addEventListener('click', () => {
+      post({ type: 'reorderColumn', columnId: column.id, toIndex: columnIndex + 1 });
+    });
+
+    row.append(moveLeft, moveRight);
+
+    const help = document.createElement('span');
+    help.className = 'card-field-help';
+    help.textContent = columnCount > 0
+      ? `Column ${columnIndex + 1} of ${columnCount}.`
+      : 'Reorder this column relative to the others.';
+
+    wrapper.append(label, row, help);
+    return { wrapper };
   }
 
   function renderDeleteTargetSelect(column) {

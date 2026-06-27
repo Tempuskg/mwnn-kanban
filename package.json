@@ -26,6 +26,25 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mwnn-kanban",
+          "title": "MWNN Kanban",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mwnn-kanban": [
+        {
+          "type": "webview",
+          "id": "mwnn-kanban.sidebar",
+          "name": "MWNN Kanban",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "mwnn-kanban.openBoard",

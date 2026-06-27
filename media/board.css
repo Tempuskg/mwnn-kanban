@@ -153,6 +153,15 @@ body {
   cursor: default;
 }
 
+.column-move-row {
+  display: flex;
+  gap: 8px;
+}
+
+.column-move-row .column-action {
+  flex: 1;
+}
+
 .column-count {
   opacity: 0.7;
   font-size: 0.85rem;

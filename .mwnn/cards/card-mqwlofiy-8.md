@@ -1,10 +1,10 @@
 ---
 id: card-mqwlofiy-8
 title: have ai fill in definition
-column: col-mqwk2njn-2
-position: 2000
+column: col-mqwk2njn-3
+position: 1000
 createdAt: 1782579280282
-updatedAt: 1782595766855
+updatedAt: 1782604344963
 ---
 
 ## Description

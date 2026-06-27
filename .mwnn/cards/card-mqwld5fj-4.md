@@ -1,10 +1,10 @@
 ---
 id: card-mqwld5fj-4
 title: Test undersupplied Ready Column
-column: col-mqwk2njn-2
-position: 3000
+column: col-mqwk2njn-4
+position: 2000
 createdAt: 1782578753983
-updatedAt: 1782579007953
+updatedAt: 1782604211901
 ---
 
 ## Description

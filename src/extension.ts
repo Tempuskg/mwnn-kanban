@@ -13,6 +13,7 @@ import {
   type ChatProviderCommands,
 } from './chatHandoff';
 import { BoardPanel } from './boardPanel';
+import { BoardSidebarViewProvider } from './sidebarView';
 import { createBoardStore, type FileSystemLike } from './boardStore';
 import type { BoardState } from './types';
 
@@ -100,6 +101,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     BoardPanel.show({ store, extensionUri: context.extensionUri, confirmDeletion, runCardWithAI: runCardWithAISelection });
 
   context.subscriptions.push(registerBoardWatcher(workspaceRoot, readBoardFolder(), store));
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      BoardSidebarViewProvider.viewType,
+      new BoardSidebarViewProvider(context.extensionUri, openBoard),
+    ),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand('mwnn-kanban.openBoard', () => {
       openBoard();
@@ -258,6 +265,10 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.window.showInformationMessage('Open a workspace folder to use MWNN Kanban.');
 
   context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      BoardSidebarViewProvider.viewType,
+      new BoardSidebarViewProvider(context.extensionUri, () => void showWorkspaceMessage()),
+    ),
     vscode.commands.registerCommand('mwnn-kanban.openBoard', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.addColumn', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.renameColumn', showWorkspaceMessage),
@@ -378,9 +389,9 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
   const choice = await vscode.window.showQuickPick(
     targets.map((target) => ({
       label: CHAT_PROVIDER_LABELS[target.provider],
-      detail: target.supportsQuery
-        ? 'Sends the card prompt straight to the chat input'
-        : 'Opens the chat window with the card prompt on the clipboard to paste',
+      detail: target.promptDelivery === 'clipboard'
+        ? 'Opens the chat window with the card prompt on the clipboard to paste'
+        : 'Sends the card prompt straight to the chat input',
       target,
     })),
     { placeHolder: 'Hand this card off to which AI chat?' },
@@ -395,8 +406,17 @@ async function handOffCardToChat(
 ): Promise<boolean> {
   const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
   try {
-    if (target.supportsQuery) {
+    if (target.promptDelivery === 'query') {
+      // Copilot: the prompt rides in as a { query } argument.
       await vscode.commands.executeCommand(target.commandId, { query: prompt });
+      void vscode.window.showInformationMessage(`Handed "${card.title}" to ${providerLabel}.`);
+      return true;
+    }
+
+    if (target.promptDelivery === 'positional') {
+      // Claude Code: the open command takes (sessionId, initialPrompt); pass no
+      // session so a fresh conversation opens pre-filled with the prompt.
+      await vscode.commands.executeCommand(target.commandId, undefined, prompt);
       void vscode.window.showInformationMessage(`Handed "${card.title}" to ${providerLabel}.`);
       return true;
     }

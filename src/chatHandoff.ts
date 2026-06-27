@@ -1,18 +1,24 @@
 /**
  * Resolves which installed AI chat extension a card should be handed off to and
- * how to drive it. Modeled on the handoff approach proven in the chat-commit
- * extension: Copilot's chat command accepts a query argument (the prompt is
- * injected directly), while Codex and Claude Code expose only an "open" command,
- * so their prompt is placed on the clipboard for the user to paste.
+ * how to drive it. Providers differ in how the prompt is delivered:
+ *   - 'query'      Copilot's workbench.action.chat.open takes a `{ query }`
+ *                  argument; the prompt is injected straight into the chat input.
+ *   - 'positional' Claude Code's editor open commands accept the prompt as a
+ *                  positional `(sessionId, initialPrompt)` argument, so the new
+ *                  chat panel opens pre-filled with the prompt.
+ *   - 'clipboard'  The provider exposes only a bare "open" command, so the
+ *                  prompt is placed on the clipboard for the user to paste.
  */
 
 export type ChatProviderId = 'copilot' | 'codex' | 'claude-code';
 
+export type PromptDelivery = 'query' | 'positional' | 'clipboard';
+
 export interface ChatHandoffTarget {
   readonly provider: ChatProviderId;
   readonly commandId: string;
-  /** True when the open command accepts a `{ query }` argument carrying the prompt. */
-  readonly supportsQuery: boolean;
+  /** How the prompt reaches the chat for this command. */
+  readonly promptDelivery: PromptDelivery;
 }
 
 export type ChatProviderCommands = Partial<Record<ChatProviderId, string>>;
@@ -24,26 +30,42 @@ export const CHAT_PROVIDER_LABELS: Record<ChatProviderId, string> = {
 };
 
 // Commands that accept a `{ query }` argument so the prompt can be injected
-// directly into the chat input rather than copied to the clipboard.
+// directly into the chat input.
 const COMMANDS_SUPPORTING_QUERY = new Set(['workbench.action.chat.open']);
 
+// Commands that accept the prompt as a positional `(sessionId, initialPrompt)`
+// argument. Verified against the anthropic.claude-code extension bundle, whose
+// own URI handler drives these same commands with a prompt parameter.
+const COMMANDS_SUPPORTING_POSITIONAL_PROMPT = new Set([
+  'claude-vscode.editor.open',
+  'claude-vscode.primaryEditor.open',
+]);
+
 // Candidate "open chat" commands per provider, in preference order. Verified
-// against the published extension manifests in chat-commit:
+// against the published extension manifests:
 //   - GitHub Copilot Chat: workbench.action.chat.open (built into VS Code)
 //   - openai.chatgpt (Codex): chatgpt.openSidebar / chatgpt.newChat
-//   - anthropic.claude-code: claude-vscode.sidebar.open / newConversation
+//   - anthropic.claude-code: editor.open / primaryEditor.open accept the prompt
+//     positionally; sidebar.open / newConversation are clipboard-only fallbacks.
 const HANDOFF_TARGET_CANDIDATES: Record<ChatProviderId, readonly string[]> = {
   copilot: ['workbench.action.chat.open'],
   codex: ['chatgpt.openSidebar', 'chatgpt.newChat', 'chatgpt.newCodexPanel'],
   'claude-code': [
+    'claude-vscode.editor.open',
+    'claude-vscode.primaryEditor.open',
     'claude-vscode.sidebar.open',
     'claude-vscode.newConversation',
-    'claude-vscode.editor.open',
   ],
 };
 
-function commandSupportsQuery(commandId: string): boolean {
-  return COMMANDS_SUPPORTING_QUERY.has(commandId);
+function promptDeliveryFor(commandId: string): PromptDelivery {
+  if (COMMANDS_SUPPORTING_QUERY.has(commandId)) {
+    return 'query';
+  }
+  if (COMMANDS_SUPPORTING_POSITIONAL_PROMPT.has(commandId)) {
+    return 'positional';
+  }
+  return 'clipboard';
 }
 
 /**
@@ -65,7 +87,7 @@ export function resolveChatHandoffTarget(
       return {
         provider,
         commandId,
-        supportsQuery: commandSupportsQuery(commandId),
+        promptDelivery: promptDeliveryFor(commandId),
       };
     }
   }
