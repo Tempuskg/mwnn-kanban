@@ -44,6 +44,8 @@ export interface BoardState {
 /** Messages sent from the webview to the extension host. */
 export type WebviewToHostMessage =
   | { readonly type: 'ready' }
+  | { readonly type: 'requestAddCard'; readonly columnId: string }
+  | { readonly type: 'requestAddColumn' }
   | { readonly type: 'addCard'; readonly columnId: string; readonly title: string }
   | { readonly type: 'addColumn'; readonly title: string }
   | { readonly type: 'editCard'; readonly cardId: string; readonly title: string }
@@ -89,6 +91,10 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
 
   switch (value['type']) {
     case 'ready':
+      return true;
+    case 'requestAddCard':
+      return typeof value['columnId'] === 'string';
+    case 'requestAddColumn':
       return true;
     case 'addCard':
       return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';

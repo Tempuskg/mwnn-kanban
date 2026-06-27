@@ -1,9 +1,11 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
+  buildCardHandoffPrompt,
   buildCardPrompt,
   findAiCardSelection,
   formatActivityEntry,
+  formatHandoffEntry,
   listAiCardSelections,
   summarizeCardDescription,
 } from '../../src/aiCards';
@@ -72,6 +74,26 @@ suite('ai card helpers', () => {
     assert.match(fallbackPrompt, /No acceptance criteria provided\./);
   });
 
+  test('buildCardHandoffPrompt directs the agent to do the work and report status', () => {
+    let board = defaultBoard(['Ready']);
+    const readyId = board.columns[0]!.id;
+
+    board = addCard(board, readyId, 'Add extension icon');
+    const cardId = board.columns[0]!.cards[0]!.id;
+    board = setDescription(board, cardId, 'Create a 128x128 icon.');
+    board = setAcceptanceCriteria(board, cardId, '- [ ] icon.png exists');
+
+    const card = board.columns[0]!.cards[0]!;
+    const prompt = buildCardHandoffPrompt(card, `.mwnn/cards/${cardId}.md`);
+
+    assert.match(prompt, /Title: Add extension icon/);
+    assert.match(prompt, /Create a 128x128 icon\./);
+    assert.match(prompt, /- \[ \] icon\.png exists/);
+    assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
+    assert.match(prompt, /STATUS: DONE/);
+    assert.match(prompt, /STATUS: BLOCKED/);
+  });
+
   test('formatActivityEntry stamps model metadata and trims the response body', () => {
     const entry = formatActivityEntry(
       { name: 'GPT-5', vendor: 'OpenAI', family: 'gpt-5' },
@@ -86,6 +108,18 @@ suite('ai card helpers', () => {
         'Model: OpenAI/gpt-5',
         '',
         'Summarized the next steps.',
+      ].join('\n'),
+    );
+  });
+
+  test('formatHandoffEntry records the provider and a timestamped dispatch note', () => {
+    const entry = formatHandoffEntry('Codex (ChatGPT)', new Date('2026-06-27T17:40:00.000Z'));
+
+    assert.equal(
+      entry,
+      [
+        '### 2026-06-27T17:40:00.000Z - Handed off to Codex (ChatGPT)',
+        'Dispatched this card to Codex (ChatGPT). The agent should append its completion note below.',
       ].join('\n'),
     );
   });

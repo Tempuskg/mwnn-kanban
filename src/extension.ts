@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
 import {
-  buildCardPrompt,
+  buildCardHandoffPrompt,
   findAiCardSelection,
-  formatActivityEntry,
+  formatHandoffEntry,
   listAiCardSelections,
   summarizeCardDescription,
 } from './aiCards';
+import {
+  CHAT_PROVIDER_LABELS,
+  listAvailableChatProviders,
+  type ChatHandoffTarget,
+  type ChatProviderCommands,
+} from './chatHandoff';
 import { BoardPanel } from './boardPanel';
 import { createBoardStore, type FileSystemLike } from './boardStore';
 import type { BoardState } from './types';
@@ -33,6 +39,12 @@ function confirmDeletion(): boolean {
 
 function readEnableRunWithAI(): boolean {
   return vscode.workspace.getConfiguration('mwnn-kanban').get<boolean>('enableRunWithAI', true);
+}
+
+function readChatProviderCommands(): ChatProviderCommands {
+  return vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<ChatProviderCommands>('chatProviderCommands', {});
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -65,36 +77,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    const model = await pickLanguageModel(context);
-    if (!model) {
+    const target = await pickChatProvider();
+    if (!target) {
       return;
     }
 
-    let responseText: string;
-    try {
-      responseText = await runCardWithAI(model, selection.card);
-    } catch (error: unknown) {
-      void vscode.window.showWarningMessage(describeLanguageModelError(error));
+    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+    const cardFilePath = `${boardFolder}/cards/${selection.card.id}.md`;
+    const prompt = buildCardHandoffPrompt(selection.card, cardFilePath);
+    const handedOff = await handOffCardToChat(target, selection.card, prompt);
+    if (!handedOff) {
       return;
     }
 
-    if (responseText.trim().length === 0) {
-      void vscode.window.showInformationMessage(`"${selection.card.title}" returned no AI output to append.`);
-      return;
-    }
-
-    await store.appendActivity(selection.card.id, formatActivityEntry(model, responseText));
-
-    const moveLabel = selection.nextColumn ? `Move to ${selection.nextColumn.title}` : undefined;
-    const choice = await vscode.window.showInformationMessage(
-      `Added AI output to "${selection.card.title}".`,
-      ...(moveLabel ? [moveLabel] : []),
-    );
-    if (moveLabel && choice === moveLabel && selection.nextColumn) {
-      await store.moveCard(selection.card.id, selection.nextColumn.id, selection.nextColumn.cards.length);
-    }
-
-    openBoard().postState();
+    // Record the dispatch ourselves: the hand-off is fire-and-forget, so we
+    // cannot rely on the external agent to leave any trace in the activity log.
+    await store.appendActivity(selection.card.id, formatHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
+    BoardPanel.postStateIfOpen();
   };
 
   const openBoard = (): BoardPanel =>
@@ -362,41 +361,57 @@ function findCardColumn(state: BoardState, cardId: string): BoardColumn | undefi
   return state.columns.find((column) => column.cards.some((card) => card.id === cardId));
 }
 
-async function pickLanguageModel(
-  context: vscode.ExtensionContext,
-): Promise<vscode.LanguageModelChat | undefined> {
-  if (vscode.lm === undefined) {
-    void vscode.window.showInformationMessage('This VS Code build does not expose language model APIs.');
-    return undefined;
-  }
+async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
+  const availableCommands = await vscode.commands.getCommands(true);
+  const targets = listAvailableChatProviders(availableCommands, readChatProviderCommands());
 
-  let models: readonly vscode.LanguageModelChat[];
-  try {
-    models = await vscode.lm.selectChatModels();
-  } catch (error: unknown) {
-    void vscode.window.showWarningMessage(describeLanguageModelError(error));
+  if (targets.length === 0) {
+    void vscode.window.showInformationMessage(
+      'No supported AI chat extension was found. Install GitHub Copilot, Codex (ChatGPT), or Claude Code to hand off cards.',
+    );
     return undefined;
   }
-
-  const availableModels = models.filter((model) => context.languageModelAccessInformation.canSendRequest(model) !== false);
-  if (availableModels.length === 0) {
-    void vscode.window.showInformationMessage('No accessible chat models are currently available for MWNN Kanban.');
-    return undefined;
-  }
-  if (availableModels.length === 1) {
-    return availableModels[0];
+  if (targets.length === 1) {
+    return targets[0];
   }
 
   const choice = await vscode.window.showQuickPick(
-    availableModels.map((model) => ({
-      label: model.name,
-      description: `${model.vendor} - ${model.family}`,
-      detail: `Version ${model.version}`,
-      model,
+    targets.map((target) => ({
+      label: CHAT_PROVIDER_LABELS[target.provider],
+      detail: target.supportsQuery
+        ? 'Sends the card prompt straight to the chat input'
+        : 'Opens the chat window with the card prompt on the clipboard to paste',
+      target,
     })),
-    { placeHolder: 'Choose an AI model for this card' },
+    { placeHolder: 'Hand this card off to which AI chat?' },
   );
-  return choice?.model;
+  return choice?.target;
+}
+
+async function handOffCardToChat(
+  target: ChatHandoffTarget,
+  card: BoardCard,
+  prompt: string,
+): Promise<boolean> {
+  const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
+  try {
+    if (target.supportsQuery) {
+      await vscode.commands.executeCommand(target.commandId, { query: prompt });
+      void vscode.window.showInformationMessage(`Handed "${card.title}" to ${providerLabel}.`);
+      return true;
+    }
+
+    await vscode.env.clipboard.writeText(prompt);
+    await vscode.commands.executeCommand(target.commandId);
+    void vscode.window.showInformationMessage(
+      `Opened ${providerLabel} for "${card.title}". The card prompt is on your clipboard — paste it to start.`,
+    );
+    return true;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    void vscode.window.showWarningMessage(`Could not hand off to ${providerLabel}: ${message}`);
+    return false;
+  }
 }
 
 async function promptForLimit(
@@ -431,47 +446,3 @@ async function promptForLimit(
   };
 }
 
-async function runCardWithAI(model: vscode.LanguageModelChat, card: BoardCard): Promise<string> {
-  return vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: `Running "${card.title}" with ${model.name}`,
-      cancellable: false,
-    },
-    async () => {
-      const response = await model.sendRequest(
-        [vscode.LanguageModelChatMessage.User(buildCardPrompt(card))],
-        {
-          justification: 'Run an MWNN Kanban card with AI and append the response to the card activity log.',
-        },
-      );
-
-      let output = '';
-      for await (const chunk of response.text) {
-        output += chunk;
-      }
-      return output.trim();
-    },
-  );
-}
-
-function describeLanguageModelError(error: unknown): string {
-  if (error instanceof vscode.LanguageModelError) {
-    switch (error.code) {
-      case 'NoPermissions':
-        return 'MWNN Kanban does not have permission to use the selected language model yet.';
-      case 'Blocked':
-        return 'The selected language model is temporarily unavailable or quota-limited.';
-      case 'NotFound':
-        return 'The selected language model is no longer available.';
-      default:
-        return error.message;
-    }
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return 'The language model request could not be completed.';
-}

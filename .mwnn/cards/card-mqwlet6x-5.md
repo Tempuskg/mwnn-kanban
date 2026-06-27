@@ -1,11 +1,11 @@
 ---
 id: card-mqwlet6x-5
 title: Design Extension Icon
-column: col-mqwk2njn-3
-position: 1000
+column: col-mqwk2njn-4
+position: 2000
 assignee: { kind: ai }
 createdAt: 1782578831433
-updatedAt: 1782581115685
+updatedAt: 1782595703235
 ---
 
 ## Description
@@ -23,6 +23,8 @@ Model: openrouter/google/gemini-3.1-flash-lite
 - 2026-06-27 Codex: Updated icon hat to be a pork-pie-style crown crease, a thin leather band, and a large brim with a slightly curled edge.
 - 2026-06-27 Codex: Updated the face silhouette to be more human-like with a profile showing a nose, lips, and chin, and repositioned the cigar.
 - 2026-06-27 Codex: Scaled up the head and hat, and reduced the size of the body/poncho.
+- 2026-06-27 Codex: Adjusted scale to make the hat slightly smaller and added a more defined neck to the silhouette.
+- 2026-06-27 Codex: Redesigned the icon to match the provided reference image, featuring a full-body silhouette with a poncho, hat, and sunset background.
 
 **Next Actions**
 - Draft silhouette concepts based on reference imagery.

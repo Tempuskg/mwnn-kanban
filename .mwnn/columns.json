@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "columns": [
+    {
+      "id": "col-mqwk2njn-1",
+      "title": "Backlog",
+      "role": "backlog",
+      "wipLimit": null,
+      "reverseWip": null
+    },
+    {
+      "id": "col-mqwk2njn-2",
+      "title": "Ready",
+      "role": "ready",
+      "wipLimit": null,
+      "reverseWip": 3
+    },
+    {
+      "id": "col-mqwk2njn-3",
+      "title": "In Progress",
+      "role": "in-progress",
+      "wipLimit": 1,
+      "reverseWip": null
+    },
+    {
+      "id": "col-mqwk2njn-4",
+      "title": "Done",
+      "role": "done",
+      "wipLimit": null,
+      "reverseWip": null
+    }
+  ]
+}

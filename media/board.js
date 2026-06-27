@@ -102,10 +102,7 @@
     addColumn.type = 'button';
     addColumn.textContent = '+ Add column';
     addColumn.addEventListener('click', () => {
-      const text = window.prompt('New column title');
-      if (text && text.trim()) {
-        post({ type: 'addColumn', title: text.trim() });
-      }
+      post({ type: 'requestAddColumn' });
     });
 
     copy.append(title, hint);
@@ -171,10 +168,7 @@
     add.textContent = '+ Add card';
     add.setAttribute('aria-label', `Add a card to ${column.title}`);
     add.addEventListener('click', () => {
-      const text = window.prompt('Card title');
-      if (text && text.trim()) {
-        post({ type: 'addCard', columnId: column.id, title: text.trim() });
-      }
+      post({ type: 'requestAddCard', columnId: column.id });
     });
     el.appendChild(add);
 

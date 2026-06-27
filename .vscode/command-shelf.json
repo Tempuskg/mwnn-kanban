@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "groups": [],
+  "commands": [
+    {
+      "id": "4f756d2d-c9a5-4bb4-8d01-db099485b61e",
+      "label": "Build VSIX",
+      "command": "npx @vscode/vsce package",
+      "group": null,
+      "sortOrder": 0,
+      "terminalMode": "dedicated"
+    }
+  ]
+}

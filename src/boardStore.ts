@@ -86,44 +86,52 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
   let state = await loadOrInitializeState(deps);
   await ensureBoardReadme(deps);
 
-  async function commit(next: BoardState): Promise<BoardState> {
-    state = cloneBoard(next);
-    await writeBoardState(deps, state);
-    return cloneBoard(state);
-  }
-
-  async function reload(): Promise<BoardState> {
+  async function refreshFromDisk(): Promise<void> {
     const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
     if (!(await deps.fileSystem.exists(columnsPath))) {
-      return cloneBoard(state);
+      return;
     }
 
     try {
       state = await readBoardState(deps);
     } catch {
-      return cloneBoard(state);
+      // Keep the last known good state if the files are mid-write or invalid.
     }
+  }
 
+  // Pull in any external edits (e.g. a hand-off agent appending to a card's
+  // Activity section) before applying and writing, so a board mutation never
+  // overwrites newer on-disk content with stale in-memory state.
+  async function commit(apply: (current: BoardState) => BoardState): Promise<BoardState> {
+    await refreshFromDisk();
+    state = cloneBoard(apply(state));
+    await writeBoardState(deps, state);
+    return cloneBoard(state);
+  }
+
+  async function reload(): Promise<BoardState> {
+    await refreshFromDisk();
     return cloneBoard(state);
   }
 
   return {
     getState: () => cloneBoard(state),
     reload,
-    addColumn: (title) => commit(addColumn(state, title)),
-    addCard: (columnId, title) => commit(addCard(state, columnId, title)),
-    editCard: (cardId, title) => commit(editCard(state, cardId, title)),
-    deleteCard: (cardId) => commit(deleteCard(state, cardId)),
-    moveCard: (cardId, toColumnId, toIndex) => commit(moveCard(state, cardId, toColumnId, toIndex)),
-    setAssignee: (cardId, assignee) => commit(setAssignee(state, cardId, assignee)),
-    setDescription: (cardId, description) => commit(setDescription(state, cardId, description)),
-    setAcceptanceCriteria: (cardId, acceptanceCriteria) => commit(setAcceptanceCriteria(state, cardId, acceptanceCriteria)),
-    appendActivity: (cardId, entry) => commit(appendActivity(state, cardId, entry)),
-    setColumnConfig: (columnId, config) => commit(setColumnConfig(state, columnId, config)),
-    renameColumn: (columnId, title) => commit(renameColumn(state, columnId, title)),
-    removeColumn: (columnId, targetColumnId) => commit(removeColumn(state, columnId, targetColumnId)),
-    reorderColumns: (columnId, toIndex) => commit(reorderColumns(state, columnId, toIndex)),
-    reset: () => commit(createInitialBoard(deps.defaultColumns, deps.defaultReadyReverseWip)),
+    addColumn: (title) => commit((current) => addColumn(current, title)),
+    addCard: (columnId, title) => commit((current) => addCard(current, columnId, title)),
+    editCard: (cardId, title) => commit((current) => editCard(current, cardId, title)),
+    deleteCard: (cardId) => commit((current) => deleteCard(current, cardId)),
+    moveCard: (cardId, toColumnId, toIndex) => commit((current) => moveCard(current, cardId, toColumnId, toIndex)),
+    setAssignee: (cardId, assignee) => commit((current) => setAssignee(current, cardId, assignee)),
+    setDescription: (cardId, description) => commit((current) => setDescription(current, cardId, description)),
+    setAcceptanceCriteria: (cardId, acceptanceCriteria) =>
+      commit((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
+    appendActivity: (cardId, entry) => commit((current) => appendActivity(current, cardId, entry)),
+    setColumnConfig: (columnId, config) => commit((current) => setColumnConfig(current, columnId, config)),
+    renameColumn: (columnId, title) => commit((current) => renameColumn(current, columnId, title)),
+    removeColumn: (columnId, targetColumnId) => commit((current) => removeColumn(current, columnId, targetColumnId)),
+    reorderColumns: (columnId, toIndex) => commit((current) => reorderColumns(current, columnId, toIndex)),
+    reset: () => commit(() => createInitialBoard(deps.defaultColumns, deps.defaultReadyReverseWip)),
   };
 }
 
@@ -225,13 +233,21 @@ async function writeBoardState(deps: BoardStoreDeps, state: BoardState): Promise
   );
 
   const existingCardNames = await deps.fileSystem.readDirectory(boardPath(deps.boardFolder, CARDS_DIR));
+  const existingCardFiles = new Set(existingCardNames.filter((name) => name.endsWith('.md')));
   const nextCardIds = new Set<string>();
   for (const document of buildCardDocuments(state)) {
     nextCardIds.add(document.card.id);
-    await deps.fileSystem.writeFile(
-      boardPath(deps.boardFolder, CARDS_DIR, `${document.card.id}.md`),
-      serializeCard(document),
-    );
+    const fileName = `${document.card.id}.md`;
+    const cardPath = boardPath(deps.boardFolder, CARDS_DIR, fileName);
+    const serialized = serializeCard(document);
+
+    // Skip files whose content is identical so we don't rewrite (and trip the
+    // file watcher on) cards an external editor or agent just touched.
+    if (existingCardFiles.has(fileName) && (await deps.fileSystem.readFile(cardPath)) === serialized) {
+      continue;
+    }
+
+    await deps.fileSystem.writeFile(cardPath, serialized);
   }
 
   for (const name of existingCardNames) {

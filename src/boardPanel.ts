@@ -70,6 +70,36 @@ export class BoardPanel {
       case 'ready':
         this.postState();
         return;
+      case 'requestAddCard': {
+        const column = this.deps.store.getState().columns.find((candidate) => candidate.id === message.columnId);
+        if (!column) {
+          return;
+        }
+
+        const title = await vscode.window.showInputBox({
+          prompt: `Add a card to ${column.title}`,
+          placeHolder: 'Card title',
+        });
+        const normalizedTitle = title?.trim();
+        if (!normalizedTitle) {
+          return;
+        }
+
+        await this.deps.store.addCard(message.columnId, normalizedTitle);
+        break;
+      }
+      case 'requestAddColumn': {
+        const title = await vscode.window.showInputBox({
+          prompt: 'New column title',
+        });
+        const normalizedTitle = title?.trim();
+        if (!normalizedTitle) {
+          return;
+        }
+
+        await this.deps.store.addColumn(normalizedTitle);
+        break;
+      }
       case 'addCard':
         await this.deps.store.addCard(message.columnId, message.title);
         break;

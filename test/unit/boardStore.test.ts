@@ -242,6 +242,32 @@ suite('board store', () => {
     assert.equal(store.getState().columns[0]!.cards[0]!.title, 'Externally edited');
   });
 
+  test('a board mutation preserves an external activity edit instead of clobbering it', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready', 'Done'] }));
+    const readyId = store.getState().columns[0]!.id;
+    const doneId = store.getState().columns[1]!.id;
+
+    await store.addCard(readyId, 'Card');
+    const cardId = store.getState().columns[0]!.cards[0]!.id;
+
+    // A hand-off agent appends to the card's Activity section directly on disk,
+    // while the in-memory store still has no activity for that card.
+    const cardFile = [...fileSystem.snapshot().keys()].find((filePath) => filePath.startsWith('.mwnn/cards/'));
+    assert.ok(cardFile, 'expected a card markdown file to be written');
+    const parsed = parseCard(fileSystem.snapshot().get(cardFile!) ?? '');
+    parsed.card.activity = 'Agent: did the work';
+    await fileSystem.writeFile(cardFile!, serializeCard(parsed));
+
+    // Moving the card (a board mutation) must not overwrite the agent's edit.
+    await store.moveCard(cardId, doneId, 0);
+
+    const movedCard = store.getState().columns[1]!.cards[0]!;
+    assert.equal(movedCard.id, cardId);
+    assert.equal(movedCard.activity, 'Agent: did the work');
+    assert.equal(parseCard(fileSystem.snapshot().get(cardFile!) ?? '').card.activity, 'Agent: did the work');
+  });
+
   test('reload keeps the current state when an external edit leaves invalid columns json', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));

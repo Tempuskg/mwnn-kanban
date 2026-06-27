@@ -3,8 +3,13 @@
   "displayName": "MWNN Kanban",
   "description": "An in-editor Kanban board for the Methodology With No Name (MWNN), persisted per workspace.",
   "version": "0.0.1",
+  "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tempuskg/mwnn-kanban.git"
+  },
   "engines": {
     "vscode": "^1.93.0"
   },
@@ -83,6 +88,23 @@
           "type": "boolean",
           "default": true,
           "description": "Enable AI-assisted board actions when those commands are available.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.chatProviderCommands": {
+          "type": "object",
+          "default": {},
+          "description": "Override the VS Code command used to open each AI chat extension for 'Run with AI' handoff. Keys: copilot, codex, claude-code. Leave empty to use the built-in defaults.",
+          "properties": {
+            "copilot": {
+              "type": "string"
+            },
+            "codex": {
+              "type": "string"
+            },
+            "claude-code": {
+              "type": "string"
+            }
+          },
           "scope": "resource"
         },
         "mwnn-kanban.defaultColumns": {
