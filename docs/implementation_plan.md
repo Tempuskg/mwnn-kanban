@@ -102,7 +102,7 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - [x] Phase 2 - File-backed store + migration
 - [x] Phase 3 - Extension wiring + commands
 - [x] Phase 4 - Webview UI for assignees and methodology
-- [ ] Phase 5 - AI contract docs
+- [x] Phase 5 - AI contract docs
 - [ ] Phase 6 - Expanded tests + end-to-end validation
 
 ## Progress Log
@@ -154,8 +154,14 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - The board webview now covers card detail edits, AI runs, methodology indicators, and direct column management without depending on command-palette-only flows for everyday board work.
 - Validation passed for `node --check media/board.js`, `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/protocol.test.js`, full `npm test`, and `npm run lint` after the column-management UI pass.
 - Phase 4 is now complete in code, with Development Host smoke testing still pending for the interactive board behaviors.
+- Started Phase 5 by moving the board contract into repo-local docs instead of leaving it implicit in the implementation plan.
+- Added a store-written `.mwnn/README.md` contract file so direct editors inside a workspace can discover the filesystem schema and workflow without leaving the board folder.
+- Updated `AGENTS.md` with the primary human/AI board contract and refreshed `README.md` so the published extension docs match the current commands, settings, storage model, and AI workflow.
+- Added unit coverage for older workspaces that already have board files but are missing the new `.mwnn/README.md` artifact.
+- Validation passed for `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardStore.test.js`, full `npm test`, and `npm run lint` after the Phase 5 contract-doc pass.
+- Phase 5 is now complete in code and docs.
 
 ## Next Focus
 
-- Start Phase 5 by documenting the `.mwnn/` board contract for human and AI collaborators in `AGENTS.md` and the on-disk board files.
-- After the contract docs land, run Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, column controls, and the LM consent/model-selection path.
+- Finish Phase 6 with the remaining Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, column controls, and the LM consent/model-selection path.
+- After that validation pass, decide whether any final test gaps or documentation polish remain before considering the implementation plan complete.

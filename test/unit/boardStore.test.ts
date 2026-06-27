@@ -140,6 +140,7 @@ suite('board store', () => {
     const columnsDocument = parseColumns(fileSystem.snapshot().get('.mwnn/columns.json') ?? '');
     assert.equal(columnsDocument.version, BOARD_FILE_VERSION);
     assert.equal(columnsDocument.columns[1]!.reverseWip, 3);
+    assert.match(fileSystem.snapshot().get('.mwnn/README.md') ?? '', /source of truth/i);
   });
 
   test('persists added cards as markdown files and reloads them from disk', async () => {
@@ -206,6 +207,21 @@ suite('board store', () => {
       store.getState().columns[0]!.cards.map((card) => card.title),
       ['A', 'B'],
     );
+  });
+
+  test('writes the board readme when loading an existing board that predates it', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+    });
+
+    await createBoardStore(createDeps({ fileSystem }));
+
+    assert.match(fileSystem.snapshot().get('.mwnn/README.md') ?? '', /cards\/<card-id>\.md/);
   });
 
   test('reload picks up external card edits from disk', async () => {

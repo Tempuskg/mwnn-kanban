@@ -34,6 +34,66 @@ For `/implement`, `/proceed`, direct implementation requests, or generated imple
 - Defer `README.md`, `wiki/`, `CHANGELOG.md`, and plan/status-file sync until the changed surface passes one green targeted validation step, unless the user explicitly asks for docs now.
 - Use plain relative file paths in summaries and handoffs.
 
+## MWNN Board Contract
+
+The extension stores the live board in a workspace folder instead of VS Code memento storage. This file contract is the primary integration surface for humans and AI agents collaborating on the same board.
+
+- Board location: the workspace-relative folder from `mwnn-kanban.boardFolder`. The default is `.mwnn/`.
+- Source of truth: the filesystem under that folder. The extension watches it and reloads the open board after external edits.
+- Files written by the extension:
+  - `.mwnn/columns.json` stores ordered columns, roles, and limit metadata.
+  - `.mwnn/cards/<card-id>.md` stores one card per file.
+  - `.mwnn/README.md` is a local copy of the board contract for direct editors inside the workspace.
+
+`columns.json` shape:
+
+```json
+{
+  "version": 2,
+  "columns": [
+    {
+      "id": "col-ready",
+      "title": "Ready",
+      "role": "ready",
+      "wipLimit": null,
+      "reverseWip": 3
+    }
+  ]
+}
+```
+
+Card file shape:
+
+```md
+---
+id: card-abc123
+title: Add login form
+column: col-ready
+position: 1000
+assignee: { kind: ai, name: Codex }
+createdAt: 1719360000000
+updatedAt: 1719363600000
+---
+
+## Description
+What the slice is.
+
+## Acceptance criteria
+- [ ] Ship the behavior
+
+## Activity
+- 2026-06-27 Codex: claimed
+```
+
+Rules for direct board edits:
+
+- Treat `columns.json` and `cards/*.md` as the only canonical board state. Do not look for task state in workspace memento.
+- Move a card by editing its `column` and `position` frontmatter. Column order lives only in `columns.json`.
+- A card counts as "defined" for Ready reverse-WIP when `## Description` is non-empty.
+- Respect `wipLimit` on flow columns and `reverseWip` on the Ready column when claiming or moving work.
+- Prefer appending dated entries to `## Activity` when claiming, handing off, or reporting progress.
+- AI agents should usually select work where `assignee.kind === 'ai'`, keep acceptance criteria current, and leave the board in a consistent state after edits.
+
 ---
 
 ## Directory Layout
