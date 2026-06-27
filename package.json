@@ -1,0 +1,105 @@
+{
+  "name": "mwnn-kanban",
+  "displayName": "MWNN Kanban",
+  "description": "An in-editor Kanban board for the Methodology With No Name (MWNN), persisted per workspace.",
+  "version": "0.0.1",
+  "publisher": "darrenjmcleod",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "kanban",
+    "board",
+    "tasks",
+    "todo",
+    "productivity"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mwnn-kanban.openBoard",
+        "title": "Open Board",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.addColumn",
+        "title": "Add Column",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.resetBoard",
+        "title": "Reset Board",
+        "category": "MWNN Kanban"
+      }
+    ],
+    "configuration": {
+      "title": "MWNN Kanban",
+      "properties": {
+        "mwnn-kanban.confirmCardDeletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before deleting a card.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.defaultColumns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "To Do",
+            "In Progress",
+            "Done"
+          ],
+          "description": "Column titles used when a board is first created or reset.",
+          "scope": "resource"
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "mwnn-kanban.openBoard"
+        },
+        {
+          "command": "mwnn-kanban.addColumn"
+        },
+        {
+          "command": "mwnn-kanban.resetBoard"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build:production",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "build:production": "webpack --mode production --devtool hidden-source-map",
+    "package": "npm run build:production",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "watch-tests": "tsc -p tsconfig.test.json --watch",
+    "pretest": "npm run compile-tests",
+    "test": "node --test \"dist-test/test/unit/*.test.js\"",
+    "version:build": "node ./scripts/bump-package-version.cjs",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.93.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.29.0",
+    "webpack": "^5.97.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
