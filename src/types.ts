@@ -45,7 +45,17 @@ export interface BoardState {
 export type WebviewToHostMessage =
   | { readonly type: 'ready' }
   | { readonly type: 'addCard'; readonly columnId: string; readonly title: string }
+  | { readonly type: 'addColumn'; readonly title: string }
   | { readonly type: 'editCard'; readonly cardId: string; readonly title: string }
+  | { readonly type: 'renameColumn'; readonly columnId: string; readonly title: string }
+  | {
+      readonly type: 'setColumnLimits';
+      readonly columnId: string;
+      readonly wipLimit: number | null;
+      readonly reverseWip: number | null;
+    }
+  | { readonly type: 'deleteColumn'; readonly columnId: string; readonly targetColumnId?: string }
+  | { readonly type: 'reorderColumn'; readonly columnId: string; readonly toIndex: number }
   | { readonly type: 'setDescription'; readonly cardId: string; readonly description: string }
   | { readonly type: 'setAcceptanceCriteria'; readonly cardId: string; readonly acceptanceCriteria: string }
   | { readonly type: 'setAssignee'; readonly cardId: string; readonly assignee?: Assignee }
@@ -82,8 +92,27 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return true;
     case 'addCard':
       return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';
+    case 'addColumn':
+      return typeof value['title'] === 'string';
     case 'editCard':
       return typeof value['cardId'] === 'string' && typeof value['title'] === 'string';
+    case 'renameColumn':
+      return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';
+    case 'setColumnLimits':
+      return (
+        typeof value['columnId'] === 'string' &&
+        isOptionalLimit(value['wipLimit']) &&
+        value['wipLimit'] !== undefined &&
+        isOptionalLimit(value['reverseWip']) &&
+        value['reverseWip'] !== undefined
+      );
+    case 'deleteColumn':
+      return (
+        typeof value['columnId'] === 'string' &&
+        (value['targetColumnId'] === undefined || typeof value['targetColumnId'] === 'string')
+      );
+    case 'reorderColumn':
+      return typeof value['columnId'] === 'string' && Number.isInteger(value['toIndex']);
     case 'setDescription':
       return typeof value['cardId'] === 'string' && typeof value['description'] === 'string';
     case 'setAcceptanceCriteria':

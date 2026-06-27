@@ -28,6 +28,19 @@ body {
   padding: 4px 2px 8px;
 }
 
+.board-intro-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.board-intro-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .board-title {
   margin: 0;
   font-size: 1.2rem;
@@ -36,6 +49,20 @@ body {
 .board-hint {
   margin: 4px 0 0;
   color: var(--vscode-descriptionForeground);
+}
+
+.board-intro-action {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.board-intro-action:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
 .board-empty {
@@ -65,6 +92,13 @@ body {
   gap: 8px;
 }
 
+.column-header-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
 .column-heading {
   display: flex;
   flex-direction: column;
@@ -89,6 +123,34 @@ body {
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
+}
+
+.column-header-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.column-action {
+  background: transparent;
+  border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+  color: var(--vscode-descriptionForeground);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.column-action:hover,
+.column-action:focus-visible {
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+.column-action:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .column-count {
@@ -211,7 +273,8 @@ body {
 .add-card,
 .card-modal-close,
 .card-modal-save,
-.card-modal-ai {
+.card-modal-ai,
+.card-modal-danger {
   background: transparent;
   border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
   border-radius: 6px;
@@ -228,10 +291,13 @@ body {
 .card-delete:hover,
 .card-action:focus-visible,
 .card-delete:focus-visible,
+.board-intro-action:focus-visible,
+.column-action:focus-visible,
 .add-card:focus-visible,
 .card-modal-close:focus-visible,
 .card-modal-save:focus-visible,
-.card-modal-ai:focus-visible {
+.card-modal-ai:focus-visible,
+.card-modal-danger:focus-visible {
   border-color: var(--vscode-focusBorder);
   outline: none;
 }
@@ -301,7 +367,8 @@ body {
 
 .card-modal-close,
 .card-modal-save,
-.card-modal-ai {
+.card-modal-ai,
+.card-modal-danger {
   padding: 8px 12px;
 }
 
@@ -316,6 +383,15 @@ body {
 
 .card-modal-ai {
   color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+
+.card-modal-danger {
+  color: var(--vscode-errorForeground);
+}
+
+.card-modal-danger:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .card-modal-form {
@@ -333,6 +409,11 @@ body {
 .card-field-label {
   font-size: 0.85rem;
   font-weight: 600;
+}
+
+.card-field-help {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8rem;
 }
 
 .card-field-input,
@@ -396,6 +477,10 @@ body {
 @media (max-width: 720px) {
   body {
     padding: 10px;
+  }
+
+  .board-intro-row {
+    flex-direction: column;
   }
 
   .board-columns {

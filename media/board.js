@@ -30,6 +30,7 @@
   let board = null;
   let draggedCardId = null;
   let openCardId = null;
+  let openColumnId = null;
 
   const root = /** @type {HTMLElement} */ (document.getElementById('board'));
 
@@ -39,6 +40,9 @@
       board = message.board;
       if (openCardId && !findCardRecord(openCardId)) {
         openCardId = null;
+      }
+      if (openColumnId && !findColumn(openColumnId)) {
+        openColumnId = null;
       }
       render();
     }
@@ -54,8 +58,8 @@
 
     const columns = document.createElement('div');
     columns.className = 'board-columns';
-    for (const column of board.columns) {
-      columns.appendChild(renderColumn(column));
+    for (const [columnIndex, column] of board.columns.entries()) {
+      columns.appendChild(renderColumn(column, columnIndex));
     }
     root.appendChild(columns);
 
@@ -63,6 +67,14 @@
       const record = findCardRecord(openCardId);
       if (record) {
         root.appendChild(renderCardDetails(record));
+        return;
+      }
+    }
+
+    if (openColumnId) {
+      const column = findColumn(openColumnId);
+      if (column) {
+        root.appendChild(renderColumnDetails(column));
       }
     }
   }
@@ -70,6 +82,12 @@
   function renderIntro() {
     const intro = document.createElement('section');
     intro.className = 'board-intro';
+
+    const row = document.createElement('div');
+    row.className = 'board-intro-row';
+
+    const copy = document.createElement('div');
+    copy.className = 'board-intro-copy';
 
     const title = document.createElement('h1');
     title.className = 'board-title';
@@ -79,7 +97,20 @@
     hint.className = 'board-hint';
     hint.textContent = 'Drag cards between columns, open Details to define slices, and run AI-assigned cards from the board.';
 
-    intro.append(title, hint);
+    const addColumn = document.createElement('button');
+    addColumn.className = 'board-intro-action';
+    addColumn.type = 'button';
+    addColumn.textContent = '+ Add column';
+    addColumn.addEventListener('click', () => {
+      const text = window.prompt('New column title');
+      if (text && text.trim()) {
+        post({ type: 'addColumn', title: text.trim() });
+      }
+    });
+
+    copy.append(title, hint);
+    row.append(copy, addColumn);
+    intro.appendChild(row);
     return intro;
   }
 
@@ -93,7 +124,7 @@
   /**
    * @param {Column} column
    */
-  function renderColumn(column) {
+  function renderColumn(column, columnIndex) {
     const el = document.createElement('section');
     el.className = 'column';
     el.setAttribute('aria-label', column.title);
@@ -113,7 +144,11 @@
     role.textContent = formatColumnRole(column.role);
 
     titleGroup.append(title, role);
-    header.append(titleGroup, renderColumnMetrics(column));
+    const aside = document.createElement('div');
+    aside.className = 'column-header-aside';
+    aside.append(renderColumnMetrics(column), renderColumnActions(column, columnIndex));
+
+    header.append(titleGroup, aside);
     el.appendChild(header);
 
     const cards = document.createElement('div');
@@ -144,6 +179,46 @@
     el.appendChild(add);
 
     return el;
+  }
+
+  function renderColumnActions(column, columnIndex) {
+    const actions = document.createElement('div');
+    actions.className = 'column-header-actions';
+
+    const moveLeft = document.createElement('button');
+    moveLeft.className = 'column-action';
+    moveLeft.type = 'button';
+    moveLeft.textContent = '←';
+    moveLeft.title = `Move ${column.title} left`;
+    moveLeft.setAttribute('aria-label', `Move ${column.title} left`);
+    moveLeft.disabled = columnIndex === 0;
+    moveLeft.addEventListener('click', () => {
+      post({ type: 'reorderColumn', columnId: column.id, toIndex: columnIndex - 1 });
+    });
+
+    const moveRight = document.createElement('button');
+    moveRight.className = 'column-action';
+    moveRight.type = 'button';
+    moveRight.textContent = '→';
+    moveRight.title = `Move ${column.title} right`;
+    moveRight.setAttribute('aria-label', `Move ${column.title} right`);
+    moveRight.disabled = !board || columnIndex >= board.columns.length - 1;
+    moveRight.addEventListener('click', () => {
+      post({ type: 'reorderColumn', columnId: column.id, toIndex: columnIndex + 1 });
+    });
+
+    const configure = document.createElement('button');
+    configure.className = 'column-action';
+    configure.type = 'button';
+    configure.textContent = 'Column';
+    configure.title = `Edit ${column.title}`;
+    configure.setAttribute('aria-label', `Edit ${column.title}`);
+    configure.addEventListener('click', () => {
+      openColumnDetails(column.id);
+    });
+
+    actions.append(moveLeft, moveRight, configure);
+    return actions;
   }
 
   function renderColumnMetrics(column) {
@@ -274,12 +349,24 @@
   }
 
   function openCardDetails(cardId) {
+    openColumnId = null;
     openCardId = cardId;
     render();
   }
 
   function closeCardDetails() {
     openCardId = null;
+    render();
+  }
+
+  function openColumnDetails(columnId) {
+    openCardId = null;
+    openColumnId = columnId;
+    render();
+  }
+
+  function closeColumnDetails() {
+    openColumnId = null;
     render();
   }
 
@@ -471,11 +558,158 @@
     return wrapper;
   }
 
+  function renderColumnDetails(column) {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'card-modal-backdrop';
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) {
+        closeColumnDetails();
+      }
+    });
+
+    const dialog = document.createElement('section');
+    dialog.className = 'card-modal';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', `${column.title} column details`);
+
+    const header = document.createElement('div');
+    header.className = 'card-modal-header';
+
+    const titleBlock = document.createElement('div');
+    titleBlock.className = 'card-modal-title-block';
+
+    const title = document.createElement('h2');
+    title.className = 'card-modal-title';
+    title.textContent = column.title;
+
+    const subtitle = document.createElement('p');
+    subtitle.className = 'card-modal-subtitle';
+    subtitle.textContent = `${column.cards.length} card${column.cards.length === 1 ? '' : 's'} in ${formatColumnRole(column.role).toLowerCase()} flow`;
+
+    titleBlock.append(title, subtitle);
+
+    const close = document.createElement('button');
+    close.className = 'card-modal-close';
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.addEventListener('click', closeColumnDetails);
+
+    header.append(titleBlock, close);
+
+    const form = document.createElement('div');
+    form.className = 'card-modal-form';
+
+    const titleInput = renderTextInput('Title', column.title);
+    const wipInput = renderLimitInput('WIP limit', column.wipLimit ?? null, 'Leave blank for no maximum.');
+    const reverseWipInput = renderLimitInput(
+      'Ready reverse-WIP minimum',
+      column.reverseWip ?? null,
+      'Leave blank for none. Useful on Ready columns.',
+    );
+
+    form.append(titleInput.wrapper, wipInput.wrapper, reverseWipInput.wrapper);
+
+    let deleteTarget;
+    if (column.cards.length > 0 && board && board.columns.length > 1) {
+      deleteTarget = renderDeleteTargetSelect(column);
+      form.appendChild(deleteTarget.wrapper);
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'card-modal-footer';
+
+    const deleteButton = document.createElement('button');
+    deleteButton.className = 'card-modal-danger';
+    deleteButton.type = 'button';
+    deleteButton.textContent = 'Delete column';
+    deleteButton.disabled = !board || board.columns.length <= 1;
+    deleteButton.addEventListener('click', () => {
+      if (!deleteColumnFromDetails(column, deleteTarget?.select)) {
+        return;
+      }
+      closeColumnDetails();
+    });
+
+    const spacer = document.createElement('div');
+    spacer.className = 'card-modal-spacer';
+
+    const save = document.createElement('button');
+    save.className = 'card-modal-save';
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.addEventListener('click', () => {
+      if (!saveColumnDetails(column, {
+        title: titleInput.input,
+        wipLimit: wipInput.input,
+        reverseWip: reverseWipInput.input,
+      })) {
+        return;
+      }
+      closeColumnDetails();
+    });
+
+    footer.append(deleteButton, spacer, save);
+    dialog.append(header, form, footer);
+    backdrop.appendChild(dialog);
+    return backdrop;
+  }
+
   function createOption(value, label) {
     const option = document.createElement('option');
     option.value = value;
     option.textContent = label;
     return option;
+  }
+
+  function renderLimitInput(labelText, value, helpText) {
+    const wrapper = document.createElement('label');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = labelText;
+
+    const input = document.createElement('input');
+    input.className = 'card-field-input';
+    input.type = 'text';
+    input.inputMode = 'numeric';
+    input.value = formatLimitValue(value);
+
+    const help = document.createElement('span');
+    help.className = 'card-field-help';
+    help.textContent = helpText;
+
+    wrapper.append(label, input, help);
+    return { wrapper, input };
+  }
+
+  function renderDeleteTargetSelect(column) {
+    const wrapper = document.createElement('label');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = 'Move existing cards to';
+
+    const select = document.createElement('select');
+    select.className = 'card-field-select';
+
+    if (board) {
+      for (const candidate of board.columns) {
+        if (candidate.id === column.id) {
+          continue;
+        }
+        select.appendChild(createOption(candidate.id, candidate.title));
+      }
+    }
+
+    const help = document.createElement('span');
+    help.className = 'card-field-help';
+    help.textContent = 'Required before deleting a populated column.';
+
+    wrapper.append(label, select, help);
+    return { wrapper, select };
   }
 
   function saveCardDetails(card, fields) {
@@ -504,6 +738,59 @@
         ? { type: 'setAssignee', cardId: card.id, assignee: nextAssignee }
         : { type: 'setAssignee', cardId: card.id });
     }
+  }
+
+  function saveColumnDetails(column, fields) {
+    const nextTitle = normalizeText(fields.title.value);
+    if (nextTitle.length > 0 && nextTitle !== column.title) {
+      post({ type: 'renameColumn', columnId: column.id, title: nextTitle });
+    }
+
+    const nextWipLimit = parseLimitValue(fields.wipLimit.value);
+    const nextReverseWip = parseLimitValue(fields.reverseWip.value);
+    if (!nextWipLimit.valid || !nextReverseWip.valid) {
+      window.alert('Column limits must be non-negative whole numbers, or blank for none.');
+      return false;
+    }
+
+    if (nextWipLimit.value !== (column.wipLimit ?? null) || nextReverseWip.value !== (column.reverseWip ?? null)) {
+      post({
+        type: 'setColumnLimits',
+        columnId: column.id,
+        wipLimit: nextWipLimit.value,
+        reverseWip: nextReverseWip.value,
+      });
+    }
+
+    return true;
+  }
+
+  function deleteColumnFromDetails(column, targetSelect) {
+    if (!board || board.columns.length <= 1) {
+      window.alert('The board must keep at least one column.');
+      return false;
+    }
+
+    if (column.cards.length > 0 && !targetSelect) {
+      window.alert('Choose another column to receive the existing cards before deleting this one.');
+      return false;
+    }
+
+    if (!window.confirm(`Delete column "${column.title}"?`)) {
+      return false;
+    }
+
+    if (column.cards.length > 0 && targetSelect) {
+      post({
+        type: 'deleteColumn',
+        columnId: column.id,
+        targetColumnId: targetSelect.value,
+      });
+      return true;
+    }
+
+    post({ type: 'deleteColumn', columnId: column.id });
+    return true;
   }
 
   function readAssignee(kindField, nameField) {
@@ -539,6 +826,14 @@
     return null;
   }
 
+  function findColumn(columnId) {
+    if (!board) {
+      return null;
+    }
+
+    return board.columns.find((column) => column.id === columnId) ?? null;
+  }
+
   function formatColumnRole(role) {
     switch (role) {
       case 'backlog':
@@ -556,6 +851,24 @@
 
   function normalizeText(value) {
     return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function formatLimitValue(value) {
+    return typeof value === 'number' ? String(value) : '';
+  }
+
+  function parseLimitValue(value) {
+    const normalized = normalizeText(value);
+    if (normalized.length === 0) {
+      return { valid: true, value: null };
+    }
+
+    const parsed = Number(normalized);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      return { valid: false, value: null };
+    }
+
+    return { valid: true, value: parsed };
   }
 
   function wireDropTarget(cards, columnId) {

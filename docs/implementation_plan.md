@@ -101,7 +101,7 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - [x] Phase 1 - Pure serialization + model
 - [x] Phase 2 - File-backed store + migration
 - [x] Phase 3 - Extension wiring + commands
-- [ ] Phase 4 - Webview UI for assignees and methodology
+- [x] Phase 4 - Webview UI for assignees and methodology
 - [ ] Phase 5 - AI contract docs
 - [ ] Phase 6 - Expanded tests + end-to-end validation
 
@@ -150,8 +150,12 @@ Migration: open a workspace whose memento holds a v1 board with no .mwnn/ → ca
 - Replaced the in-webview edit prompt with a card detail panel that can edit title, assignee, description, and acceptance criteria while showing the card activity log inline.
 - Added assignee badges, a "needs definition" marker, and WIP/reverse-WIP status badges to the board so methodology signals are visible directly on the webview.
 - Validation passed for `node --check media/board.js`, `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/boardOperations.test.js dist-test/test/unit/boardStore.test.js dist-test/test/unit/protocol.test.js`, full `npm test`, and `npm run lint` after the first Phase 4 UI slice.
+- Finished the remaining Phase 4 column controls by adding in-webview add/configure/delete/reorder flows plus typed host messages for column rename, limits, deletion, and reordering.
+- The board webview now covers card detail edits, AI runs, methodology indicators, and direct column management without depending on command-palette-only flows for everyday board work.
+- Validation passed for `node --check media/board.js`, `npm run compile-tests`, `npm run compile`, focused `node --test dist-test/test/unit/protocol.test.js`, full `npm test`, and `npm run lint` after the column-management UI pass.
+- Phase 4 is now complete in code, with Development Host smoke testing still pending for the interactive board behaviors.
 
 ## Next Focus
 
-- Continue Phase 4 by adding direct column-management controls in the webview and reducing the remaining command-palette-only flows.
-- After that UI work lands, run Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, and the LM consent/model-selection path.
+- Start Phase 5 by documenting the `.mwnn/` board contract for human and AI collaborators in `AGENTS.md` and the on-disk board files.
+- After the contract docs land, run Development Host smoke tests for file watching, WIP/reverse-WIP indicators, detail-panel edits, column controls, and the LM consent/model-selection path.

@@ -73,8 +73,51 @@ export class BoardPanel {
       case 'addCard':
         await this.deps.store.addCard(message.columnId, message.title);
         break;
+      case 'addColumn':
+        await this.deps.store.addColumn(message.title);
+        break;
       case 'editCard':
         await this.deps.store.editCard(message.cardId, message.title);
+        break;
+      case 'renameColumn':
+        await this.deps.store.renameColumn(message.columnId, message.title);
+        break;
+      case 'setColumnLimits':
+        await this.deps.store.setColumnConfig(message.columnId, {
+          wipLimit: message.wipLimit,
+          reverseWip: message.reverseWip,
+        });
+        break;
+      case 'deleteColumn': {
+        const state = this.deps.store.getState();
+        if (state.columns.length <= 1) {
+          void vscode.window.showInformationMessage('The board must keep at least one column.');
+          return;
+        }
+
+        const column = state.columns.find((candidate) => candidate.id === message.columnId);
+        if (!column) {
+          return;
+        }
+        if (column.cards.length > 0 && !message.targetColumnId) {
+          void vscode.window.showInformationMessage('Choose a destination column for the existing cards before deleting this column.');
+          return;
+        }
+
+        const choice = await vscode.window.showWarningMessage(
+          `Delete column "${column.title}"?`,
+          { modal: true },
+          'Delete',
+        );
+        if (choice !== 'Delete') {
+          return;
+        }
+
+        await this.deps.store.removeColumn(message.columnId, message.targetColumnId);
+        break;
+      }
+      case 'reorderColumn':
+        await this.deps.store.reorderColumns(message.columnId, message.toIndex);
         break;
       case 'setDescription':
         await this.deps.store.setDescription(message.cardId, message.description);
