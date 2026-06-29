@@ -23,7 +23,9 @@ import {
   cloneBoard,
   defaultBoard,
   deleteCard,
+  duplicateCard,
   editCard,
+  enforceBlockedCardPlacement,
   moveCard,
   removeColumn,
   renameColumn,
@@ -31,6 +33,7 @@ import {
   setAssignee,
   setAcceptanceCriteria,
   setColumnConfig,
+  setDependencies,
   setDescription,
   type SetColumnConfig,
 } from './utils';
@@ -69,9 +72,11 @@ export interface BoardStore {
   addColumn(title: string): Promise<BoardState>;
   addCard(columnId: string, title: string): Promise<BoardState>;
   editCard(cardId: string, title: string): Promise<BoardState>;
+  duplicateCard(cardId: string): Promise<BoardState>;
   deleteCard(cardId: string): Promise<BoardState>;
   moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<BoardState>;
   setAssignee(cardId: string, assignee: Card['assignee']): Promise<BoardState>;
+  setDependencies(cardId: string, dependsOn: readonly string[]): Promise<BoardState>;
   setDescription(cardId: string, description: string): Promise<BoardState>;
   setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<BoardState>;
   appendActivity(cardId: string, entry: string): Promise<BoardState>;
@@ -99,19 +104,42 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     }
   }
 
+  // Serialise all commits so that rapid back-to-back messages (e.g. setAssignee
+  // followed immediately by moveCard) never race: the second commit's
+  // refreshFromDisk always reads the state the first commit already wrote.
+  let commitQueue: Promise<unknown> = Promise.resolve();
+
   // Pull in any external edits (e.g. a hand-off agent appending to a card's
   // Activity section) before applying and writing, so a board mutation never
   // overwrites newer on-disk content with stale in-memory state.
-  async function commit(apply: (current: BoardState) => BoardState): Promise<BoardState> {
-    await refreshFromDisk();
-    state = cloneBoard(apply(state));
-    await writeBoardState(deps, state);
-    return cloneBoard(state);
+  function commit(apply: (current: BoardState) => BoardState): Promise<BoardState> {
+    const next = commitQueue.then(async () => {
+      await refreshFromDisk();
+      // Keep the "blocked cards can't sit past Ready" invariant after every change:
+      // a mutation may have blocked a card that is already in a work column (e.g.
+      // adding a dependency), so pull any such card back to Ready before writing.
+      state = cloneBoard(enforceBlockedCardPlacement(apply(state)));
+      await writeBoardState(deps, state);
+      return cloneBoard(state);
+    });
+    // Swallow errors on the queue tail so a failed commit doesn't stall
+    // subsequent ones; errors still propagate to the original caller via `next`.
+    commitQueue = next.catch(() => undefined);
+    return next;
   }
 
-  async function reload(): Promise<BoardState> {
-    await refreshFromDisk();
-    return cloneBoard(state);
+  // Route reloads through the same queue as commits. A reload triggered by the
+  // file watcher (e.g. after a card write) must never run its refreshFromDisk
+  // interleaved with an in-flight commit's apply/write, or it can re-read the
+  // pre-change disk and clobber the committed state — for instance resurrecting
+  // a card the user just deleted right after duplicating it.
+  function reload(): Promise<BoardState> {
+    const next = commitQueue.then(async () => {
+      await refreshFromDisk();
+      return cloneBoard(state);
+    });
+    commitQueue = next.catch(() => undefined);
+    return next;
   }
 
   return {
@@ -120,9 +148,11 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     addColumn: (title) => commit((current) => addColumn(current, title)),
     addCard: (columnId, title) => commit((current) => addCard(current, columnId, title)),
     editCard: (cardId, title) => commit((current) => editCard(current, cardId, title)),
+    duplicateCard: (cardId) => commit((current) => duplicateCard(current, cardId)),
     deleteCard: (cardId) => commit((current) => deleteCard(current, cardId)),
     moveCard: (cardId, toColumnId, toIndex) => commit((current) => moveCard(current, cardId, toColumnId, toIndex)),
     setAssignee: (cardId, assignee) => commit((current) => setAssignee(current, cardId, assignee)),
+    setDependencies: (cardId, dependsOn) => commit((current) => setDependencies(current, cardId, dependsOn)),
     setDescription: (cardId, description) => commit((current) => setDescription(current, cardId, description)),
     setAcceptanceCriteria: (cardId, acceptanceCriteria) =>
       commit((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
@@ -343,7 +373,7 @@ function buildBoardReadme(): string {
     '## Files',
     '',
     '- `columns.json` stores the ordered column layout, roles, and WIP or reverse-WIP limits.',
-    '- `cards/<card-id>.md` stores one card per markdown file with frontmatter for column, position, assignee, and timestamps.',
+    '- `cards/<card-id>.md` stores one card per markdown file with frontmatter for column, position, assignee, dependencies (`dependsOn`), and timestamps.',
     '- `README.md` documents the contract for humans and AI agents editing the board directly.',
     '',
     '## Card workflow',
@@ -381,6 +411,9 @@ function cloneCard(card: Card): Card {
     clone.assignee = card.assignee.name
       ? { kind: card.assignee.kind, name: card.assignee.name }
       : { kind: card.assignee.kind };
+  }
+  if (card.dependsOn !== undefined) {
+    clone.dependsOn = [...card.dependsOn];
   }
   return clone;
 }

@@ -14,7 +14,8 @@
    *   description?: string,
    *   acceptanceCriteria?: string,
    *   activity?: string,
-   *   assignee?: Assignee
+   *   assignee?: Assignee,
+   *   dependsOn?: string[]
    * }} Card
    * @typedef {{
    *   id: string,
@@ -28,6 +29,7 @@
 
   /** @type {{ version: number, columns: Column[] } | null} */
   let board = null;
+  let enableRunWithAI = true;
   let draggedCardId = null;
   let openCardId = null;
   let openColumnId = null;
@@ -38,6 +40,7 @@
     const message = event.data;
     if (message && message.type === 'state') {
       board = message.board;
+      enableRunWithAI = message.enableRunWithAI !== false;
       if (openCardId && !findCardRecord(openCardId)) {
         openCardId = null;
       }
@@ -45,10 +48,17 @@
         openColumnId = null;
       }
       render();
+    } else if (message && message.type === 'openCard') {
+      openCardDetails(message.cardId);
     }
   });
 
   function render() {
+    closeAssignPicker();
+    const previousColumns = root.querySelector('.board-columns');
+    const savedScrollLeft = previousColumns ? previousColumns.scrollLeft : 0;
+    const savedScrollTop = previousColumns ? previousColumns.scrollTop : 0;
+
     root.innerHTML = '';
     root.appendChild(renderIntro());
     if (!board) {
@@ -62,6 +72,8 @@
       columns.appendChild(renderColumn(column, columnIndex));
     }
     root.appendChild(columns);
+    columns.scrollLeft = savedScrollLeft;
+    columns.scrollTop = savedScrollTop;
 
     if (openCardId) {
       const record = findCardRecord(openCardId);
@@ -210,7 +222,9 @@
     }
 
     if (column.role === 'ready' && typeof column.reverseWip === 'number') {
-      const defined = column.cards.filter((card) => normalizeText(card.description).length > 0).length;
+      // A blocked card is not actually ready to be pulled, so it does not count
+      // toward the Ready reverse-WIP minimum even when it is otherwise defined.
+      const defined = column.cards.filter((card) => isCardDefined(card) && !isCardBlocked(card)).length;
       const ready = document.createElement('span');
       ready.className = `column-badge${defined < column.reverseWip ? ' column-badge-warning' : ''}`;
       ready.textContent = `Defined ${defined}/${column.reverseWip}`;
@@ -250,9 +264,15 @@
 
     const meta = document.createElement('div');
     meta.className = 'card-meta';
-    meta.append(renderAssigneeBadge(card.assignee));
-    if (normalizeText(card.description).length === 0) {
+    meta.append(renderAssigneeBadge(card));
+    if (!isCardDefined(card)) {
       meta.appendChild(renderChip('Needs definition', 'card-chip-warning'));
+    }
+    if (isCardBlocked(card)) {
+      const blockerCount = countBlockingDependencies(card);
+      const chip = renderChip('Blocked', 'card-chip-blocked');
+      chip.title = `Blocked by ${blockerCount} unfinished ${blockerCount === 1 ? 'dependency' : 'dependencies'}`;
+      meta.appendChild(chip);
     }
 
     body.append(label, meta);
@@ -260,27 +280,36 @@
     const actions = document.createElement('div');
     actions.className = 'card-actions';
 
+    if (card.assignee?.kind === 'ai' && enableRunWithAI) {
+      const runAi = document.createElement('button');
+      runAi.className = 'card-action';
+      runAi.type = 'button';
+      runAi.appendChild(makeIcon(ICON_RUN_AI));
+      runAi.title = 'Run with AI';
+      runAi.setAttribute('aria-label', `Run ${card.title} with AI`);
+      runAi.draggable = true;
+      runAi.addEventListener('dragstart', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      runAi.addEventListener('click', (event) => {
+        event.stopPropagation();
+        post({ type: 'runCardWithAI', cardId: card.id });
+      });
+      actions.appendChild(runAi);
+    }
+
     const details = document.createElement('button');
     details.className = 'card-action';
     details.type = 'button';
-    details.textContent = 'Details';
+    details.appendChild(makeIcon(ICON_DETAILS));
     details.title = 'Open card details';
     details.setAttribute('aria-label', `Open details for ${card.title}`);
     details.addEventListener('click', () => {
       openCardDetails(card.id);
     });
 
-    const del = document.createElement('button');
-    del.className = 'card-delete';
-    del.type = 'button';
-    del.textContent = 'Delete';
-    del.title = 'Delete card';
-    del.setAttribute('aria-label', `Delete ${card.title}`);
-    del.addEventListener('click', () => {
-      post({ type: 'deleteCard', cardId: card.id });
-    });
-
-    actions.append(details, del);
+    actions.append(details);
     el.append(body, actions);
 
     el.addEventListener('dragstart', () => {
@@ -298,15 +327,192 @@
   }
 
   /**
-   * @param {Assignee | undefined} assignee
+   * Renders the assignee chip as an interactive control that opens an inline
+   * picker to quickly (re)assign the card to a Human, AI, or Unassigned without
+   * opening Details. Works for both unassigned and already-assigned cards.
+   * @param {Card} card
    */
-  function renderAssigneeBadge(assignee) {
+  function renderAssigneeBadge(card) {
+    const assignee = card.assignee;
+
+    let className;
+    let text;
+    let label;
     if (!assignee) {
-      return renderChip('Unassigned', 'card-chip-muted');
+      className = 'card-chip-muted';
+      text = 'Unassigned';
+      label = 'Assign card';
+    } else if (assignee.kind === 'ai') {
+      className = 'card-chip-ai';
+      text = assignee.name ? `AI: ${assignee.name}` : 'AI';
+      label = `Change assignee (currently ${text})`;
+    } else {
+      className = 'card-chip-human';
+      text = assignee.name ? `Human: ${assignee.name}` : 'Human';
+      label = `Change assignee (currently ${text})`;
     }
 
-    const label = assignee.name ? `${assignee.kind === 'ai' ? 'AI' : 'Human'}: ${assignee.name}` : assignee.kind === 'ai' ? 'AI' : 'Human';
-    return renderChip(label, assignee.kind === 'ai' ? 'card-chip-ai' : 'card-chip-human');
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = `card-chip ${className} card-chip-assign`;
+    chip.textContent = text;
+    chip.title = label;
+    chip.setAttribute('aria-label', label);
+    chip.setAttribute('aria-haspopup', 'menu');
+
+    // The chip lives inside a draggable card. Make it its own (cancelled) drag
+    // source so grabbing it never starts a card drag.
+    chip.draggable = true;
+    chip.addEventListener('dragstart', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+
+    chip.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (activeAssignPicker && activeAssignPicker.anchor === chip) {
+        closeAssignPicker();
+        return;
+      }
+      openAssignPicker(card, chip);
+    });
+
+    return chip;
+  }
+
+  /** @type {{ anchor: HTMLElement, cleanup: () => void } | null} */
+  let activeAssignPicker = null;
+
+  function closeAssignPicker() {
+    if (activeAssignPicker) {
+      activeAssignPicker.cleanup();
+      activeAssignPicker = null;
+    }
+  }
+
+  /**
+   * Opens a lightweight inline menu anchored to the chip to (re)assign the card.
+   * Offers Human and AI, plus Unassigned when the card is already assigned.
+   * Selecting an option sends the existing setAssignee message; choosing the
+   * current assignee is a no-op that simply dismisses the picker.
+   * @param {Card} card
+   * @param {HTMLElement} anchor
+   */
+  function openAssignPicker(card, anchor) {
+    closeAssignPicker();
+
+    const currentKind = card.assignee ? card.assignee.kind : 'none';
+
+    const menu = document.createElement('div');
+    menu.className = 'assign-picker';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Assign card to');
+
+    const dismiss = () => {
+      closeAssignPicker();
+      anchor.focus();
+    };
+
+    /**
+     * @param {'human' | 'ai' | 'none'} kind
+     * @param {string} text
+     */
+    const makeOption = (kind, text) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'assign-picker-option';
+      option.setAttribute('role', 'menuitemradio');
+      option.setAttribute('aria-checked', String(kind === currentKind));
+      option.textContent = text;
+      option.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (kind === currentKind) {
+          dismiss();
+          return;
+        }
+        post(kind === 'none'
+          ? { type: 'setAssignee', cardId: card.id }
+          : { type: 'setAssignee', cardId: card.id, assignee: { kind } });
+        closeAssignPicker();
+      });
+      return option;
+    };
+
+    const options = [makeOption('human', 'Human'), makeOption('ai', 'AI')];
+    if (card.assignee) {
+      options.push(makeOption('none', 'Unassigned'));
+    }
+    menu.append(...options);
+
+    document.body.appendChild(menu);
+
+    const rect = anchor.getBoundingClientRect();
+    menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    menu.style.left = `${rect.left + window.scrollX}px`;
+
+    menu.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        dismiss();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const current = options.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        const next = (current + delta + options.length) % options.length;
+        options[next].focus();
+      }
+    });
+
+    const onPointerDown = (event) => {
+      if (!menu.contains(/** @type {Node} */ (event.target)) && event.target !== anchor) {
+        closeAssignPicker();
+      }
+    };
+    const onDocKeydown = (event) => {
+      if (event.key === 'Escape') {
+        dismiss();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown, true);
+    document.addEventListener('keydown', onDocKeydown);
+
+    activeAssignPicker = {
+      anchor,
+      cleanup() {
+        document.removeEventListener('mousedown', onPointerDown, true);
+        document.removeEventListener('keydown', onDocKeydown);
+        menu.remove();
+      },
+    };
+
+    const initial = options.find((option) => option.getAttribute('aria-checked') === 'true') ?? options[0];
+    initial.focus();
+  }
+
+  // Codicon-derived 16x16 glyphs, drawn with the even-odd rule so the outlined
+  // shapes (info ring, trash can) read as outlines rather than solid blobs.
+  const ICON_DETAILS =
+    'M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zm0 1.5a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 1.75a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM7.25 7h1.5v4.5h-1.5V7z';
+  const ICON_DELETE =
+    'M10 3V2a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v1H3v1.5h10V3h-3zM7.5 2.5h1V3h-1v-.5zM4.5 5.5l.6 8.05a1 1 0 0 0 1 .95h3.8a1 1 0 0 0 1-.95l.6-8.05H4.5zm2.25 1.5h1v6h-1V7zm2.5 0h1v6h-1V7z';
+  const ICON_RUN_AI =
+    'M7.53 1.78a.5.5 0 0 1 .94 0l1.2 3.24a.5.5 0 0 0 .3.3l3.25 1.2a.5.5 0 0 1 0 .94l-3.24 1.2a.5.5 0 0 0-.3.3l-1.2 3.25a.5.5 0 0 1-.94 0l-1.2-3.24a.5.5 0 0 0-.3-.3l-3.25-1.2a.5.5 0 0 1 0-.94l3.24-1.2a.5.5 0 0 0 .3-.3l1.2-3.25zM3 11l.55 1.45L5 13l-1.45.55L3 15l-.55-1.45L1 13l1.45-.55L3 11z';
+
+  function makeIcon(pathData) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('fill', 'currentColor');
+    svg.setAttribute('fill-rule', 'evenodd');
+    svg.setAttribute('clip-rule', 'evenodd');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathData);
+    svg.appendChild(path);
+    return svg;
   }
 
   /**
@@ -388,23 +594,27 @@
     form.className = 'card-modal-form';
 
     const titleInput = renderTextInput('Title', record.card.title);
+    const columnSelector = renderColumnSelectorField(record.column.id);
     const descriptionInput = renderTextArea('Description', record.card.description ?? '', 6);
     const acceptanceInput = renderTextArea('Acceptance criteria', record.card.acceptanceCriteria ?? '', 5);
     const assigneeControls = renderAssigneeControls(record.card.assignee);
+    const dependencyControls = renderDependencyControls(record.card);
     const activityView = renderActivity(record.card.activity);
 
     form.append(
       titleInput.wrapper,
+      columnSelector.wrapper,
       assigneeControls.wrapper,
       descriptionInput.wrapper,
       acceptanceInput.wrapper,
+      dependencyControls.wrapper,
       activityView,
     );
 
     const footer = document.createElement('div');
     footer.className = 'card-modal-footer';
 
-    if (record.card.assignee?.kind === 'ai') {
+    if (record.card.assignee?.kind === 'ai' && enableRunWithAI) {
       const runAi = document.createElement('button');
       runAi.className = 'card-modal-ai';
       runAi.type = 'button';
@@ -413,6 +623,18 @@
         post({ type: 'runCardWithAI', cardId: record.card.id });
       });
       footer.appendChild(runAi);
+    }
+
+    if (!isCardDefined(record.card)) {
+      const fillAi = document.createElement('button');
+      fillAi.className = 'card-modal-ai';
+      fillAi.type = 'button';
+      fillAi.textContent = 'Fill in with AI';
+      fillAi.title = 'Ask AI to write the Description and Acceptance criteria';
+      fillAi.addEventListener('click', () => {
+        post({ type: 'fillCardDefinition', cardId: record.card.id });
+      });
+      footer.appendChild(fillAi);
     }
 
     const spacer = document.createElement('div');
@@ -429,11 +651,40 @@
         acceptanceCriteria: acceptanceInput.input,
         assigneeKind: assigneeControls.kind,
         assigneeName: assigneeControls.name,
+        getDependencies: dependencyControls.getDependencies,
+        currentColumnId: record.column.id,
+        columnSelect: columnSelector.select,
       });
       closeCardDetails();
     });
 
-    footer.append(spacer, save);
+    const duplicateBtn = document.createElement('button');
+    duplicateBtn.className = 'card-modal-duplicate';
+    duplicateBtn.type = 'button';
+    duplicateBtn.textContent = 'Duplicate';
+    duplicateBtn.title = 'Create a copy of this card in the same column';
+    duplicateBtn.setAttribute('aria-label', `Duplicate card "${record.card.title}"`);
+    duplicateBtn.addEventListener('click', () => {
+      // The host creates the copy, persists it, and opens the new card's
+      // details, so close this modal to make room for it.
+      post({ type: 'duplicateCard', cardId: record.card.id });
+      closeCardDetails();
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'card-modal-danger';
+    deleteBtn.type = 'button';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.setAttribute('aria-label', `Delete card "${record.card.title}"`);
+    deleteBtn.addEventListener('click', () => {
+      // VS Code webviews do not support window.confirm (it returns false), so
+      // confirmation happens on the extension host instead. Post the delete and
+      // let the host confirm: on success the card vanishes from the next state
+      // push (closing this modal); a cancelled delete leaves the modal open.
+      post({ type: 'deleteCard', cardId: record.card.id });
+    });
+
+    footer.append(deleteBtn, duplicateBtn, spacer, save);
     dialog.append(header, form, footer);
     backdrop.appendChild(dialog);
     return backdrop;
@@ -471,6 +722,31 @@
 
     wrapper.append(label, input);
     return { wrapper, input };
+  }
+
+  /**
+   * @param {string} currentColumnId
+   */
+  function renderColumnSelectorField(currentColumnId) {
+    const wrapper = document.createElement('label');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = 'Column';
+
+    const select = document.createElement('select');
+    select.className = 'card-field-select';
+
+    if (board) {
+      for (const column of board.columns) {
+        select.appendChild(createOption(column.id, column.title));
+      }
+    }
+    select.value = currentColumnId;
+
+    wrapper.append(label, select);
+    return { wrapper, select };
   }
 
   /**
@@ -512,6 +788,138 @@
     row.append(kind, name);
     wrapper.append(label, row);
     return { wrapper, kind, name };
+  }
+
+  /**
+   * Renders the dependency editor for a card: a list of current dependencies
+   * (each removable) plus a picker to add another card from the board. The
+   * card itself and already-selected cards are never offered, so a card can
+   * neither depend on itself nor list the same dependency twice. The working
+   * set is kept locally and only committed when the card is saved.
+   * @param {Card} card
+   */
+  function renderDependencyControls(card) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = 'Dependencies';
+
+    /** @type {string[]} */
+    const deps = [];
+    const seen = new Set();
+    const initial = Array.isArray(card.dependsOn) ? card.dependsOn : [];
+    for (const id of initial) {
+      if (id !== card.id && !seen.has(id) && findCardRecord(id)) {
+        seen.add(id);
+        deps.push(id);
+      }
+    }
+
+    const list = document.createElement('div');
+    list.className = 'card-deps-list';
+
+    const controls = document.createElement('div');
+    controls.className = 'card-deps-controls';
+
+    const select = document.createElement('select');
+    select.className = 'card-field-select';
+
+    const addButton = document.createElement('button');
+    addButton.type = 'button';
+    addButton.className = 'card-dep-add';
+    addButton.textContent = 'Add';
+
+    const help = document.createElement('span');
+    help.className = 'card-field-help';
+    help.textContent = 'This card stays blocked until every dependency reaches a Done column.';
+
+    const dependencyLabel = (id) => {
+      const record = findCardRecord(id);
+      return record ? record.card.title : id;
+    };
+
+    const otherCards = () => {
+      const result = [];
+      if (board) {
+        for (const column of board.columns) {
+          for (const candidate of column.cards) {
+            if (candidate.id !== card.id) {
+              result.push(candidate);
+            }
+          }
+        }
+      }
+      return result;
+    };
+
+    const renderOptions = () => {
+      select.innerHTML = '';
+      const available = otherCards().filter((candidate) => !deps.includes(candidate.id));
+      const placeholder = createOption('', available.length > 0 ? 'Choose a card…' : 'No other cards available');
+      placeholder.disabled = true;
+      placeholder.selected = true;
+      select.appendChild(placeholder);
+      for (const candidate of available) {
+        select.appendChild(createOption(candidate.id, candidate.title));
+      }
+      const empty = available.length === 0;
+      select.disabled = empty;
+      addButton.disabled = empty;
+    };
+
+    const renderList = () => {
+      list.innerHTML = '';
+      if (deps.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'card-deps-empty';
+        empty.textContent = 'No dependencies.';
+        list.appendChild(empty);
+        return;
+      }
+      for (const id of deps) {
+        const chip = document.createElement('span');
+        chip.className = 'card-chip card-chip-dep';
+
+        const text = document.createElement('span');
+        text.textContent = dependencyLabel(id);
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'card-dep-remove';
+        remove.textContent = '×';
+        remove.title = `Remove dependency ${dependencyLabel(id)}`;
+        remove.setAttribute('aria-label', `Remove dependency ${dependencyLabel(id)}`);
+        remove.addEventListener('click', () => {
+          const index = deps.indexOf(id);
+          if (index !== -1) {
+            deps.splice(index, 1);
+          }
+          renderList();
+          renderOptions();
+        });
+
+        chip.append(text, remove);
+        list.appendChild(chip);
+      }
+    };
+
+    addButton.addEventListener('click', () => {
+      const value = select.value;
+      if (!value || value === card.id || deps.includes(value)) {
+        return;
+      }
+      deps.push(value);
+      renderList();
+      renderOptions();
+    });
+
+    renderList();
+    renderOptions();
+    controls.append(select, addButton);
+    wrapper.append(label, list, controls, help);
+    return { wrapper, getDependencies: () => deps.slice() };
   }
 
   function renderActivity(activity) {
@@ -759,6 +1167,27 @@
         ? { type: 'setAssignee', cardId: card.id, assignee: nextAssignee }
         : { type: 'setAssignee', cardId: card.id });
     }
+
+    const nextDependencies = fields.getDependencies();
+    if (!dependenciesEqual(Array.isArray(card.dependsOn) ? card.dependsOn : [], nextDependencies)) {
+      post({ type: 'setDependencies', cardId: card.id, dependsOn: nextDependencies });
+    }
+
+    if (fields.columnSelect && fields.currentColumnId) {
+      const nextColumnId = fields.columnSelect.value;
+      if (nextColumnId && nextColumnId !== fields.currentColumnId) {
+        const targetColumn = board ? board.columns.find((col) => col.id === nextColumnId) : null;
+        const toIndex = targetColumn ? targetColumn.cards.length : 0;
+        post({ type: 'moveCard', cardId: card.id, toColumnId: nextColumnId, toIndex });
+      }
+    }
+  }
+
+  function dependenciesEqual(left, right) {
+    if (left.length !== right.length) {
+      return false;
+    }
+    return left.every((id, index) => id === right[index]);
   }
 
   function saveColumnDetails(column, fields) {
@@ -874,6 +1303,54 @@
     return typeof value === 'string' ? value.trim() : '';
   }
 
+  /**
+   * Whether a card is "defined" (ready to start): it needs BOTH a non-empty
+   * Description and non-empty Acceptance criteria. Mirrors isCardDefined in
+   * src/cardDefinition.ts — keep the two in sync.
+   * @param {Card} card
+   */
+  function isCardDefined(card) {
+    return normalizeText(card.description).length > 0 && normalizeText(card.acceptanceCriteria).length > 0;
+  }
+
+  /**
+   * The ids of a card's dependencies that are not yet complete. A dependency is
+   * complete once its card sits in a Done-role column; references to cards that
+   * no longer exist are ignored. Mirrors blockingDependencies in src/utils.ts.
+   * @param {Card} card
+   */
+  function blockingDependencies(card) {
+    if (!board || !Array.isArray(card.dependsOn) || card.dependsOn.length === 0) {
+      return [];
+    }
+    const doneIds = new Set();
+    const existingIds = new Set();
+    for (const column of board.columns) {
+      const done = column.role === 'done';
+      for (const candidate of column.cards) {
+        existingIds.add(candidate.id);
+        if (done) {
+          doneIds.add(candidate.id);
+        }
+      }
+    }
+    return card.dependsOn.filter((id) => existingIds.has(id) && !doneIds.has(id));
+  }
+
+  /**
+   * @param {Card} card
+   */
+  function isCardBlocked(card) {
+    return blockingDependencies(card).length > 0;
+  }
+
+  /**
+   * @param {Card} card
+   */
+  function countBlockingDependencies(card) {
+    return blockingDependencies(card).length;
+  }
+
   function formatLimitValue(value) {
     return typeof value === 'number' ? String(value) : '';
   }
@@ -895,20 +1372,68 @@
   function wireDropTarget(cards, columnId) {
     cards.addEventListener('dragover', (event) => {
       event.preventDefault();
+      if (draggedCardId && !canDropCardInColumn(draggedCardId, columnId)) {
+        cards.classList.remove('drag-over');
+        cards.classList.add('drop-blocked');
+        const dragEvent = /** @type {DragEvent} */ (event);
+        if (dragEvent.dataTransfer) {
+          dragEvent.dataTransfer.dropEffect = 'none';
+        }
+        return;
+      }
+      cards.classList.remove('drop-blocked');
       cards.classList.add('drag-over');
     });
     cards.addEventListener('dragleave', () => {
       cards.classList.remove('drag-over');
+      cards.classList.remove('drop-blocked');
     });
     cards.addEventListener('drop', (event) => {
       event.preventDefault();
       cards.classList.remove('drag-over');
+      cards.classList.remove('drop-blocked');
       if (!draggedCardId) {
+        return;
+      }
+      // A blocked card cannot advance past Ready; ignore the drop so it snaps back.
+      if (!canDropCardInColumn(draggedCardId, columnId)) {
         return;
       }
       const toIndex = indexFromDropEvent(cards, event);
       post({ type: 'moveCard', cardId: draggedCardId, toColumnId: columnId, toIndex });
     });
+  }
+
+  /**
+   * Mirrors canMoveCardToColumn in src/utils.ts: a blocked card may not advance
+   * past the Ready column, though it can stay put, move back, or be reordered
+   * within its own column. Keep the two in sync.
+   * @param {string} cardId
+   * @param {string} columnId
+   */
+  function canDropCardInColumn(cardId, columnId) {
+    if (!board) {
+      return true;
+    }
+    const record = findCardRecord(cardId);
+    if (!record || record.column.id === columnId) {
+      return true;
+    }
+    if (!isCardBlocked(record.card)) {
+      return true;
+    }
+
+    const targetIndex = board.columns.findIndex((column) => column.id === columnId);
+    if (targetIndex === -1) {
+      return true;
+    }
+
+    const readyIndex = board.columns.findIndex((column) => column.role === 'ready');
+    if (readyIndex === -1) {
+      const role = board.columns[targetIndex].role;
+      return role === 'backlog' || role === 'ready';
+    }
+    return targetIndex <= readyIndex;
   }
 
   function indexFromDropEvent(cards, event) {

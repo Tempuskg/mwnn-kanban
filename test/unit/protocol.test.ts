@@ -10,6 +10,7 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'addCard', columnId: 'col-1', title: 'Task' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'addColumn', title: 'Ready' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 'card-1', title: 'Rename' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'duplicateCard', cardId: 'card-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'renameColumn', columnId: 'col-1', title: 'Ready' }), true);
     assert.equal(
       isWebviewToHostMessage({
@@ -34,7 +35,13 @@ suite('webview protocol', () => {
     );
     assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1', assignee: { kind: 'ai', name: 'Copilot' } }), true);
     assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1', dependsOn: [] }), true);
+    assert.equal(
+      isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1', dependsOn: ['card-2', 'card-3'] }),
+      true,
+    );
     assert.equal(isWebviewToHostMessage({ type: 'runCardWithAI', cardId: 'card-1' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'fillCardDefinition', cardId: 'card-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'deleteCard', cardId: 'card-1' }), true);
     assert.equal(
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 0 }),
@@ -50,6 +57,7 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'addCard', columnId: 'col-1' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'addColumn' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 1, title: 'Rename' }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'duplicateCard', cardId: 1 }), false);
     assert.equal(isWebviewToHostMessage({ type: 'renameColumn', columnId: 1, title: 'Ready' }), false);
     assert.equal(
       isWebviewToHostMessage({ type: 'setColumnLimits', columnId: 'col-1', wipLimit: 1.5, reverseWip: null }),
@@ -67,7 +75,10 @@ suite('webview protocol', () => {
       false,
     );
     assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1', assignee: { kind: 'robot' } }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1' }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1', dependsOn: ['card-2', 3] }), false);
     assert.equal(isWebviewToHostMessage({ type: 'runCardWithAI', cardId: 1 }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'fillCardDefinition', cardId: 1 }), false);
     assert.equal(isWebviewToHostMessage({ type: 'deleteCard', cardId: 1 }), false);
     assert.equal(
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 1.5 }),

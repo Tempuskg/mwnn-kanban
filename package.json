@@ -23,7 +23,9 @@
     "todo",
     "productivity"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onWebviewPanel:mwnn-kanban.board"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {

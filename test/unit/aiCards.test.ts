@@ -1,10 +1,12 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
+  buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
   buildCardPrompt,
   findAiCardSelection,
   formatActivityEntry,
+  formatDefinitionHandoffEntry,
   formatHandoffEntry,
   listAiCardSelections,
   summarizeCardDescription,
@@ -92,6 +94,37 @@ suite('ai card helpers', () => {
     assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
     assert.match(prompt, /STATUS: DONE/);
     assert.match(prompt, /STATUS: BLOCKED/);
+  });
+
+  test('buildCardDefinitionPrompt asks the agent to define the card without implementing it', () => {
+    let board = defaultBoard(['Ready']);
+    const readyId = board.columns[0]!.id;
+
+    board = addCard(board, readyId, 'Add password reset');
+    const cardId = board.columns[0]!.cards[0]!.id;
+
+    const card = board.columns[0]!.cards[0]!;
+    const prompt = buildCardDefinitionPrompt(card, `.mwnn/cards/${cardId}.md`);
+
+    assert.match(prompt, /Title: Add password reset/);
+    assert.match(prompt, /## Description/);
+    assert.match(prompt, /## Acceptance criteria/);
+    assert.match(prompt, /do not implement|Do not implement/);
+    assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
+    assert.match(prompt, /No description provided\./);
+    assert.match(prompt, /No acceptance criteria provided\./);
+  });
+
+  test('formatDefinitionHandoffEntry records the provider and a timestamped definition note', () => {
+    const entry = formatDefinitionHandoffEntry('GitHub Copilot', new Date('2026-06-27T18:10:00.000Z'));
+
+    assert.equal(
+      entry,
+      [
+        '### 2026-06-27T18:10:00.000Z - Definition requested from GitHub Copilot',
+        'Asked GitHub Copilot to fill in the Description and Acceptance criteria for this card.',
+      ].join('\n'),
+    );
   });
 
   test('formatActivityEntry stamps model metadata and trims the response body', () => {

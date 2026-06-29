@@ -161,6 +161,97 @@ suite('board store', () => {
     assert.equal(parsedCard.columnId, columnId);
   });
 
+  test('duplicateCard persists an independent copy that survives a reload', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['To Do'] }));
+    const columnId = store.getState().columns[0]!.id;
+
+    await store.addCard(columnId, 'Original');
+    const cardId = store.getState().columns[0]!.cards[0]!.id;
+    await store.setDescription(cardId, 'Some description');
+    await store.appendActivity(cardId, 'Original-only activity');
+
+    await store.duplicateCard(cardId);
+
+    const cards = store.getState().columns[0]!.cards;
+    assert.equal(cards.length, 2);
+    const copy = cards[1]!;
+    assert.notEqual(copy.id, cardId);
+    assert.equal(copy.title, 'Original (copy)');
+    assert.equal(copy.description, 'Some description');
+    assert.equal(copy.activity, undefined);
+
+    // A second markdown file is written for the copy.
+    const cardFiles = [...fileSystem.snapshot().keys()].filter((filePath) => filePath.startsWith('.mwnn/cards/'));
+    assert.equal(cardFiles.length, 2);
+
+    // The copy survives a board reload from disk.
+    const reloaded = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['To Do'] }));
+    const reloadedCards = reloaded.getState().columns[0]!.cards;
+    assert.deepEqual(
+      reloadedCards.map((card) => card.title),
+      ['Original', 'Original (copy)'],
+    );
+  });
+
+  test('a watcher reload cannot resurrect a card deleted by an in-flight commit', async () => {
+    // Duplicating a card writes a new file, which makes the file watcher
+    // schedule a reload. If the user then deletes that copy, the reload must not
+    // run interleaved with the delete commit and re-read the pre-delete disk —
+    // doing so would clobber the committed state and bring the card back, so it
+    // looks like the duplicate "can't be deleted". Hold the delete commit open
+    // (mid-write) while a reload runs to force exactly that window.
+    const base = createFakeFileSystem();
+    let pendingWriteGate: (() => void) | undefined;
+    let armWriteGate = false;
+    let onGateHit: (() => void) | undefined;
+    const fileSystem: FileSystemLike & { snapshot(): Map<string, string> } = {
+      ...base,
+      async writeFile(targetPath: string, content: string): Promise<void> {
+        if (armWriteGate) {
+          armWriteGate = false;
+          await new Promise<void>((resolve) => {
+            pendingWriteGate = resolve;
+            onGateHit?.();
+          });
+        }
+        return base.writeFile(targetPath, content);
+      },
+    };
+
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['To Do'] }));
+    const columnId = store.getState().columns[0]!.id;
+    await store.addCard(columnId, 'Original');
+    const cardId = store.getState().columns[0]!.cards[0]!.id;
+    await store.duplicateCard(cardId);
+    const copyId = store.getState().columns[0]!.cards[1]!.id;
+
+    // Start the delete and suspend it at its first write (after it has already
+    // computed the without-the-copy state, but before it removes the copy file).
+    const gateHit = new Promise<void>((resolve) => {
+      onGateHit = resolve;
+    });
+    armWriteGate = true;
+    const deletePromise = store.deleteCard(copyId);
+    await gateHit;
+
+    // While the delete is suspended, a watcher-driven reload runs.
+    const reloadPromise = store.reload();
+
+    // Let the delete finish, then settle everything.
+    pendingWriteGate?.();
+    await Promise.all([deletePromise, reloadPromise]);
+
+    const cards = store.getState().columns[0]!.cards;
+    assert.deepEqual(
+      cards.map((card) => card.id),
+      [cardId],
+      'the deleted copy must stay deleted in memory',
+    );
+    const files = [...fileSystem.snapshot().keys()].filter((filePath) => filePath.startsWith('.mwnn/cards/'));
+    assert.equal(files.length, 1, 'the deleted copy must stay deleted on disk');
+  });
+
   test('appendActivity persists markdown activity updates', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));

@@ -25,6 +25,9 @@ export function serializeCard(document: CardDocument): string {
     ...(document.card.assignee ? [`assignee: ${serializeAssignee(document.card.assignee)}`] : []),
     `createdAt: ${document.card.createdAt}`,
     ...(document.card.updatedAt !== undefined ? [`updatedAt: ${document.card.updatedAt}`] : []),
+    ...(document.card.dependsOn && document.card.dependsOn.length > 0
+      ? [`dependsOn: ${serializeStringArray(document.card.dependsOn)}`]
+      : []),
     '---',
     '',
     '## Description',
@@ -60,6 +63,7 @@ export function parseCard(text: string): CardDocument {
   const createdAt = requireNumber(frontmatter, 'createdAt');
   const updatedAt = optionalNumber(frontmatter, 'updatedAt');
   const assignee = optionalAssignee(frontmatter, 'assignee');
+  const dependsOn = optionalStringArray(frontmatter, 'dependsOn');
 
   const card: Card = { id, title, createdAt };
   if (updatedAt !== undefined) {
@@ -76,6 +80,9 @@ export function parseCard(text: string): CardDocument {
   }
   if (assignee !== undefined) {
     card.assignee = assignee;
+  }
+  if (dependsOn !== undefined) {
+    card.dependsOn = dependsOn;
   }
 
   return { columnId, position, card };
@@ -254,6 +261,29 @@ function optionalAssignee(frontmatter: Record<string, string>, key: string): Ass
     throw new Error('Invalid assignee value.');
   }
   return assignee;
+}
+
+function optionalStringArray(frontmatter: Record<string, string>, key: string): string[] | undefined {
+  const value = frontmatter[key];
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) {
+    throw new Error(`Invalid array frontmatter for ${key}.`);
+  }
+
+  const inner = trimmed.slice(1, -1).trim();
+  if (inner.length === 0) {
+    return undefined;
+  }
+
+  return inner.split(',').map((part) => parseScalar(part));
+}
+
+function serializeStringArray(values: readonly string[]): string {
+  return `[${values.map((value) => serializeInlineScalar(value)).join(', ')}]`;
 }
 
 function serializeAssignee(assignee: Assignee): string {

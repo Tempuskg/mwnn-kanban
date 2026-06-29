@@ -25,6 +25,8 @@ export interface Card {
   acceptanceCriteria?: string;
   activity?: string;
   assignee?: Assignee;
+  /** Ids of other cards this card depends on; it is blocked until they are done. */
+  dependsOn?: string[];
 }
 
 export interface Column {
@@ -49,6 +51,7 @@ export type WebviewToHostMessage =
   | { readonly type: 'addCard'; readonly columnId: string; readonly title: string }
   | { readonly type: 'addColumn'; readonly title: string }
   | { readonly type: 'editCard'; readonly cardId: string; readonly title: string }
+  | { readonly type: 'duplicateCard'; readonly cardId: string }
   | { readonly type: 'renameColumn'; readonly columnId: string; readonly title: string }
   | {
       readonly type: 'setColumnLimits';
@@ -61,12 +64,16 @@ export type WebviewToHostMessage =
   | { readonly type: 'setDescription'; readonly cardId: string; readonly description: string }
   | { readonly type: 'setAcceptanceCriteria'; readonly cardId: string; readonly acceptanceCriteria: string }
   | { readonly type: 'setAssignee'; readonly cardId: string; readonly assignee?: Assignee }
+  | { readonly type: 'setDependencies'; readonly cardId: string; readonly dependsOn: readonly string[] }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
+  | { readonly type: 'fillCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
   | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number };
 
 /** Messages sent from the extension host to the webview. */
-export type HostToWebviewMessage = { readonly type: 'state'; readonly board: BoardState };
+export type HostToWebviewMessage =
+  | { readonly type: 'state'; readonly board: BoardState; readonly enableRunWithAI: boolean }
+  | { readonly type: 'openCard'; readonly cardId: string };
 
 /** Runtime type guard for persisted/posted board state. */
 export function isBoardState(value: unknown): value is BoardState {
@@ -102,6 +109,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return typeof value['title'] === 'string';
     case 'editCard':
       return typeof value['cardId'] === 'string' && typeof value['title'] === 'string';
+    case 'duplicateCard':
+      return typeof value['cardId'] === 'string';
     case 'renameColumn':
       return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';
     case 'setColumnLimits':
@@ -128,7 +137,15 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         typeof value['cardId'] === 'string' &&
         (value['assignee'] === undefined || isAssignee(value['assignee']))
       );
+    case 'setDependencies':
+      return (
+        typeof value['cardId'] === 'string' &&
+        Array.isArray(value['dependsOn']) &&
+        value['dependsOn'].every((id) => typeof id === 'string')
+      );
     case 'runCardWithAI':
+      return typeof value['cardId'] === 'string';
+    case 'fillCardDefinition':
       return typeof value['cardId'] === 'string';
     case 'deleteCard':
       return typeof value['cardId'] === 'string';
@@ -183,7 +200,9 @@ function isCard(value: unknown): value is Card {
     (candidate['description'] === undefined || typeof candidate['description'] === 'string') &&
     (candidate['acceptanceCriteria'] === undefined || typeof candidate['acceptanceCriteria'] === 'string') &&
     (candidate['activity'] === undefined || typeof candidate['activity'] === 'string') &&
-    (candidate['assignee'] === undefined || isAssignee(candidate['assignee']))
+    (candidate['assignee'] === undefined || isAssignee(candidate['assignee'])) &&
+    (candidate['dependsOn'] === undefined ||
+      (Array.isArray(candidate['dependsOn']) && candidate['dependsOn'].every((id) => typeof id === 'string')))
   );
 }
 

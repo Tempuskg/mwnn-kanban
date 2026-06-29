@@ -5,6 +5,8 @@
 
 import * as vscode from 'vscode';
 import type { BoardStore } from './boardStore';
+import { cardNeedsDefinition } from './cardDefinition';
+import { canMoveCardToColumn } from './utils';
 import { isWebviewToHostMessage, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
 
 const VIEW_TYPE = 'mwnn-kanban.board';
@@ -14,9 +16,13 @@ export interface BoardPanelDeps {
   readonly extensionUri: vscode.Uri;
   readonly confirmDeletion: () => boolean;
   readonly runCardWithAI: (cardId?: string) => Promise<void>;
+  readonly fillCardDefinition: (cardId: string) => Promise<void>;
 }
 
 export class BoardPanel {
+  /** The webview panel view type, used for creation and serializer registration. */
+  static readonly viewType = VIEW_TYPE;
+
   private static current: BoardPanel | undefined;
 
   private readonly disposables: vscode.Disposable[] = [];
@@ -55,13 +61,48 @@ export class BoardPanel {
     return BoardPanel.current;
   }
 
+  /**
+   * Adopt a panel VS Code recreated when restoring a previous session (via the
+   * registered WebviewPanelSerializer). Routes through the same singleton path
+   * as {@link show} so a restored panel is indistinguishable from a freshly
+   * opened one: live store state, file-watcher updates, and every message
+   * handler all work the same. VS Code restores the panel to its prior editor
+   * column on its own.
+   */
+  static restore(panel: vscode.WebviewPanel, deps: BoardPanelDeps): BoardPanel {
+    // VS Code does not persist webview options across a reload/restart, so
+    // re-apply the ones the board needs before wiring the panel up.
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(deps.extensionUri, 'media')],
+    };
+
+    if (BoardPanel.current) {
+      // A board panel already exists; never run two. Reveal the live one and
+      // discard the duplicate VS Code handed us.
+      BoardPanel.current.panel.reveal(BoardPanel.current.panel.viewColumn);
+      panel.dispose();
+      return BoardPanel.current;
+    }
+
+    BoardPanel.current = new BoardPanel(panel, deps);
+    return BoardPanel.current;
+  }
+
   static postStateIfOpen(): void {
     BoardPanel.current?.postState();
   }
 
   /** Push the current store state into the webview. */
   postState(): void {
-    const message: HostToWebviewMessage = { type: 'state', board: this.deps.store.getState() };
+    const enableRunWithAI = vscode.workspace
+      .getConfiguration('mwnn-kanban')
+      .get<boolean>('enableRunWithAI', true);
+    const message: HostToWebviewMessage = {
+      type: 'state',
+      board: this.deps.store.getState(),
+      enableRunWithAI,
+    };
     void this.panel.webview.postMessage(message);
   }
 
@@ -109,6 +150,18 @@ export class BoardPanel {
       case 'editCard':
         await this.deps.store.editCard(message.cardId, message.title);
         break;
+      case 'duplicateCard': {
+        const before = new Set(collectCardIds(this.deps.store.getState()));
+        await this.deps.store.duplicateCard(message.cardId);
+        this.postState();
+        // Surface the brand-new copy by opening its details. The duplicate is
+        // the only card id that did not exist before this commit.
+        const newCardId = collectCardIds(this.deps.store.getState()).find((id) => !before.has(id));
+        if (newCardId) {
+          void this.panel.webview.postMessage({ type: 'openCard', cardId: newCardId } satisfies HostToWebviewMessage);
+        }
+        return;
+      }
       case 'renameColumn':
         await this.deps.store.renameColumn(message.columnId, message.title);
         break;
@@ -158,8 +211,14 @@ export class BoardPanel {
       case 'setAssignee':
         await this.deps.store.setAssignee(message.cardId, message.assignee);
         break;
+      case 'setDependencies':
+        await this.deps.store.setDependencies(message.cardId, message.dependsOn);
+        break;
       case 'runCardWithAI':
         await this.deps.runCardWithAI(message.cardId);
+        break;
+      case 'fillCardDefinition':
+        await this.deps.fillCardDefinition(message.cardId);
         break;
       case 'deleteCard': {
         if (this.deps.confirmDeletion()) {
@@ -171,11 +230,55 @@ export class BoardPanel {
         await this.deps.store.deleteCard(message.cardId);
         break;
       }
-      case 'moveCard':
+      case 'moveCard': {
+        const state = this.deps.store.getState();
+        if (!canMoveCardToColumn(state, message.cardId, message.toColumnId)) {
+          const card = state.columns
+            .flatMap((column) => column.cards)
+            .find((candidate) => candidate.id === message.cardId);
+          void vscode.window.showInformationMessage(
+            `"${card?.title ?? 'This card'}" is blocked by unfinished dependencies and can't move past Ready.`,
+          );
+          this.postState();
+          return;
+        }
+
         await this.deps.store.moveCard(message.cardId, message.toColumnId, message.toIndex);
-        break;
+        this.postState();
+        await this.maybeOfferDefinition(message.cardId, message.toColumnId);
+        return;
+      }
     }
     this.postState();
+  }
+
+  /**
+   * When a card lands in a Ready column without a full definition (missing
+   * Description or Acceptance criteria), offer to let the AI fill both in.
+   * Accepting opens the card details and hands the card off for definition.
+   */
+  private async maybeOfferDefinition(cardId: string, toColumnId: string): Promise<void> {
+    const column = this.deps.store.getState().columns.find((candidate) => candidate.id === toColumnId);
+    if (!column || column.role !== 'ready') {
+      return;
+    }
+
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (!card || !cardNeedsDefinition(card)) {
+      return;
+    }
+
+    const choice = await vscode.window.showInformationMessage(
+      `"${card.title}" needs a definition before it's ready. Have AI fill in the Description and Acceptance criteria?`,
+      'Fill with AI',
+      'Not now',
+    );
+    if (choice !== 'Fill with AI') {
+      return;
+    }
+
+    void this.panel.webview.postMessage({ type: 'openCard', cardId } satisfies HostToWebviewMessage);
+    await this.deps.fillCardDefinition(cardId);
   }
 
   private renderHtml(webview: vscode.Webview): string {
@@ -214,6 +317,10 @@ export class BoardPanel {
       this.disposables.pop()?.dispose();
     }
   }
+}
+
+function collectCardIds(state: { columns: readonly { cards: readonly { id: string }[] }[] }): string[] {
+  return state.columns.flatMap((column) => column.cards.map((card) => card.id));
 }
 
 function makeNonce(): string {

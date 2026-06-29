@@ -139,6 +139,9 @@ function cloneCard(card: Card): Card {
   if (card.assignee !== undefined) {
     clone.assignee = cloneAssignee(card.assignee);
   }
+  if (card.dependsOn !== undefined) {
+    clone.dependsOn = [...card.dependsOn];
+  }
   return clone;
 }
 
@@ -183,6 +186,49 @@ export function addCard(state: BoardState, columnId: string, title: string): Boa
   if (column) {
     const now = Date.now();
     column.cards.push({ id: makeId('card'), title: normalized, createdAt: now, updatedAt: now });
+  }
+  return next;
+}
+
+/**
+ * Duplicate a card into the same column, immediately after the original. The
+ * copy is a brand-new, independent card: it gets its own id and fresh
+ * timestamps, its title is suffixed with "(copy)", and it carries over the
+ * editable content (description, acceptance criteria, assignee, dependencies).
+ * Activity history is intentionally NOT copied so the duplicate starts fresh.
+ * No-op if the card is not found.
+ */
+export function duplicateCard(state: BoardState, cardId: string): BoardState {
+  const next = cloneBoard(state);
+  for (const column of next.columns) {
+    const index = column.cards.findIndex((candidate) => candidate.id === cardId);
+    const original = index === -1 ? undefined : column.cards[index];
+    if (!original) {
+      continue;
+    }
+
+    const now = Date.now();
+    const copy: Card = {
+      id: makeId('card'),
+      title: `${original.title} (copy)`,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (original.description !== undefined) {
+      copy.description = original.description;
+    }
+    if (original.acceptanceCriteria !== undefined) {
+      copy.acceptanceCriteria = original.acceptanceCriteria;
+    }
+    if (original.assignee !== undefined) {
+      copy.assignee = cloneAssignee(original.assignee);
+    }
+    if (original.dependsOn !== undefined) {
+      copy.dependsOn = [...original.dependsOn];
+    }
+
+    column.cards.splice(index + 1, 0, copy);
+    break;
   }
   return next;
 }
@@ -277,6 +323,42 @@ export function appendActivity(state: BoardState, cardId: string, entry: string)
   return next;
 }
 
+/**
+ * Replace a card's dependency list with a normalized set of card ids: the card
+ * can never depend on itself, duplicate entries collapse to one, and only ids of
+ * cards that still exist on the board are kept. An empty result clears the field.
+ */
+export function setDependencies(state: BoardState, cardId: string, dependsOn: readonly string[]): BoardState {
+  const next = cloneBoard(state);
+  const validIds = collectCardIds(next);
+
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (!card) {
+      continue;
+    }
+
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+    for (const id of dependsOn) {
+      if (id === cardId || !validIds.has(id) || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      normalized.push(id);
+    }
+
+    if (normalized.length > 0) {
+      card.dependsOn = normalized;
+    } else {
+      delete card.dependsOn;
+    }
+    card.updatedAt = Date.now();
+    break;
+  }
+  return next;
+}
+
 export function deleteCard(state: BoardState, cardId: string): BoardState {
   const next = cloneBoard(state);
   for (const column of next.columns) {
@@ -284,6 +366,22 @@ export function deleteCard(state: BoardState, cardId: string): BoardState {
     if (index !== -1) {
       column.cards.splice(index, 1);
       break;
+    }
+  }
+
+  // Drop the deleted card from every other card's dependency list so the board
+  // never carries a dangling reference to a card that no longer exists.
+  for (const column of next.columns) {
+    for (const card of column.cards) {
+      if (!card.dependsOn?.includes(cardId)) {
+        continue;
+      }
+      const remaining = card.dependsOn.filter((id) => id !== cardId);
+      if (remaining.length > 0) {
+        card.dependsOn = remaining;
+      } else {
+        delete card.dependsOn;
+      }
     }
   }
   return next;
@@ -410,14 +508,125 @@ export function wipState(column: Column): WipState {
   };
 }
 
-export function readyState(column: Column): ReadyState {
-  const defined = column.cards.filter((card) => normalizeDescription(card.description ?? '') !== undefined).length;
+export function readyState(state: BoardState, column: Column): ReadyState {
+  const defined = column.cards.filter(
+    (card) => normalizeDescription(card.description ?? '') !== undefined && !isCardBlocked(state, card.id),
+  ).length;
   const min = column.reverseWip ?? null;
   return {
     defined,
     min,
     under: min !== null && defined < min,
   };
+}
+
+function collectCardIds(state: BoardState): Set<string> {
+  const ids = new Set<string>();
+  for (const column of state.columns) {
+    for (const card of column.cards) {
+      ids.add(card.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * The ids of a card's dependencies that are not yet complete. A dependency is
+ * complete once its card sits in a column with the `done` role; references to
+ * cards that no longer exist are ignored so they never read as "blocking".
+ */
+export function blockingDependencies(state: BoardState, cardId: string): string[] {
+  let target: Card | undefined;
+  const doneIds = new Set<string>();
+  const existingIds = new Set<string>();
+  for (const column of state.columns) {
+    const done = column.role === 'done';
+    for (const card of column.cards) {
+      existingIds.add(card.id);
+      if (done) {
+        doneIds.add(card.id);
+      }
+      if (card.id === cardId) {
+        target = card;
+      }
+    }
+  }
+
+  if (!target?.dependsOn?.length) {
+    return [];
+  }
+  return target.dependsOn.filter((id) => existingIds.has(id) && !doneIds.has(id));
+}
+
+/** True when a card has at least one dependency that is not yet in a done column. */
+export function isCardBlocked(state: BoardState, cardId: string): boolean {
+  return blockingDependencies(state, cardId).length > 0;
+}
+
+/**
+ * Whether moving a card into the target column is allowed. A blocked card (one
+ * with unfinished dependencies) may not advance past the Ready column — it can
+ * still sit in Backlog/Ready or be pulled back, and reordering within its own
+ * column is always fine. Unblocked cards may move anywhere.
+ */
+export function canMoveCardToColumn(state: BoardState, cardId: string, toColumnId: string): boolean {
+  if (!isCardBlocked(state, cardId)) {
+    return true;
+  }
+
+  const sourceColumn = state.columns.find((column) => column.cards.some((card) => card.id === cardId));
+  if (sourceColumn?.id === toColumnId) {
+    return true;
+  }
+
+  const targetIndex = state.columns.findIndex((column) => column.id === toColumnId);
+  if (targetIndex === -1) {
+    return true;
+  }
+
+  const readyIndex = state.columns.findIndex((column) => column.role === 'ready');
+  if (readyIndex === -1) {
+    // No Ready column to anchor against: fall back to role, allowing only the
+    // pre-work columns and disallowing in-progress/done/custom work columns.
+    const role = state.columns[targetIndex]?.role;
+    return role === 'backlog' || role === 'ready';
+  }
+  return targetIndex <= readyIndex;
+}
+
+/**
+ * Pull any blocked card that sits past the Ready column back to the end of the
+ * Ready column. A card can become blocked while already in a work column (e.g.
+ * a dependency was added, or a finished dependency was reopened); this keeps the
+ * "blocked cards can't advance past Ready" rule true after every mutation.
+ * Returns a board with any such cards relocated; a no-op otherwise.
+ */
+export function enforceBlockedCardPlacement(state: BoardState): BoardState {
+  const readyIndex = state.columns.findIndex((column) => column.role === 'ready');
+  if (readyIndex === -1) {
+    return cloneBoard(state);
+  }
+
+  let next = cloneBoard(state);
+  const stranded: string[] = [];
+  next.columns.forEach((column, index) => {
+    if (index <= readyIndex) {
+      return;
+    }
+    for (const card of column.cards) {
+      if (isCardBlocked(next, card.id)) {
+        stranded.push(card.id);
+      }
+    }
+  });
+
+  for (const cardId of stranded) {
+    const readyColumn = next.columns[readyIndex];
+    if (readyColumn) {
+      next = moveCard(next, cardId, readyColumn.id, readyColumn.cards.length);
+    }
+  }
+  return next;
 }
 
 export function calculateCardPosition(bounds: PositionBounds): number {

@@ -70,6 +70,27 @@ export function buildCardHandoffPrompt(card: BoardCard, cardFilePath: string): s
   ].join('\n');
 }
 
+export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string): string {
+  return [
+    'You are an AI assistant defining a Methodology With No Name (MWNN) Kanban card so it is ready to start.',
+    'Write a clear Description and a concrete, testable Acceptance criteria checklist for this card based on its title and any existing context. Do not implement the work — only define it.',
+    '',
+    `This card is stored as a markdown file at: ${cardFilePath}`,
+    'Edit that file in place:',
+    '  - Fill in the "## Description" section with a concise explanation of the slice of work.',
+    '  - Fill in the "## Acceptance criteria" section with a markdown checklist (- [ ] ...) of specific, verifiable conditions.',
+    '  - Do not change the frontmatter, the title, or the Activity section.',
+    '',
+    `Title: ${card.title}`,
+    '',
+    'Current description:',
+    card.description?.trim() || 'No description provided.',
+    '',
+    'Current acceptance criteria:',
+    card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
+  ].join('\n');
+}
+
 export function formatActivityEntry(
   model: AiModelDescriptor,
   responseText: string,
@@ -90,6 +111,16 @@ export function formatHandoffEntry(
   return [
     `### ${timestamp.toISOString()} - Handed off to ${providerLabel}`,
     `Dispatched this card to ${providerLabel}. The agent should append its completion note below.`,
+  ].join('\n');
+}
+
+export function formatDefinitionHandoffEntry(
+  providerLabel: string,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - Definition requested from ${providerLabel}`,
+    `Asked ${providerLabel} to fill in the Description and Acceptance criteria for this card.`,
   ].join('\n');
 }
 

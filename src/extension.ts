@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import {
+  buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
   findAiCardSelection,
+  formatDefinitionHandoffEntry,
   formatHandoffEntry,
   listAiCardSelections,
   summarizeCardDescription,
@@ -97,10 +99,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     BoardPanel.postStateIfOpen();
   };
 
-  const openBoard = (): BoardPanel =>
-    BoardPanel.show({ store, extensionUri: context.extensionUri, confirmDeletion, runCardWithAI: runCardWithAISelection });
+  const fillCardDefinitionWithAI = async (cardId: string): Promise<void> => {
+    if (!readEnableRunWithAI()) {
+      void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to let AI fill in card definitions.');
+      return;
+    }
+
+    const card = findCardById(store.getState(), cardId);
+    if (!card) {
+      return;
+    }
+
+    const target = await pickChatProvider();
+    if (!target) {
+      return;
+    }
+
+    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+    const cardFilePath = `${boardFolder}/cards/${card.id}.md`;
+    const prompt = buildCardDefinitionPrompt(card, cardFilePath);
+    const handedOff = await handOffCardToChat(target, card, prompt);
+    if (!handedOff) {
+      return;
+    }
+
+    await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
+    BoardPanel.postStateIfOpen();
+  };
+
+  const boardPanelDeps = {
+    store,
+    extensionUri: context.extensionUri,
+    confirmDeletion,
+    runCardWithAI: runCardWithAISelection,
+    fillCardDefinition: fillCardDefinitionWithAI,
+  };
+
+  const openBoard = (): BoardPanel => BoardPanel.show(boardPanelDeps);
 
   context.subscriptions.push(registerBoardWatcher(workspaceRoot, readBoardFolder(), store));
+  context.subscriptions.push(
+    // Reopen the board automatically when VS Code restores a session in which
+    // the board panel was open (restart or window reload). Restoration routes
+    // through the existing singleton, so a restored panel behaves exactly like
+    // a freshly opened one.
+    vscode.window.registerWebviewPanelSerializer(BoardPanel.viewType, {
+      async deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
+        BoardPanel.restore(panel, boardPanelDeps);
+      },
+    }),
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       BoardSidebarViewProvider.viewType,
@@ -265,6 +313,15 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.window.showInformationMessage('Open a workspace folder to use MWNN Kanban.');
 
   context.subscriptions.push(
+    // Without a workspace folder there is no store to back a board, so a panel
+    // persisted from a previous session cannot be safely restored. Claim the
+    // view type and dispose any restored panel instead of crashing or opening
+    // a board against a missing store.
+    vscode.window.registerWebviewPanelSerializer(BoardPanel.viewType, {
+      async deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
+        panel.dispose();
+      },
+    }),
     vscode.window.registerWebviewViewProvider(
       BoardSidebarViewProvider.viewType,
       new BoardSidebarViewProvider(context.extensionUri, () => void showWorkspaceMessage()),
@@ -370,6 +427,16 @@ async function pickAiCard(
 
 function findCardColumn(state: BoardState, cardId: string): BoardColumn | undefined {
   return state.columns.find((column) => column.cards.some((card) => card.id === cardId));
+}
+
+function findCardById(state: BoardState, cardId: string): BoardCard | undefined {
+  for (const column of state.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      return card;
+    }
+  }
+  return undefined;
 }
 
 async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {

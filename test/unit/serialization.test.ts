@@ -24,10 +24,41 @@ suite('serialization', () => {
         acceptanceCriteria: '- [ ] Form validates email\n- [ ] Submit button is disabled while pending',
         activity: '- 2026-06-26 Claude: claimed',
         assignee: { kind: 'ai', name: 'Claude' },
+        dependsOn: ['card-dep1', 'card-dep2'],
       },
     };
 
     assert.deepEqual(parseCard(serializeCard(document)), document);
+  });
+
+  test('card markdown round-trips a single dependency and omits empty lists', () => {
+    const withDependency: CardDocument = {
+      columnId: 'col-impl',
+      position: 1000,
+      card: {
+        id: 'card-blocked',
+        title: 'Blocked work',
+        createdAt: 1719360000000,
+        dependsOn: ['card-upstream'],
+      },
+    };
+    assert.deepEqual(parseCard(serializeCard(withDependency)), withDependency);
+
+    const withoutDependencies: CardDocument = {
+      columnId: 'col-impl',
+      position: 1000,
+      card: {
+        id: 'card-free',
+        title: 'Unblocked work',
+        createdAt: 1719360000000,
+      },
+    };
+    const serialized = serializeCard({
+      ...withoutDependencies,
+      card: { ...withoutDependencies.card, dependsOn: [] },
+    });
+    assert.ok(!serialized.includes('dependsOn'), 'an empty dependency list is not written to frontmatter');
+    assert.deepEqual(parseCard(serialized), withoutDependencies);
   });
 
   test('card markdown round-trips when optional sections are omitted', () => {

@@ -17,9 +17,16 @@
     },
     {
       "id": "col-mqwk2njn-3",
-      "title": "In Progress",
+      "title": "Implement",
       "role": "in-progress",
       "wipLimit": 1,
+      "reverseWip": null
+    },
+    {
+      "id": "col-mqxta6ho-4",
+      "title": "Verify",
+      "role": "custom",
+      "wipLimit": null,
       "reverseWip": null
     },
     {
