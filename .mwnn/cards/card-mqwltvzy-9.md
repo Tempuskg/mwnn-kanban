@@ -2,7 +2,7 @@
 id: card-mqwltvzy-9
 title: Have needs acceptance criteria
 column: col-mqwk2njn-4
-position: 13000
+position: 15000
 assignee: { kind: human }
 createdAt: 1782579534910
 updatedAt: 1782666941380

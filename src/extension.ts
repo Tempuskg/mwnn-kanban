@@ -133,6 +133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     confirmDeletion,
     runCardWithAI: runCardWithAISelection,
     fillCardDefinition: fillCardDefinitionWithAI,
+    zoomMemento: context.workspaceState,
   };
 
   const openBoard = (): BoardPanel => BoardPanel.show(boardPanelDeps);

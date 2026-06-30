@@ -1,10 +1,11 @@
 ---
 id: card-mqxvwvlh-1
 title: allow user to zoom in and out on board
-column: col-mqwk2njn-2
-position: 2000
+column: col-mqwk2njn-4
+position: 1000
+assignee: { kind: human }
 createdAt: 1782656936693
-updatedAt: 1782744985957
+updatedAt: 1782822023025
 ---
 
 ## Description
@@ -27,3 +28,18 @@ Provide multiple ways to trigger zoom (e.g. on-screen zoom controls and/or Ctrl/
 ## Activity
 ### 2026-06-29T14:56:25.853Z - Definition requested from Claude Code
 Asked Claude Code to fill in the Description and Acceptance criteria for this card.
+
+### 2026-06-30T11:49:24.039Z - Handed off to Claude Code
+Dispatched this card to Claude Code. The agent should append its completion note below.
+
+### 2026-06-30 - Implemented board zoom (Claude Code)
+Added board zoom that scales rendered columns/cards via the CSS `zoom` property (reflows so scrollbars and drag hit-testing stay correct) without touching card data or stored positions.
+
+- **UI** (`media/board.js`, `media/board.css`): on-screen control group in the board header — zoom out (−), a reset button that doubles as the live percentage display (e.g. "100%"), and zoom in (+), with aria-labels/titles and disabled states at the limits.
+- **Triggers**: button clicks step by 10%; Ctrl/Cmd + mouse wheel zooms; keyboard shortcuts Ctrl/Cmd + "+"/"=" (in), "-"/"_" (out), "0" (reset). Numpad +/- accepted too.
+- **Limits**: clamped to 50%–200% in both the webview and the host (`clampZoom`).
+- **Persistence**: new `setZoom` message persists the level in the workspace memento (`mwnn-kanban.boardZoom`); the host includes `zoom` in every `state` push and the webview adopts it on the first push, so the level is restored after the panel is closed and reopened.
+- **Zoom-in clipping**: vertical overflow switches to `auto` above 100% so no card is clipped out of reach.
+- Extended the protocol type guard + tests (`src/types.ts`, `test/unit/protocol.test.ts`). Lint, webpack build, and all 79 unit tests pass.
+
+All acceptance criteria met.

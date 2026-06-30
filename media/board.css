@@ -102,6 +102,62 @@ body {
   background: var(--vscode-button-hoverBackground);
 }
 
+.board-intro-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.board-zoom {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.board-zoom-button {
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+  color: var(--vscode-foreground);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+}
+
+.board-zoom-button:first-child {
+  border-left: none;
+}
+
+.board-zoom-button:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.board-zoom-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.board-zoom-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.board-zoom-percent {
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-zoom-in,
+.board-zoom-out {
+  font-weight: 600;
+}
+
 .board-empty {
   padding: 18px;
   border: 1px dashed var(--vscode-input-border, var(--vscode-descriptionForeground));
@@ -235,13 +291,15 @@ body {
   font-size: 0.95em;
 }
 
-.cards.drag-over {
+.cards.drag-over,
+.column-header.drag-over {
   outline: 1px dashed var(--vscode-focusBorder);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
-.cards.drop-blocked {
+.cards.drop-blocked,
+.column-header.drop-blocked {
   outline: 1px dashed var(--vscode-inputValidation-errorBorder, #be1100);
   outline-offset: 2px;
   border-radius: 4px;

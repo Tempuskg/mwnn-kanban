@@ -36,13 +36,41 @@
   /** @type {{ cardId: string, title: string, description: string, acceptanceCriteria: string, dependencies: string[] } | null} */
   let pendingCardFormValues = null;
 
+  // Board zoom. Scales the rendered columns/cards visually (via the CSS `zoom`
+  // property, which reflows so scrollbars and drag hit-testing stay correct)
+  // without touching card data or stored positions. Bounds mirror clampZoom in
+  // src/boardPanel.ts. The level persists on the extension host, so it is
+  // restored on the first state push after the panel is (re)opened.
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 2;
+  const ZOOM_STEP = 0.1;
+  const ZOOM_DEFAULT = 1;
+  let zoom = ZOOM_DEFAULT;
+  let zoomInitialized = false;
+
   const root = /** @type {HTMLElement} */ (document.getElementById('board'));
 
   window.addEventListener('message', (event) => {
+    // Only trust messages from the VS Code extension host. Webview content runs
+    // in a sandboxed `vscode-webview://` iframe and the host delivers its
+    // messages under that same origin scheme, so reject anything else (e.g. a
+    // web origin) before acting on the payload (CWE-20).
+    if (event.origin && !event.origin.startsWith('vscode-webview://')) {
+      return;
+    }
     const message = event.data;
     if (message && message.type === 'state') {
       board = message.board;
       enableRunWithAI = message.enableRunWithAI !== false;
+      // Adopt the host's persisted zoom on the first state push only; after that
+      // the webview owns the zoom and merely persists changes back, so later
+      // state pushes never clobber an in-flight local change.
+      if (!zoomInitialized) {
+        if (typeof message.zoom === 'number') {
+          zoom = clampZoom(message.zoom);
+        }
+        zoomInitialized = true;
+      }
       if (openCardId && !findCardRecord(openCardId)) {
         openCardId = null;
       }
@@ -78,6 +106,7 @@
     root.appendChild(columns);
     columns.scrollLeft = savedScrollLeft;
     columns.scrollTop = savedScrollTop;
+    applyZoom();
 
     if (openCardId) {
       const record = findCardRecord(openCardId);
@@ -121,10 +150,113 @@
       post({ type: 'requestAddColumn' });
     });
 
+    const actions = document.createElement('div');
+    actions.className = 'board-intro-actions';
+    actions.append(renderZoomControls(), addColumn);
+
     copy.append(title, hint);
-    row.append(copy, addColumn);
+    row.append(copy, actions);
     intro.appendChild(row);
     return intro;
+  }
+
+  /**
+   * On-screen zoom controls: zoom out, a reset button that also displays the
+   * current zoom percentage, and zoom in. Lives outside the scaled board so the
+   * controls themselves stay at a constant size.
+   */
+  function renderZoomControls() {
+    const group = document.createElement('div');
+    group.className = 'board-zoom';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', 'Board zoom');
+
+    const out = document.createElement('button');
+    out.type = 'button';
+    out.className = 'board-zoom-button board-zoom-out';
+    out.textContent = '−';
+    out.title = 'Zoom out (Ctrl/Cmd and -)';
+    out.setAttribute('aria-label', 'Zoom out');
+    out.addEventListener('click', () => setZoom(zoom - ZOOM_STEP));
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'board-zoom-button board-zoom-percent';
+    reset.textContent = formatZoomPercent();
+    reset.title = 'Reset zoom to 100% (Ctrl/Cmd and 0)';
+    reset.addEventListener('click', () => setZoom(ZOOM_DEFAULT));
+
+    const inc = document.createElement('button');
+    inc.type = 'button';
+    inc.className = 'board-zoom-button board-zoom-in';
+    inc.textContent = '+';
+    inc.title = 'Zoom in (Ctrl/Cmd and +)';
+    inc.setAttribute('aria-label', 'Zoom in');
+    inc.addEventListener('click', () => setZoom(zoom + ZOOM_STEP));
+
+    group.append(out, reset, inc);
+    return group;
+  }
+
+  function formatZoomPercent() {
+    return `${Math.round(zoom * 100)}%`;
+  }
+
+  function clampZoom(value) {
+    if (typeof value !== 'number' || !isFinite(value)) {
+      return ZOOM_DEFAULT;
+    }
+    return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+  }
+
+  /**
+   * Set the board zoom, clamp it, refresh the DOM, and persist the change to the
+   * host. Rounding to whole percent steps avoids floating-point drift as the
+   * user nudges the level up and down.
+   * @param {number} next
+   */
+  function setZoom(next) {
+    const clamped = clampZoom(Math.round(next * 100) / 100);
+    if (clamped === zoom) {
+      applyZoom();
+      return;
+    }
+    zoom = clamped;
+    applyZoom();
+    post({ type: 'setZoom', zoom });
+  }
+
+  /**
+   * Reflect the current zoom into the live DOM: scale the columns, update the
+   * percentage display, and disable the in/out buttons at their limits. Safe to
+   * call whether or not the board (and its controls) are currently rendered.
+   */
+  function applyZoom() {
+    const columns = /** @type {HTMLElement | null} */ (root.querySelector('.board-columns'));
+    if (columns) {
+      // CSS `zoom` (not transform: scale) so the flex layout reflows and the
+      // horizontal scrollbar and drag hit-testing track the scaled size.
+      columns.style.zoom = String(zoom);
+      // Zooming in can make a column taller than the viewport; allow vertical
+      // scroll so no card is clipped out of reach. At <=100% the columns still
+      // fit, so keep the default (CSS) hidden overflow to avoid a stray bar.
+      columns.style.overflowY = zoom > 1 ? 'auto' : '';
+    }
+
+    const percent = /** @type {HTMLElement | null} */ (root.querySelector('.board-zoom-percent'));
+    if (percent) {
+      percent.textContent = formatZoomPercent();
+      percent.setAttribute('aria-label', `Current zoom ${Math.round(zoom * 100)} percent. Reset to 100%`);
+    }
+
+    const inc = /** @type {HTMLButtonElement | null} */ (root.querySelector('.board-zoom-in'));
+    if (inc) {
+      inc.disabled = zoom >= ZOOM_MAX - 1e-9;
+    }
+    const out = /** @type {HTMLButtonElement | null} */ (root.querySelector('.board-zoom-out'));
+    if (out) {
+      out.disabled = zoom <= ZOOM_MIN + 1e-9;
+    }
   }
 
   function renderLoadingState() {
@@ -158,6 +290,12 @@
     aside.append(renderColumnMetrics(column), renderColumnActions(column));
 
     header.append(titleGroup, aside);
+    // Dropping on the header pins the card to a fixed end of the column: the top
+    // for a normal column, the bottom for a reverse-WIP column (filled toward a
+    // minimum and consumed from the front, so new cards belong at the back).
+    wireDropTarget(header, column.id, () =>
+      typeof column.reverseWip === 'number' ? column.cards.length : 0
+    );
     el.appendChild(header);
 
     const cards = document.createElement('div');
@@ -171,7 +309,7 @@
     if (column.cards.length === 0) {
       cards.appendChild(renderColumnEmptyState());
     }
-    wireDropTarget(cards, column.id);
+    wireDropTarget(cards, column.id, (event) => indexFromDropEvent(cards, event));
     el.appendChild(cards);
 
     const add = document.createElement('button');
@@ -280,7 +418,7 @@
     const actions = document.createElement('div');
     actions.className = 'card-actions';
 
-    if (card.assignee?.kind === 'ai' && enableRunWithAI) {
+    if (card.assignee?.kind === 'ai' && enableRunWithAI && isCardDefined(card)) {
       const runAi = document.createElement('button');
       runAi.className = 'card-action';
       runAi.type = 'button';
@@ -1378,29 +1516,37 @@
     return { valid: true, value: parsed };
   }
 
-  function wireDropTarget(cards, columnId) {
-    cards.addEventListener('dragover', (event) => {
+  /**
+   * Wire an element as a card drop target for a column. The insertion index is
+   * supplied by `resolveIndex`, so the `.cards` list can derive it from the
+   * pointer while a `.column-header` can pin it to a fixed end of the column.
+   * @param {HTMLElement} element
+   * @param {string} columnId
+   * @param {(event: Event) => number} resolveIndex
+   */
+  function wireDropTarget(element, columnId, resolveIndex) {
+    element.addEventListener('dragover', (event) => {
       event.preventDefault();
       if (draggedCardId && !canDropCardInColumn(draggedCardId, columnId)) {
-        cards.classList.remove('drag-over');
-        cards.classList.add('drop-blocked');
+        element.classList.remove('drag-over');
+        element.classList.add('drop-blocked');
         const dragEvent = /** @type {DragEvent} */ (event);
         if (dragEvent.dataTransfer) {
           dragEvent.dataTransfer.dropEffect = 'none';
         }
         return;
       }
-      cards.classList.remove('drop-blocked');
-      cards.classList.add('drag-over');
+      element.classList.remove('drop-blocked');
+      element.classList.add('drag-over');
     });
-    cards.addEventListener('dragleave', () => {
-      cards.classList.remove('drag-over');
-      cards.classList.remove('drop-blocked');
+    element.addEventListener('dragleave', () => {
+      element.classList.remove('drag-over');
+      element.classList.remove('drop-blocked');
     });
-    cards.addEventListener('drop', (event) => {
+    element.addEventListener('drop', (event) => {
       event.preventDefault();
-      cards.classList.remove('drag-over');
-      cards.classList.remove('drop-blocked');
+      element.classList.remove('drag-over');
+      element.classList.remove('drop-blocked');
       if (!draggedCardId) {
         return;
       }
@@ -1408,7 +1554,7 @@
       if (!canDropCardInColumn(draggedCardId, columnId)) {
         return;
       }
-      const toIndex = indexFromDropEvent(cards, event);
+      const toIndex = resolveIndex(event);
       post({ type: 'moveCard', cardId: draggedCardId, toColumnId: columnId, toIndex });
     });
   }
@@ -1462,6 +1608,46 @@
   function post(message) {
     vscode.postMessage(message);
   }
+
+  // Ctrl/Cmd + mouse wheel zooms the board. preventDefault stops the webview's
+  // own page zoom so only the board scales.
+  root.addEventListener(
+    'wheel',
+    (event) => {
+      if (!(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+      event.preventDefault();
+      setZoom(zoom + (event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP));
+    },
+    { passive: false },
+  );
+
+  // Ctrl/Cmd + "+" / "-" / "0" zoom in, out, and reset. "=" and the numpad keys
+  // are accepted too so the shortcut works without pressing Shift.
+  window.addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey || event.metaKey)) {
+      return;
+    }
+    switch (event.key) {
+      case '+':
+      case '=':
+      case 'Add':
+        event.preventDefault();
+        setZoom(zoom + ZOOM_STEP);
+        break;
+      case '-':
+      case '_':
+      case 'Subtract':
+        event.preventDefault();
+        setZoom(zoom - ZOOM_STEP);
+        break;
+      case '0':
+        event.preventDefault();
+        setZoom(ZOOM_DEFAULT);
+        break;
+    }
+  });
 
   render();
   post({ type: 'ready' });

@@ -2,7 +2,7 @@
 id: card-mqwlnvup-7
 title: on board allow clicking on Unassigend choose to assign it to human or ai
 column: col-mqwk2njn-4
-position: 12000
+position: 14000
 assignee: { kind: human }
 createdAt: 1782579254785
 updatedAt: 1782670770284

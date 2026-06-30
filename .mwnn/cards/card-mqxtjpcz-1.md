@@ -2,7 +2,7 @@
 id: card-mqxtjpcz-1
 title: Have the board reopen with vscode open
 column: col-mqwk2njn-4
-position: 5000
+position: 7000
 assignee: { kind: human }
 createdAt: 1782652962851
 updatedAt: 1782742627806

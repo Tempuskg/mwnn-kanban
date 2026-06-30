@@ -11,12 +11,28 @@ import { isWebviewToHostMessage, type HostToWebviewMessage, type WebviewToHostMe
 
 const VIEW_TYPE = 'mwnn-kanban.board';
 
+/** Board zoom bounds and default; mirrored in media/board.js. */
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2;
+const ZOOM_DEFAULT = 1;
+/** Memento key for the persisted per-workspace board zoom level. */
+const ZOOM_MEMENTO_KEY = 'mwnn-kanban.boardZoom';
+
+function clampZoom(value: number): number {
+  if (!Number.isFinite(value)) {
+    return ZOOM_DEFAULT;
+  }
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+}
+
 export interface BoardPanelDeps {
   readonly store: BoardStore;
   readonly extensionUri: vscode.Uri;
   readonly confirmDeletion: () => boolean;
   readonly runCardWithAI: (cardId?: string) => Promise<void>;
   readonly fillCardDefinition: (cardId: string) => Promise<void>;
+  /** Persists the board zoom level so it survives closing and reopening the panel. */
+  readonly zoomMemento: vscode.Memento;
 }
 
 export class BoardPanel {
@@ -102,6 +118,7 @@ export class BoardPanel {
       type: 'state',
       board: this.deps.store.getState(),
       enableRunWithAI,
+      zoom: clampZoom(this.deps.zoomMemento.get<number>(ZOOM_MEMENTO_KEY, ZOOM_DEFAULT)),
     };
     void this.panel.webview.postMessage(message);
   }
@@ -248,6 +265,11 @@ export class BoardPanel {
         await this.maybeOfferDefinition(message.cardId, message.toColumnId);
         return;
       }
+      case 'setZoom':
+        // Persist the zoom preference only; the webview already applied it
+        // locally, so re-pushing state here would just churn the render.
+        await this.deps.zoomMemento.update(ZOOM_MEMENTO_KEY, clampZoom(message.zoom));
+        return;
     }
     this.postState();
   }

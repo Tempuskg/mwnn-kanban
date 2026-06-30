@@ -68,11 +68,12 @@ export type WebviewToHostMessage =
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
   | { readonly type: 'fillCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
-  | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number };
+  | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number }
+  | { readonly type: 'setZoom'; readonly zoom: number };
 
 /** Messages sent from the extension host to the webview. */
 export type HostToWebviewMessage =
-  | { readonly type: 'state'; readonly board: BoardState; readonly enableRunWithAI: boolean }
+  | { readonly type: 'state'; readonly board: BoardState; readonly enableRunWithAI: boolean; readonly zoom: number }
   | { readonly type: 'openCard'; readonly cardId: string };
 
 /** Runtime type guard for persisted/posted board state. */
@@ -155,6 +156,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         typeof value['toColumnId'] === 'string' &&
         Number.isInteger(value['toIndex'])
       );
+    case 'setZoom':
+      return typeof value['zoom'] === 'number' && Number.isFinite(value['zoom']);
     default:
       return false;
   }

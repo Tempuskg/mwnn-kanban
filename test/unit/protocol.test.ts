@@ -47,6 +47,7 @@ suite('webview protocol', () => {
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 0 }),
       true,
     );
+    assert.equal(isWebviewToHostMessage({ type: 'setZoom', zoom: 1.5 }), true);
   });
 
   test('rejects malformed or unsupported messages', () => {
@@ -84,6 +85,8 @@ suite('webview protocol', () => {
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 1.5 }),
       false,
     );
+    assert.equal(isWebviewToHostMessage({ type: 'setZoom', zoom: 'big' }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'setZoom', zoom: Number.NaN }), false);
     assert.equal(isWebviewToHostMessage({ type: 'archiveCard', cardId: 'card-1' }), false);
   });
 });
