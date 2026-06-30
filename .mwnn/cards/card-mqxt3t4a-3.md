@@ -2,7 +2,7 @@
 id: card-mqxt3t4a-3
 title: On card details screen when assign to ai have it auto save so run with ai appears right away
 column: col-mqwk2njn-4
-position: 3000
+position: 7000
 assignee: { kind: human }
 createdAt: 1782652221226
 updatedAt: 1782778361800

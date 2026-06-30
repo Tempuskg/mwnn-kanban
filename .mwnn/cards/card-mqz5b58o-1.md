@@ -1,11 +1,11 @@
 ---
 id: card-mqz5b58o-1
 title: On card details screen have the dependenccy dropdown select auto add the dependency. Remove the add dependency button.
-column: col-mqwk2njn-2
-position: 2000
-assignee: { kind: ai }
+column: col-mqwk2njn-4
+position: 3000
+assignee: { kind: human }
 createdAt: 1782733185096
-updatedAt: 1782819871004
+updatedAt: 1782823731985
 ---
 
 ## Description
@@ -28,3 +28,9 @@ The change is confined to the dependency editor in `renderDependencyControls` in
 ## Activity
 ### 2026-06-30T11:44:30.926Z - Definition requested from Claude Code
 Asked Claude Code to fill in the Description and Acceptance criteria for this card.
+
+### 2026-06-30T12:36:10.364Z - Handed off to Claude Code
+Dispatched this card to Claude Code. The agent should append its completion note below.
+
+### 2026-06-30 - Completed by Claude Code
+Reworked the dependency editor in `renderDependencyControls` (media/board.js) so selecting a card from the dropdown immediately adds it as a dependency. Removed the separate "Add" button element and its `click` handler, moving that logic into a `change` listener on the `select`. The guard logic (no self-dependency, no duplicates) is preserved; `renderList()`/`renderOptions()` still re-render after a selection, and `renderOptions()` resets the dropdown to its placeholder. The empty-state still disables the select and shows "No other cards available". Removed the now-unused `.card-dep-add` CSS rules (base, hover, disabled) from media/board.css; the `.card-deps-controls` flex layout remains intact with the single full-width select. Dependency changes are still only committed on save. No remaining references to `addButton`/`card-dep-add`.

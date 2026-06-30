@@ -400,6 +400,54 @@ suite('board store', () => {
     assert.ok([...snapshot.keys()].some((filePath) => filePath.endsWith('card-a.md')));
   });
 
+  test('migration infers the verify role for a Verify column', async () => {
+    const fileSystem = createFakeFileSystem();
+    const legacyMemento = fakeMemento({
+      'mwnn-kanban.board': {
+        version: 1,
+        columns: [
+          { id: 'col-backlog', title: 'Backlog', cards: [] },
+          { id: 'col-ready', title: 'Ready', cards: [] },
+          { id: 'col-impl', title: 'Implement', cards: [] },
+          { id: 'col-verify', title: 'Verify', cards: [] },
+          { id: 'col-done', title: 'Done', cards: [] },
+        ],
+      },
+    });
+
+    const store = await createBoardStore(createDeps({ fileSystem, legacyMemento }));
+
+    assert.deepEqual(
+      store.getState().columns.map((column) => column.role),
+      ['backlog', 'ready', 'in-progress', 'verify', 'done'],
+    );
+  });
+
+  test('an existing Verify column loads with the verify role and round-trips to disk', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [
+        { id: 'col-impl', title: 'Implement', role: 'in-progress', wipLimit: 1, reverseWip: null },
+        { id: 'col-verify', title: 'Verify', role: 'verify', wipLimit: null, reverseWip: null },
+        { id: 'col-done', title: 'Done', role: 'done', wipLimit: null, reverseWip: null },
+      ],
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+    });
+
+    const store = await createBoardStore(createDeps({ fileSystem }));
+    assert.equal(store.getState().columns[1]!.role, 'verify');
+
+    // Force a write back to disk and confirm the role survives serialization.
+    await store.addCard('col-verify', 'Task');
+    assert.match(fileSystem.snapshot().get('.mwnn/columns.json') ?? '', /"role": "verify"/);
+    assert.deepEqual(
+      parseColumns(fileSystem.snapshot().get('.mwnn/columns.json') ?? '').columns.map((c) => c.role),
+      ['in-progress', 'verify', 'done'],
+    );
+  });
+
   test('falls back to default columns when the legacy memento is malformed', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(

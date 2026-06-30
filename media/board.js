@@ -20,7 +20,7 @@
    * @typedef {{
    *   id: string,
    *   title: string,
-   *   role?: 'backlog' | 'ready' | 'in-progress' | 'done' | 'custom',
+   *   role?: 'backlog' | 'ready' | 'in-progress' | 'verify' | 'done' | 'custom',
    *   wipLimit?: number | null,
    *   reverseWip?: number | null,
    *   cards: Card[]
@@ -988,11 +988,6 @@
     const select = document.createElement('select');
     select.className = 'card-field-select';
 
-    const addButton = document.createElement('button');
-    addButton.type = 'button';
-    addButton.className = 'card-dep-add';
-    addButton.textContent = 'Add';
-
     const help = document.createElement('span');
     help.className = 'card-field-help';
     help.textContent = 'This card stays blocked until every dependency reaches a Done column.';
@@ -1006,6 +1001,9 @@
       const result = [];
       if (board) {
         for (const column of board.columns) {
+          if (column.role === 'done') {
+            continue;
+          }
           for (const candidate of column.cards) {
             if (candidate.id !== card.id) {
               result.push(candidate);
@@ -1026,9 +1024,7 @@
       for (const candidate of available) {
         select.appendChild(createOption(candidate.id, candidate.title));
       }
-      const empty = available.length === 0;
-      select.disabled = empty;
-      addButton.disabled = empty;
+      select.disabled = available.length === 0;
     };
 
     const renderList = () => {
@@ -1067,7 +1063,7 @@
       }
     };
 
-    addButton.addEventListener('click', () => {
+    select.addEventListener('change', () => {
       const value = select.value;
       if (!value || value === card.id || deps.includes(value)) {
         return;
@@ -1079,7 +1075,7 @@
 
     renderList();
     renderOptions();
-    controls.append(select, addButton);
+    controls.append(select);
     wrapper.append(label, list, controls, help);
     return { wrapper, getDependencies: () => deps.slice() };
   }

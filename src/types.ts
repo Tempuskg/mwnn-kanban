@@ -9,7 +9,7 @@
 export const BOARD_STATE_VERSION = 2 as const;
 
 export type AssigneeKind = 'human' | 'ai';
-export type ColumnRole = 'backlog' | 'ready' | 'in-progress' | 'done' | 'custom';
+export type ColumnRole = 'backlog' | 'ready' | 'in-progress' | 'verify' | 'done' | 'custom';
 
 export interface Assignee {
   readonly kind: AssigneeKind;
@@ -218,6 +218,7 @@ function isColumnRole(value: unknown): value is ColumnRole {
     value === 'backlog' ||
     value === 'ready' ||
     value === 'in-progress' ||
+    value === 'verify' ||
     value === 'done' ||
     value === 'custom'
   );

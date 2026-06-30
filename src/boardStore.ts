@@ -532,6 +532,9 @@ function inferMigrationRole(
   if (normalized.includes('progress') || normalized.includes('doing')) {
     return 'in-progress';
   }
+  if (normalized.includes('verify')) {
+    return 'verify';
+  }
   if (normalized.includes('done')) {
     return 'done';
   }

@@ -2,7 +2,7 @@
 id: card-mqx0vgl2-1
 title: have a duplicate card button on the card details screen
 column: col-mqwk2njn-4
-position: 6000
+position: 10000
 assignee: { kind: human }
 createdAt: 1782604802486
 updatedAt: 1782733397480

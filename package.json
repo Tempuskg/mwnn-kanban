@@ -137,6 +137,7 @@
             "Backlog",
             "Ready",
             "In Progress",
+            "Verify",
             "Done"
           ],
           "description": "Column titles used when a board is first created or reset. Roles are inferred from these titles, and the default set includes a Ready column for reverse-WIP tracking.",

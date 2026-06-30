@@ -2,7 +2,7 @@
 id: card-mqwlet6x-5
 title: Design Extension Icon
 column: col-mqwk2njn-4
-position: 22000
+position: 26000
 assignee: { kind: ai }
 createdAt: 1782578831433
 updatedAt: 1782595703235

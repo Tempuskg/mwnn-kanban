@@ -2,7 +2,7 @@
 id: card-mqwzwyg0-1
 title: Don't wrap columns
 column: col-mqwk2njn-4
-position: 17000
+position: 21000
 assignee: { kind: human }
 createdAt: 1782603192672
 updatedAt: 1782666276164

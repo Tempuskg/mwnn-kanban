@@ -39,7 +39,7 @@ suite('board operations', () => {
 
   test('defaultBoard falls back when given no titles', () => {
     const board = defaultBoard([]);
-    assert.equal(board.columns.length, 4);
+    assert.equal(board.columns.length, 5);
   });
 
   test('defaultBoard trims titles and falls back when they are all blank', () => {
@@ -52,8 +52,29 @@ suite('board operations', () => {
     const fallbackBoard = defaultBoard(['   ', '\t']);
     assert.deepEqual(
       fallbackBoard.columns.map((c) => c.title),
-      ['Backlog', 'Ready', 'In Progress', 'Done'],
+      ['Backlog', 'Ready', 'In Progress', 'Verify', 'Done'],
     );
+  });
+
+  test('defaultBoard infers the verify role and orders Verify between In Progress and Done', () => {
+    const board = defaultBoard(['Backlog', 'Ready', 'In Progress', 'Verify', 'Done']);
+    assert.deepEqual(
+      board.columns.map((c) => c.role),
+      ['backlog', 'ready', 'in-progress', 'verify', 'done'],
+    );
+
+    const inProgressIndex = board.columns.findIndex((c) => c.role === 'in-progress');
+    const verifyIndex = board.columns.findIndex((c) => c.role === 'verify');
+    const doneIndex = board.columns.findIndex((c) => c.role === 'done');
+    assert.ok(inProgressIndex < verifyIndex && verifyIndex < doneIndex);
+  });
+
+  test('defaultBoard infers verify case-insensitively without a wip or reverse-wip limit', () => {
+    const board = defaultBoard(['  verify  ']);
+    const column = board.columns[0]!;
+    assert.equal(column.role, 'verify');
+    assert.equal(column.wipLimit, null);
+    assert.equal(column.reverseWip, null);
   });
 
   test('addCard appends to the target column without mutating the input', () => {

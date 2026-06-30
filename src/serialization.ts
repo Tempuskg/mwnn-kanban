@@ -367,6 +367,7 @@ function isColumnRole(value: unknown): value is ColumnRole {
     value === 'backlog' ||
     value === 'ready' ||
     value === 'in-progress' ||
+    value === 'verify' ||
     value === 'done' ||
     value === 'custom'
   );

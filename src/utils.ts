@@ -13,7 +13,7 @@ import {
 } from './types';
 
 let idCounter = 0;
-const FALLBACK_COLUMN_TITLES = ['Backlog', 'Ready', 'In Progress', 'Done'] as const;
+const FALLBACK_COLUMN_TITLES = ['Backlog', 'Ready', 'In Progress', 'Verify', 'Done'] as const;
 
 export interface SetColumnConfig {
   readonly title?: string;
@@ -89,6 +89,9 @@ function inferColumnRole(title: string, index: number, total: number): ColumnRol
   }
   if (normalized.includes('progress') || normalized.includes('doing')) {
     return 'in-progress';
+  }
+  if (normalized.includes('verify')) {
+    return 'verify';
   }
   if (normalized.includes('done')) {
     return 'done';

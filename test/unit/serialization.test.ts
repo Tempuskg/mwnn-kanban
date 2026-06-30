@@ -87,6 +87,17 @@ suite('serialization', () => {
     assert.deepEqual(parseColumns(serializeColumns(document)), document);
   });
 
+  test('columns json round-trips a verify-role column', () => {
+    const document: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-verify', title: 'Verify', role: 'verify', wipLimit: null, reverseWip: null }],
+    };
+
+    const serialized = serializeColumns(document);
+    assert.match(serialized, /"role": "verify"/);
+    assert.deepEqual(parseColumns(serialized), document);
+  });
+
   test('parseCard rejects missing frontmatter', () => {
     assert.throws(() => parseCard('## Description\nNo frontmatter'), /frontmatter/i);
   });

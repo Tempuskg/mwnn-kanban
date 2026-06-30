@@ -25,7 +25,7 @@ type BoardCard = BoardColumn['cards'][number];
 
 function readDefaultColumns(): string[] {
   const config = vscode.workspace.getConfiguration('mwnn-kanban');
-  return config.get<string[]>('defaultColumns', ['Backlog', 'Ready', 'In Progress', 'Done']);
+  return config.get<string[]>('defaultColumns', ['Backlog', 'Ready', 'In Progress', 'Verify', 'Done']);
 }
 
 function readBoardFolder(): string {

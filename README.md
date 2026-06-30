@@ -27,7 +27,7 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `mwnn-kanban.defaultColumns` | `["Backlog", "Ready", "In Progress", "Done"]` | Columns created for a new or reset board. Roles are inferred from these titles. |
+| `mwnn-kanban.defaultColumns` | `["Backlog", "Ready", "In Progress", "Verify", "Done"]` | Columns created for a new or reset board. Roles are inferred from these titles. |
 | `mwnn-kanban.confirmCardDeletion` | `true` | Confirm before deleting a card. |
 | `mwnn-kanban.boardFolder` | `.mwnn` | Workspace-relative folder that stores the board files. |
 | `mwnn-kanban.defaultReadyReverseWip` | `3` | Default minimum number of defined cards the Ready column should keep available. |

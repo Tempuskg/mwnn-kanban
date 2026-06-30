@@ -2,7 +2,7 @@
 id: card-mqxtem66-5
 title: Remove Column subtitle
 column: col-mqwk2njn-4
-position: 4000
+position: 8000
 assignee: { kind: human }
 createdAt: 1782652725438
 updatedAt: 1782787401154
