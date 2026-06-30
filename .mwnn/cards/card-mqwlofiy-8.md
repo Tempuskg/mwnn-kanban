@@ -2,7 +2,7 @@
 id: card-mqwlofiy-8
 title: have ai fill in definition
 column: col-mqwk2njn-4
-position: 6000
+position: 8000
 assignee: { kind: ai }
 createdAt: 1782579280282
 updatedAt: 1782649410394

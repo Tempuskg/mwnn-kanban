@@ -2,7 +2,7 @@
 id: card-mqwl467r-1
 title: Add Extension to vscode sidebar
 column: col-mqwk2njn-4
-position: 16000
+position: 18000
 assignee: { kind: ai }
 createdAt: 1782578335095
 updatedAt: 1782603269518

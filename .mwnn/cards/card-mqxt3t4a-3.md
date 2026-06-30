@@ -1,10 +1,11 @@
 ---
 id: card-mqxt3t4a-3
 title: On card details screen when assign to ai have it auto save so run with ai appears right away
-column: col-mqwk2njn-2
-position: 2000
+column: col-mqwk2njn-4
+position: 1000
+assignee: { kind: human }
 createdAt: 1782652221226
-updatedAt: 1782741413704
+updatedAt: 1782778361800
 ---
 
 ## Description
@@ -49,3 +50,15 @@ behavior of the Human/Unassigned options.
 ## Activity
 ### 2026-06-29T13:56:53.623Z - Definition requested from Claude Code
 Asked Claude Code to fill in the Description and Acceptance criteria for this card.
+
+### 2026-06-29T20:10:05.526Z - Handed off to Claude Code
+Dispatched this card to Claude Code. The agent should append its completion note below.
+
+### 2026-06-29 - Completed by Claude Code
+
+Modified `media/board.js` to auto-save the assignee and show Run with AI immediately when AI is selected in the card details modal:
+
+- Added module-level `pendingCardFormValues` to snapshot in-progress Title, Description, Acceptance criteria, and Dependencies before the state-update re-render clears the DOM.
+- In `render()`: captured and cleared `pendingCardFormValues` at the top, then passed the snapshot into `renderCardDetails` when the same card is still open, so re-rendered form fields are restored to their in-progress values.
+- In `renderCardDetails`: accepted a `pendingValues` parameter and used it for initial text field values; replaced the static Run with AI button with a dynamically managed one via `syncRunAiButton()`; added a `change` listener on the assignee kind dropdown that, when AI is chosen, snapshots form values into `pendingCardFormValues`, posts `setAssignee` to persist immediately, and calls `syncRunAiButton()` for instant button appearance; `syncRunAiButton()` is also called on every other kind change so the button disappears when switching away from AI.
+- In `renderDependencyControls`: added `initialDeps` parameter so in-progress dependency edits are restored after the re-render triggered by the auto-save.

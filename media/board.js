@@ -33,6 +33,8 @@
   let draggedCardId = null;
   let openCardId = null;
   let openColumnId = null;
+  /** @type {{ cardId: string, title: string, description: string, acceptanceCriteria: string, dependencies: string[] } | null} */
+  let pendingCardFormValues = null;
 
   const root = /** @type {HTMLElement} */ (document.getElementById('board'));
 
@@ -55,6 +57,8 @@
 
   function render() {
     closeAssignPicker();
+    const pending = pendingCardFormValues;
+    pendingCardFormValues = null;
     const previousColumns = root.querySelector('.board-columns');
     const savedScrollLeft = previousColumns ? previousColumns.scrollLeft : 0;
     const savedScrollTop = previousColumns ? previousColumns.scrollTop : 0;
@@ -78,7 +82,7 @@
     if (openCardId) {
       const record = findCardRecord(openCardId);
       if (record) {
-        root.appendChild(renderCardDetails(record));
+        root.appendChild(renderCardDetails(record, pending?.cardId === openCardId ? pending : null));
         return;
       }
     }
@@ -344,7 +348,7 @@
       label = 'Assign card';
     } else if (assignee.kind === 'ai') {
       className = 'card-chip-ai';
-      text = assignee.name ? `AI: ${assignee.name}` : 'AI';
+      text = 'AI';
       label = `Change assignee (currently ${text})`;
     } else {
       className = 'card-chip-human';
@@ -551,7 +555,7 @@
   /**
    * @param {{ column: Column, card: Card }} record
    */
-  function renderCardDetails(record) {
+  function renderCardDetails(record, pendingValues) {
     const backdrop = document.createElement('div');
     backdrop.className = 'card-modal-backdrop';
     backdrop.addEventListener('click', (event) => {
@@ -593,12 +597,12 @@
     const form = document.createElement('div');
     form.className = 'card-modal-form';
 
-    const titleInput = renderTextInput('Title', record.card.title);
+    const titleInput = renderTextInput('Title', pendingValues?.title ?? record.card.title);
     const columnSelector = renderColumnSelectorField(record.column.id);
-    const descriptionInput = renderTextArea('Description', record.card.description ?? '', 6);
-    const acceptanceInput = renderTextArea('Acceptance criteria', record.card.acceptanceCriteria ?? '', 5);
+    const descriptionInput = renderTextArea('Description', pendingValues?.description ?? record.card.description ?? '', 6);
+    const acceptanceInput = renderTextArea('Acceptance criteria', pendingValues?.acceptanceCriteria ?? record.card.acceptanceCriteria ?? '', 5);
     const assigneeControls = renderAssigneeControls(record.card.assignee);
-    const dependencyControls = renderDependencyControls(record.card);
+    const dependencyControls = renderDependencyControls(record.card, pendingValues?.dependencies);
     const activityView = renderActivity(record.card.activity);
 
     form.append(
@@ -614,16 +618,23 @@
     const footer = document.createElement('div');
     footer.className = 'card-modal-footer';
 
-    if (record.card.assignee?.kind === 'ai' && enableRunWithAI) {
-      const runAi = document.createElement('button');
-      runAi.className = 'card-modal-ai';
-      runAi.type = 'button';
-      runAi.textContent = 'Run with AI';
-      runAi.addEventListener('click', () => {
-        post({ type: 'runCardWithAI', cardId: record.card.id });
-      });
-      footer.appendChild(runAi);
-    }
+    const runAi = document.createElement('button');
+    runAi.className = 'card-modal-ai';
+    runAi.type = 'button';
+    runAi.textContent = 'Run with AI';
+    runAi.addEventListener('click', () => {
+      post({ type: 'runCardWithAI', cardId: record.card.id });
+    });
+
+    const syncRunAiButton = () => {
+      const shouldShow = assigneeControls.kind.value === 'ai' && enableRunWithAI && isCardDefined(record.card);
+      const isShown = footer.contains(runAi);
+      if (shouldShow && !isShown) {
+        footer.insertBefore(runAi, footer.firstChild);
+      } else if (!shouldShow && isShown) {
+        runAi.remove();
+      }
+    };
 
     if (!isCardDefined(record.card)) {
       const fillAi = document.createElement('button');
@@ -685,6 +696,23 @@
     });
 
     footer.append(deleteBtn, duplicateBtn, spacer, save);
+
+    syncRunAiButton();
+
+    assigneeControls.kind.addEventListener('change', () => {
+      if (assigneeControls.kind.value === 'ai') {
+        pendingCardFormValues = {
+          cardId: record.card.id,
+          title: titleInput.input.value,
+          description: descriptionInput.input.value,
+          acceptanceCriteria: acceptanceInput.input.value,
+          dependencies: dependencyControls.getDependencies(),
+        };
+        post({ type: 'setAssignee', cardId: record.card.id, assignee: { kind: 'ai' } });
+      }
+      syncRunAiButton();
+    });
+
     dialog.append(header, form, footer);
     backdrop.appendChild(dialog);
     return backdrop;
@@ -778,9 +806,9 @@
     name.value = assignee?.name ?? '';
 
     const syncNameVisibility = () => {
-      const hidden = kind.value === 'unassigned';
+      const hidden = kind.value === 'unassigned' || kind.value === 'ai';
       name.hidden = hidden;
-      name.placeholder = kind.value === 'ai' ? 'AI name (optional)' : 'Human name (optional)';
+      name.placeholder = 'Human name (optional)';
     };
     syncNameVisibility();
     kind.addEventListener('change', syncNameVisibility);
@@ -798,7 +826,7 @@
    * set is kept locally and only committed when the card is saved.
    * @param {Card} card
    */
-  function renderDependencyControls(card) {
+  function renderDependencyControls(card, initialDeps) {
     const wrapper = document.createElement('div');
     wrapper.className = 'card-field';
 
@@ -809,7 +837,7 @@
     /** @type {string[]} */
     const deps = [];
     const seen = new Set();
-    const initial = Array.isArray(card.dependsOn) ? card.dependsOn : [];
+    const initial = initialDeps ?? (Array.isArray(card.dependsOn) ? card.dependsOn : []);
     for (const id of initial) {
       if (id !== card.id && !seen.has(id) && findCardRecord(id)) {
         seen.add(id);
@@ -1246,6 +1274,10 @@
   function readAssignee(kindField, nameField) {
     if (kindField.value === 'unassigned') {
       return undefined;
+    }
+
+    if (kindField.value === 'ai') {
+      return { kind: 'ai' };
     }
 
     const name = normalizeText(nameField.value);

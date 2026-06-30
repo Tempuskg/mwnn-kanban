@@ -2,7 +2,7 @@
 id: card-mqxsv6jq-1
 title: Keep a blocked card on the Backlog column
 column: col-mqwk2njn-4
-position: 7000
+position: 9000
 assignee: { kind: human }
 createdAt: 1782651818726
 updatedAt: 1782686093192

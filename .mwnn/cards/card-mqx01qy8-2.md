@@ -2,7 +2,7 @@
 id: card-mqx01qy8-2
 title: Add column switch in card details view
 column: col-mqwk2njn-4
-position: 3000
+position: 5000
 assignee: { kind: human }
 createdAt: 1782603416240
 updatedAt: 1782700313386
