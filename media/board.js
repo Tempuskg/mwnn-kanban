@@ -152,11 +152,7 @@
     title.className = 'column-title';
     title.textContent = column.title;
 
-    const role = document.createElement('span');
-    role.className = 'column-role';
-    role.textContent = formatColumnRole(column.role);
-
-    titleGroup.append(title, role);
+    titleGroup.append(title);
     const aside = document.createElement('div');
     aside.className = 'column-header-aside';
     aside.append(renderColumnMetrics(column), renderColumnActions(column));
@@ -991,11 +987,7 @@
     title.className = 'card-modal-title';
     title.textContent = column.title;
 
-    const subtitle = document.createElement('p');
-    subtitle.className = 'card-modal-subtitle';
-    subtitle.textContent = `${column.cards.length} card${column.cards.length === 1 ? '' : 's'} in ${formatColumnRole(column.role).toLowerCase()} flow`;
-
-    titleBlock.append(title, subtitle);
+    titleBlock.append(title);
 
     const close = document.createElement('button');
     close.className = 'card-modal-close';
@@ -1314,21 +1306,6 @@
     }
 
     return board.columns.find((column) => column.id === columnId) ?? null;
-  }
-
-  function formatColumnRole(role) {
-    switch (role) {
-      case 'backlog':
-        return 'Backlog';
-      case 'ready':
-        return 'Ready';
-      case 'in-progress':
-        return 'In progress';
-      case 'done':
-        return 'Done';
-      default:
-        return 'Custom';
-    }
   }
 
   function normalizeText(value) {

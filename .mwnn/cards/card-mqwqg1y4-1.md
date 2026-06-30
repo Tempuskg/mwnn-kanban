@@ -2,7 +2,7 @@
 id: card-mqwqg1y4-1
 title: Have the option to have a card dependent on 1 or more cards
 column: col-mqwk2njn-4
-position: 10000
+position: 11000
 assignee: { kind: human }
 createdAt: 1782587287516
 updatedAt: 1782686072393

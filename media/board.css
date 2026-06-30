@@ -154,13 +154,6 @@ body {
   font-weight: 600;
 }
 
-.column-role {
-  font-size: 0.75rem;
-  color: var(--vscode-descriptionForeground);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
 .column-metrics {
   display: flex;
   flex-direction: column;

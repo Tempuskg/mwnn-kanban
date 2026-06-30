@@ -2,7 +2,7 @@
 id: card-mqwqh2kc-2
 title: Have Run with AI button on collapsed card
 column: col-mqwk2njn-4
-position: 7000
+position: 8000
 assignee: { kind: human }
 createdAt: 1782587334972
 updatedAt: 1782693132448
