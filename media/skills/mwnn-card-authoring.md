@@ -1,0 +1,88 @@
+---
+name: "MWNN Card Authoring"
+description: "Use when creating or editing MWNN Kanban board cards directly on disk as .mwnn/cards/<id>.md files (e.g. importing a plan, or any AI card generation). Covers the exact card-file frontmatter and section contract, id/position rules, and column mapping."
+applyTo:
+  - ".mwnn/cards/**/*.md"
+  - ".mwnn/columns.json"
+---
+
+# MWNN Card Authoring
+
+The MWNN Kanban board's source of truth is the workspace board folder (default
+`.mwnn/`, configurable via `mwnn-kanban.boardFolder`). The extension watches that
+folder and reloads the open board after external edits, so writing well-formed
+card files is enough to add cards — do not call any API or command.
+
+## Where cards live
+
+- `<boardFolder>/columns.json` — ordered columns with `id`, `title`, `role`,
+  `wipLimit`, `reverseWip`. Read it first to map a column to its `id`.
+- `<boardFolder>/cards/<card-id>.md` — one card per file. The file's base name
+  must equal the card's `id` (e.g. `card-abc123.md` holds `id: card-abc123`).
+- Only touch files under the board folder. Never edit `columns.json` unless the
+  task is explicitly about columns.
+
+## Card file shape
+
+```md
+---
+id: card-abc123
+title: Add login form
+column: col-ready
+position: 1000
+assignee: { kind: ai }
+createdAt: 1719360000000
+updatedAt: 1719360000000
+---
+
+## Description
+What the slice of work is.
+
+## Acceptance criteria
+- [ ] A verifiable condition
+
+## Activity
+```
+
+### Frontmatter fields
+
+- `id` (required) — unique across the whole board. Use `card-<base36-ms>-<n>`,
+  e.g. `card-mqwtekyi-2`. Never reuse an id that already exists in `cards/`.
+- `title` (required) — the card's one-line title.
+- `column` (required) — a real column `id` from `columns.json` (e.g.
+  `col-mqwk2njn-1`), **not** the column title.
+- `position` (required) — an integer that orders the card within its column,
+  ascending. New cards go **after** the current maximum position in that column,
+  stepping by ~1000 (so if the column's largest position is 4000, use 5000, 6000,
+  …). This preserves the order in which you write them.
+- `createdAt` (required) — Unix epoch milliseconds.
+- `updatedAt` (optional) — Unix epoch milliseconds; usually equal to `createdAt`
+  for a new card. Omit the key entirely rather than writing an empty value.
+- `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or
+  `{ kind: human, name: Alice }`. Omit for unassigned.
+- `dependsOn` (optional) — array of card ids this card is blocked by, e.g.
+  `[card-x, card-y]`. Omit when empty.
+
+### Scalar quoting (match the extension's parser)
+
+Values are bare YAML-ish scalars. JSON-quote a `title` or any scalar when it is
+empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
+`"` `#`. Example: `title: "Refactor: split the store"`. Plain values need no
+quotes: `title: Add login form`.
+
+### Body sections
+
+Always include these three level-2 headings in this order, even when empty:
+
+- `## Description` — a concise explanation of the slice. A card counts as
+  "defined" (for the Ready column's reverse-WIP) only when this is non-empty.
+- `## Acceptance criteria` — a markdown checklist (`- [ ] …`) of verifiable
+  conditions, or empty.
+- `## Activity` — a dated log; leave empty for a freshly created card.
+
+## Rules
+
+- Keep files minimal and valid; a malformed file is skipped on reload.
+- Preserve the order you intend by assigning ascending `position` values.
+- Do not renumber or rewrite existing cards when adding new ones.
+- After writing files, the extension reloads automatically — no command needed.

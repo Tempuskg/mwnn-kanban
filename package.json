@@ -79,6 +79,11 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.importPlan",
+        "title": "Import Plan",
+        "category": "MWNN Kanban"
+      },
+      {
         "command": "mwnn-kanban.resetBoard",
         "title": "Reset Board",
         "category": "MWNN Kanban"
@@ -164,6 +169,10 @@
         },
         {
           "command": "mwnn-kanban.runCardWithAI",
+          "when": "config.mwnn-kanban.enableRunWithAI"
+        },
+        {
+          "command": "mwnn-kanban.importPlan",
           "when": "config.mwnn-kanban.enableRunWithAI"
         },
         {

@@ -1,10 +1,11 @@
 ---
 id: card-mqwtekyi-2
 title: have an import plan into board feature
-column: col-mqwk2njn-2
+column: col-mqxta6ho-4
 position: 1000
+assignee: { kind: human }
 createdAt: 1782592257690
-updatedAt: 1782681104985
+updatedAt: 1782905130769
 ---
 
 ## Description
@@ -29,3 +30,15 @@ Scope is the import flow only (command, plan parsing, card creation, user feedba
 ## Activity
 ### 2026-06-28T19:22:48.884Z - Definition requested from Claude Code
 Asked Claude Code to fill in the Description and Acceptance criteria for this card.
+
+### 2026-06-30T17:54:48.642Z - Handed off to Claude Code
+Dispatched this card to Claude Code. The agent should append its completion note below.
+
+### 2026-06-30 - Implemented Import Plan feature
+Built the full import flow:
+- Added `src/planImport.ts` with a pure `parsePlan(text)` that turns a markdown plan into ordered `{ title, description }` items. It handles checklists (`- [ ]`/`- [x]`), bullet/numbered lists, and headings; strips checkbox/list/heading markers; captures nested sub-bullets and paragraph text as the card Description (dedented, blanks trimmed); drops a preamble title/intro before a list; and returns no items for empty/whitespace/unrecognized input. Also added `findImportTargetColumnId` (Backlog role, else first column).
+- Added `importCards(state, columnId, cards)` to `src/utils.ts` and exposed it on the board store (`src/boardStore.ts`) so imported cards persist as `.mwnn/cards/<id>.md` through the existing single-commit path.
+- Registered the `mwnn-kanban.importPlan` command in `package.json` (command + Command Palette menu) and `src/extension.ts`, with a workspace-less fallback. The command lets the user supply the plan via clipboard paste (preserves multi-line) or by picking a workspace `.md` file, imports into the target column, refreshes the board, and shows a "Imported N card(s) into <column>" confirmation. Empty/no-item input shows a clear message and creates nothing.
+- Added a board UI "Import plan" action button (`media/board.js`) that posts a new `requestImportPlan` message, handled in `src/boardPanel.ts`; wired the new message into the `src/types.ts` protocol + guard.
+- Added unit tests in `test/unit/planImport.test.ts` (parser formats, nested-detail extraction, target-column selection, importCards, and the no-items/empty cases) and a protocol-test line for the new message.
+- `npm run lint`, `npm run compile`, and `npm test` (99 tests) all pass.

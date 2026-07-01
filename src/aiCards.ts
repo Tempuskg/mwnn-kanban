@@ -91,6 +91,84 @@ export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string)
   ].join('\n');
 }
 
+export type PlanImportSource =
+  | { readonly kind: 'file'; readonly path: string }
+  | { readonly kind: 'text'; readonly text: string };
+
+export interface PlanImportTarget {
+  readonly columnId: string;
+  readonly columnTitle: string;
+  /** How many cards already sit in the target column, so new ids/positions don't collide. */
+  readonly existingCount: number;
+}
+
+/**
+ * Build the hand-off prompt for importing a written plan into Backlog cards. The
+ * agent reads the plan, decomposes it into genuine work items, and writes one
+ * `.mwnn/cards/<id>.md` file per item directly into the target column.
+ *
+ * The prompt is self-contained (it embeds the essential card-file contract and
+ * decomposition rules so it works even when the chat provider does not
+ * auto-load the skill files) and also points at the two skill files for the
+ * authoritative version.
+ */
+export function buildPlanImportPrompt(
+  plan: PlanImportSource,
+  target: PlanImportTarget,
+  boardFolder: string,
+  skillPaths: readonly string[],
+): string {
+  const cardsDir = `${boardFolder.replace(/\/+$/, '')}/cards`;
+  const planSection =
+    plan.kind === 'file'
+      ? ['Read the plan document at this path:', plan.path]
+      : ['Here is the plan to import:', '', plan.text.trim()];
+
+  return [
+    'You are an AI agent importing a written plan into a Methodology With No Name (MWNN) Kanban board.',
+    'Turn the plan into Backlog cards: create one card per genuine, actionable unit of work — a discrete slice someone could pick up and do. For each card write a Description, a concrete Acceptance criteria checklist, and an assignee (Human or AI). Write the cards yourself as files; do not just describe them.',
+    '',
+    'Follow these repository skills for the full rules:',
+    ...skillPaths.map((path) => `  - ${path}`),
+    '',
+    'Decompose with judgment (this is the whole point — a naive "every heading/bullet is a card" split is wrong):',
+    '  - DO create a card for each real task, step, or deliverable still to be done, in the order it appears.',
+    '  - DO NOT create cards from section/structural headings (Goal, Overview, Context, Decisions, Data Model, Status, Milestones, Risks, Notes, Progress Log, Verification, Files), metadata (dates, status lines), narrative about already-finished work (progress logs, changelog entries, `- [x]` done items), bare file lists, or code/schema blocks.',
+    '  - When a heading\'s sub-bullets are the concrete steps, make cards from the sub-steps, not the umbrella heading. When sub-bullets are just detail, make one card and put the detail in its Description.',
+    '  - If the plan has no genuine outstanding work items, create no cards and say so.',
+    '',
+    `Write each card as a markdown file at ${cardsDir}/<id>.md with this exact shape:`,
+    '  ---',
+    '  id: card-<unique>',
+    '  title: <concise imperative; JSON-quote if it contains : { } [ ] " # or edge whitespace>',
+    `  column: ${target.columnId}`,
+    '  position: <integer, ascending, after existing cards>',
+    '  assignee: { kind: ai }   # or { kind: human }',
+    '  createdAt: <unix epoch ms>',
+    '  updatedAt: <unix epoch ms>',
+    '  ---',
+    '',
+    '  ## Description',
+    '  <the item\'s supporting detail, or a concise explanation of the work>',
+    '',
+    '  ## Acceptance criteria',
+    '  - [ ] <concrete, verifiable condition>',
+    '',
+    '  ## Activity',
+    '',
+    `Target column: "${target.columnTitle}" (id ${target.columnId}), which already has ${target.existingCount} card(s). Give new cards unique ids and ascending position values (step ~1000) starting after the existing cards so plan order is preserved.`,
+    'Fill "## Acceptance criteria" for every card with a short markdown checklist (- [ ] …) of concrete, testable conditions drawn from the item — do not leave it empty, but do not pad with filler.',
+    'Set "assignee" on every card: use { kind: ai } for implementation, coding, refactoring, testing, or otherwise automatable work; use { kind: human } for product or design decisions, reviews and sign-off, or manual/external steps that need a person. When genuinely unsure, prefer { kind: ai }.',
+    'The extension watches the board folder and reloads automatically once the files are written.',
+    '',
+    ...planSection,
+    '',
+    'When you finish, report the result on its own line, exactly one of:',
+    '  STATUS: DONE — the plan was imported (state how many cards you created).',
+    '  STATUS: BLOCKED: <reason> — you could not proceed and need a human.',
+  ].join('\n');
+}
+
 export function formatActivityEntry(
   model: AiModelDescriptor,
   responseText: string,

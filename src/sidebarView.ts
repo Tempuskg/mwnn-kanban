@@ -12,6 +12,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly openBoard: () => void,
+    private readonly importPlan: () => void,
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -22,8 +23,10 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this.renderHtml(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
-      if (isOpenBoardMessage(message)) {
+      if (isSidebarMessage(message, 'openBoard')) {
         this.openBoard();
+      } else if (isSidebarMessage(message, 'importPlan')) {
+        this.importPlan();
       }
     });
 
@@ -64,16 +67,26 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       font-family: inherit;
     }
     button:hover { background: var(--vscode-button-hoverBackground); }
+    button.secondary {
+      margin-top: 8px;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+    }
+    button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
   </style>
   <title>MWNN Kanban</title>
 </head>
 <body>
   <p>The MWNN Kanban board opens in the editor area.</p>
   <button id="open" type="button">Open Board</button>
+  <button id="import" type="button" class="secondary" title="Hand a written plan to AI to import as Backlog cards">Import plan</button>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     document.getElementById('open').addEventListener('click', () => {
       vscode.postMessage({ type: 'openBoard' });
+    });
+    document.getElementById('import').addEventListener('click', () => {
+      vscode.postMessage({ type: 'importPlan' });
     });
   </script>
 </body>
@@ -81,8 +94,8 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-function isOpenBoardMessage(message: unknown): message is { type: 'openBoard' } {
-  return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'openBoard';
+function isSidebarMessage<T extends string>(message: unknown, type: T): message is { type: T } {
+  return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === type;
 }
 
 function makeNonce(): string {

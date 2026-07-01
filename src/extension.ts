@@ -2,22 +2,42 @@ import * as vscode from 'vscode';
 import {
   buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
+  buildPlanImportPrompt,
   findAiCardSelection,
   formatDefinitionHandoffEntry,
   formatHandoffEntry,
   listAiCardSelections,
   summarizeCardDescription,
+  type PlanImportSource,
 } from './aiCards';
 import {
   CHAT_PROVIDER_LABELS,
   listAvailableChatProviders,
   type ChatHandoffTarget,
   type ChatProviderCommands,
+  type ChatProviderId,
 } from './chatHandoff';
 import { BoardPanel } from './boardPanel';
 import { BoardSidebarViewProvider } from './sidebarView';
 import { createBoardStore, type FileSystemLike } from './boardStore';
+import {
+  parseSkillDocument,
+  planSkillInstallation,
+  referencePathsForEnv,
+  type AiEnvironment,
+  type SkillSource,
+} from './skills';
 import type { BoardState } from './types';
+
+/** Skill documents bundled with the extension, under `media/skills/<slug>.md`. */
+const SKILL_SLUGS = ['mwnn-plan-import', 'mwnn-card-authoring'] as const;
+
+/** Which AI environment a chosen chat handoff provider corresponds to. */
+const PROVIDER_ENVIRONMENTS: Record<ChatProviderId, AiEnvironment> = {
+  copilot: 'copilot',
+  codex: 'codex',
+  'claude-code': 'claude-code',
+};
 
 type BoardStore = Awaited<ReturnType<typeof createBoardStore>>;
 type BoardColumn = BoardState['columns'][number];
@@ -57,8 +77,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
+  const workspaceFs = createWorkspaceFileSystem(workspaceRoot);
   const store = await createBoardStore({
-    fileSystem: createWorkspaceFileSystem(workspaceRoot),
+    fileSystem: workspaceFs,
     boardFolder: readBoardFolder(),
     defaultColumns: readDefaultColumns(),
     defaultReadyReverseWip: readDefaultReadyReverseWip(),
@@ -88,7 +109,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
     const cardFilePath = `${boardFolder}/cards/${selection.card.id}.md`;
     const prompt = buildCardHandoffPrompt(selection.card, cardFilePath);
-    const handedOff = await handOffCardToChat(target, selection.card, prompt);
+    const handedOff = await handOffPromptToChat(target, prompt, `"${selection.card.title}"`);
     if (!handedOff) {
       return;
     }
@@ -118,13 +139,72 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
     const cardFilePath = `${boardFolder}/cards/${card.id}.md`;
     const prompt = buildCardDefinitionPrompt(card, cardFilePath);
-    const handedOff = await handOffCardToChat(target, card, prompt);
+    const handedOff = await handOffPromptToChat(target, prompt, `"${card.title}"`);
     if (!handedOff) {
       return;
     }
 
     await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
     BoardPanel.postStateIfOpen();
+  };
+
+  const importPlan = async (): Promise<void> => {
+    if (!readEnableRunWithAI()) {
+      void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to import a plan with AI.');
+      return;
+    }
+
+    const source = await collectPlanSource();
+    if (source === undefined) {
+      // The user cancelled at the source picker, file picker, or had no files.
+      return;
+    }
+    if (source.kind === 'text' && source.text.trim().length === 0) {
+      void vscode.window.showInformationMessage('The clipboard is empty. Copy a plan first, then import it.');
+      return;
+    }
+
+    const state = store.getState();
+    const targetColumn = state.columns.find((column) => column.role === 'backlog') ?? state.columns[0];
+    if (!targetColumn) {
+      void vscode.window.showInformationMessage('Add a column before importing a plan.');
+      return;
+    }
+
+    const target = await pickChatProvider();
+    if (!target) {
+      return;
+    }
+
+    // Install the skills into every AI tool this workspace uses (plus the tool we
+    // are handing off to) so the guidance travels with the project on any machine.
+    // Best-effort: the prompt is self-contained, so a write failure never blocks import.
+    const providerEnv = PROVIDER_ENVIRONMENTS[target.provider];
+    try {
+      await ensureSkillsInstalled(context.extensionUri, workspaceFs, providerEnv);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      void vscode.window.showWarningMessage(
+        `Could not install the MWNN skills into this workspace: ${message}. Continuing — the prompt is self-contained.`,
+      );
+    }
+
+    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+    const prompt = buildPlanImportPrompt(
+      source,
+      { columnId: targetColumn.id, columnTitle: targetColumn.title, existingCount: targetColumn.cards.length },
+      boardFolder,
+      referencePathsForEnv(providerEnv, SKILL_SLUGS),
+    );
+    const handedOff = await handOffPromptToChat(target, prompt, 'the plan');
+    if (!handedOff) {
+      return;
+    }
+
+    openBoard().postState();
+    void vscode.window.showInformationMessage(
+      `Handed the plan to ${CHAT_PROVIDER_LABELS[target.provider]} to import into ${targetColumn.title}. New cards appear as the agent writes them.`,
+    );
   };
 
   const boardPanelDeps = {
@@ -153,7 +233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       BoardSidebarViewProvider.viewType,
-      new BoardSidebarViewProvider(context.extensionUri, openBoard),
+      new BoardSidebarViewProvider(context.extensionUri, openBoard, () => void importPlan()),
     ),
   );
   context.subscriptions.push(
@@ -248,6 +328,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('mwnn-kanban.runCardWithAI', async () => {
       await runCardWithAISelection();
     }),
+    vscode.commands.registerCommand('mwnn-kanban.importPlan', async () => {
+      await importPlan();
+    }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', async () => {
       const choice = await vscode.window.showWarningMessage(
         'Reset the board? All cards will be removed.',
@@ -309,6 +392,80 @@ function createWorkspaceFileSystem(rootUri: vscode.Uri): FileSystemLike {
   };
 }
 
+/** Read and parse the skill documents bundled with the extension. */
+async function loadBundledSkills(extensionUri: vscode.Uri): Promise<SkillSource[]> {
+  const decoder = new TextDecoder();
+  const skills: SkillSource[] = [];
+  for (const slug of SKILL_SLUGS) {
+    const uri = vscode.Uri.joinPath(extensionUri, 'media', 'skills', `${slug}.md`);
+    const raw = decoder.decode(await vscode.workspace.fs.readFile(uri));
+    skills.push(parseSkillDocument(slug, raw));
+  }
+  return skills;
+}
+
+/** Detect which AI tools a workspace uses, from their marker files/folders. */
+async function detectAiEnvironments(fs: FileSystemLike): Promise<Set<AiEnvironment>> {
+  const found = new Set<AiEnvironment>();
+  if (await fs.exists('.github')) {
+    found.add('copilot');
+  }
+  if ((await fs.exists('AGENTS.md')) || (await fs.exists('.codex'))) {
+    found.add('codex');
+  }
+  if ((await fs.exists('.claude')) || (await fs.exists('CLAUDE.md'))) {
+    found.add('claude-code');
+  }
+  if ((await fs.exists('.cursor')) || (await fs.exists('.cursorrules'))) {
+    found.add('cursor');
+  }
+  return found;
+}
+
+/**
+ * Install the bundled skills into every AI tool the workspace uses, plus the
+ * `providerEnv` we are about to hand off to. Falls back to Copilot when the
+ * workspace has no detectable AI tool. Skips files whose content is unchanged so
+ * re-imports don't churn. Returns the paths written this run.
+ */
+async function ensureSkillsInstalled(
+  extensionUri: vscode.Uri,
+  fs: FileSystemLike,
+  providerEnv: AiEnvironment,
+): Promise<string[]> {
+  const skills = await loadBundledSkills(extensionUri);
+
+  const environments = await detectAiEnvironments(fs);
+  environments.add(providerEnv);
+  if (environments.size === 0) {
+    environments.add('copilot');
+  }
+
+  const existingAgentsMd = environments.has('codex') && (await fs.exists('AGENTS.md'))
+    ? await fs.readFile('AGENTS.md')
+    : undefined;
+
+  const plan = planSkillInstallation(skills, [...environments], existingAgentsMd);
+  const written: string[] = [];
+  for (const write of plan.writes) {
+    const separator = write.path.lastIndexOf('/');
+    if (separator !== -1) {
+      await fs.createDirectory(write.path.slice(0, separator));
+    }
+
+    if (await fs.exists(write.path)) {
+      const current = await fs.readFile(write.path);
+      if (current === write.content) {
+        continue;
+      }
+    }
+
+    await fs.writeFile(write.path, write.content);
+    written.push(write.path);
+  }
+  return written;
+}
+
 function registerUnavailableCommands(context: vscode.ExtensionContext): void {
   const showWorkspaceMessage = (): Thenable<string | undefined> =>
     vscode.window.showInformationMessage('Open a workspace folder to use MWNN Kanban.');
@@ -325,7 +482,11 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     }),
     vscode.window.registerWebviewViewProvider(
       BoardSidebarViewProvider.viewType,
-      new BoardSidebarViewProvider(context.extensionUri, () => void showWorkspaceMessage()),
+      new BoardSidebarViewProvider(
+        context.extensionUri,
+        () => void showWorkspaceMessage(),
+        () => void showWorkspaceMessage(),
+      ),
     ),
     vscode.commands.registerCommand('mwnn-kanban.openBoard', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.addColumn', showWorkspaceMessage),
@@ -333,6 +494,7 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mwnn-kanban.deleteColumn', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.setColumnLimits', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.runCardWithAI', showWorkspaceMessage),
+    vscode.commands.registerCommand('mwnn-kanban.importPlan', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', showWorkspaceMessage),
   );
 }
@@ -383,6 +545,52 @@ function registerBoardWatcher(
     }
     watcher.dispose();
   });
+}
+
+/**
+ * Choose the plan to import. The user either pastes from the clipboard (which
+ * preserves a multi-line plan) or picks a markdown file from the workspace. For
+ * a file we return its workspace-relative path so the agent reads the full
+ * document itself; for the clipboard we return the text. Returns `undefined`
+ * when the user cancels or no source is available.
+ */
+async function collectPlanSource(): Promise<PlanImportSource | undefined> {
+  const fromClipboard = 'Paste from clipboard';
+  const fromFile = 'Select a markdown file from the workspace';
+
+  const source = await vscode.window.showQuickPick(
+    [
+      { label: fromClipboard, detail: 'Import the plan text currently on your clipboard' },
+      { label: fromFile, detail: 'Pick a .md file in this workspace to import' },
+    ],
+    { placeHolder: 'Import plan from…' },
+  );
+  if (!source) {
+    return undefined;
+  }
+
+  if (source.label === fromClipboard) {
+    return { kind: 'text', text: await vscode.env.clipboard.readText() };
+  }
+
+  const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**');
+  if (files.length === 0) {
+    void vscode.window.showInformationMessage('No markdown files were found in this workspace.');
+    return undefined;
+  }
+
+  const sorted = [...files].sort((left, right) =>
+    vscode.workspace.asRelativePath(left).localeCompare(vscode.workspace.asRelativePath(right)),
+  );
+  const pick = await vscode.window.showQuickPick(
+    sorted.map((uri) => ({ label: vscode.workspace.asRelativePath(uri), uri })),
+    { placeHolder: 'Select a markdown plan file' },
+  );
+  if (!pick) {
+    return undefined;
+  }
+
+  return { kind: 'file', path: vscode.workspace.asRelativePath(pick.uri) };
 }
 
 async function pickColumn(
@@ -467,17 +675,22 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
   return choice?.target;
 }
 
-async function handOffCardToChat(
+/**
+ * Deliver a prompt to the chosen AI chat provider. `subject` names what is being
+ * handed off (e.g. a quoted card title, or "the plan") for the user-facing
+ * confirmation. Returns whether the hand-off command ran.
+ */
+async function handOffPromptToChat(
   target: ChatHandoffTarget,
-  card: BoardCard,
   prompt: string,
+  subject: string,
 ): Promise<boolean> {
   const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
   try {
     if (target.promptDelivery === 'query') {
       // Copilot: the prompt rides in as a { query } argument.
       await vscode.commands.executeCommand(target.commandId, { query: prompt });
-      void vscode.window.showInformationMessage(`Handed "${card.title}" to ${providerLabel}.`);
+      void vscode.window.showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
       return true;
     }
 
@@ -485,14 +698,14 @@ async function handOffCardToChat(
       // Claude Code: the open command takes (sessionId, initialPrompt); pass no
       // session so a fresh conversation opens pre-filled with the prompt.
       await vscode.commands.executeCommand(target.commandId, undefined, prompt);
-      void vscode.window.showInformationMessage(`Handed "${card.title}" to ${providerLabel}.`);
+      void vscode.window.showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
       return true;
     }
 
     await vscode.env.clipboard.writeText(prompt);
     await vscode.commands.executeCommand(target.commandId);
     void vscode.window.showInformationMessage(
-      `Opened ${providerLabel} for "${card.title}". The card prompt is on your clipboard — paste it to start.`,
+      `Opened ${providerLabel} for ${subject}. The prompt is on your clipboard — paste it to start.`,
     );
     return true;
   } catch (error: unknown) {

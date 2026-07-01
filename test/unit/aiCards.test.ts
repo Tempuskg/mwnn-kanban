@@ -4,6 +4,7 @@ import {
   buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
   buildCardPrompt,
+  buildPlanImportPrompt,
   findAiCardSelection,
   formatActivityEntry,
   formatDefinitionHandoffEntry,
@@ -113,6 +114,65 @@ suite('ai card helpers', () => {
     assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
     assert.match(prompt, /No description provided\./);
     assert.match(prompt, /No acceptance criteria provided\./);
+  });
+
+  test('buildPlanImportPrompt references the skills, target column, and status convention (file source)', () => {
+    const prompt = buildPlanImportPrompt(
+      { kind: 'file', path: 'docs/implementation_plan.md' },
+      { columnId: 'col-backlog', columnTitle: 'Backlog', existingCount: 4 },
+      '.mwnn',
+      [
+        '.github/instructions/mwnn-plan-import.instructions.md',
+        '.github/instructions/mwnn-card-authoring.instructions.md',
+      ],
+    );
+
+    // Points the agent at both skill files.
+    assert.match(prompt, /mwnn-plan-import\.instructions\.md/);
+    assert.match(prompt, /mwnn-card-authoring\.instructions\.md/);
+    // Names the target column and where to write cards.
+    assert.match(prompt, /col-backlog/);
+    assert.match(prompt, /Backlog/);
+    assert.match(prompt, /\.mwnn\/cards\/<id>\.md/);
+    assert.match(prompt, /4 card\(s\)/);
+    // Reads the file itself rather than embedding contents.
+    assert.match(prompt, /docs\/implementation_plan\.md/);
+    // Reports a status when finished.
+    assert.match(prompt, /STATUS: DONE/);
+    assert.match(prompt, /STATUS: BLOCKED/);
+  });
+
+  test('buildPlanImportPrompt asks for acceptance criteria and a per-card assignee', () => {
+    const prompt = buildPlanImportPrompt(
+      { kind: 'file', path: 'plan.md' },
+      { columnId: 'col-backlog', columnTitle: 'Backlog', existingCount: 0 },
+      '.mwnn',
+      ['.github/instructions/mwnn-plan-import.instructions.md'],
+    );
+
+    // Fills acceptance criteria rather than leaving it empty.
+    assert.match(prompt, /Fill "## Acceptance criteria"/);
+    assert.match(prompt, /- \[ \]/);
+    assert.doesNotMatch(prompt, /do not invent acceptance criteria/i);
+    // Sets an assignee (human or AI) on every card.
+    assert.match(prompt, /assignee/);
+    assert.match(prompt, /\{ kind: ai \}/);
+    assert.match(prompt, /\{ kind: human \}/);
+  });
+
+  test('buildPlanImportPrompt embeds trimmed plan text for a clipboard source', () => {
+    const prompt = buildPlanImportPrompt(
+      { kind: 'text', text: '\n\n- [ ] Ship the parser\n- [ ] Wire the command\n\n' },
+      { columnId: 'col-1', columnTitle: 'To Do', existingCount: 0 },
+      '.mwnn/',
+      ['.github/instructions/mwnn-plan-import.instructions.md'],
+    );
+
+    assert.match(prompt, /Here is the plan to import:/);
+    assert.match(prompt, /- \[ \] Ship the parser\n- \[ \] Wire the command/);
+    // Trailing slash on the board folder is normalized in the cards path.
+    assert.match(prompt, /\.mwnn\/cards\/<id>\.md/);
+    assert.doesNotMatch(prompt, /Read the plan document at this path/);
   });
 
   test('formatDefinitionHandoffEntry records the provider and a timestamped definition note', () => {
