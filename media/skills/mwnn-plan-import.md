@@ -59,8 +59,29 @@ is not a card.
   automatable work; use `human` for product or design decisions, reviews and
   sign-off, or manual/external steps that need a person. When genuinely unsure,
   prefer `{ kind: ai }`.
+- `dependsOn` — capture real prerequisites between the cards you create. See
+  **Dependencies** below.
 - Place every card in the Backlog column (the column whose `role` is `backlog`,
   or the first column if none), preserving plan order via ascending `position`.
+
+## Dependencies
+
+Set `dependsOn` on a card when the plan says another item must be finished before
+this one can start. A card is blocked until every id in its `dependsOn` reaches a
+`done` column, and a blocked card cannot advance past Ready.
+
+- Add a dependency when the plan implies a hard prerequisite: wording like
+  "after", "once … is done", "depends on", "requires", "based on", or a
+  foundation / earlier phase that a later item clearly builds on.
+- Do **not** add a dependency just because one card is listed before another.
+  Sequential order is not a prerequisite unless the later work genuinely cannot
+  start until the earlier work is complete. When in doubt, leave `dependsOn` off.
+- Because `dependsOn` references card ids, decide each card's `id` before writing
+  so a later card can list an earlier card's id. Reference only ids of cards in
+  this import (or existing board cards, if the plan continues prior work).
+- Never make a card depend on itself, and never create a cycle (A → B → A) — both
+  would leave the cards permanently blocked. Omit the `dependsOn` line entirely
+  when a card has no prerequisites.
 
 ## When nothing qualifies
 

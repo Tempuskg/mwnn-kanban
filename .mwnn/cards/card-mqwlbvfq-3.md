@@ -2,7 +2,7 @@
 id: card-mqwlbvfq-3
 title: Move column movement arrows to Column edit screen
 column: col-mqwk2njn-4
-position: 24000
+position: 26000
 assignee: { kind: ai }
 createdAt: 1782578694374
 updatedAt: 1782604189540

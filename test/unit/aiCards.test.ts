@@ -158,6 +158,10 @@ suite('ai card helpers', () => {
     assert.match(prompt, /assignee/);
     assert.match(prompt, /\{ kind: ai \}/);
     assert.match(prompt, /\{ kind: human \}/);
+    // Captures dependencies between cards, guarding against sequence-only links and cycles.
+    assert.match(prompt, /dependsOn/);
+    assert.match(prompt, /Set "dependsOn" where the plan implies/);
+    assert.match(prompt, /never create a self-dependency or a cycle/i);
   });
 
   test('buildPlanImportPrompt embeds trimmed plan text for a clipboard source', () => {

@@ -2,7 +2,7 @@
 id: card-mqz791h5-2
 title: Make Verify column part of standard board
 column: col-mqwk2njn-4
-position: 2000
+position: 4000
 assignee: { kind: human }
 createdAt: 1782736446137
 updatedAt: 1782829230164

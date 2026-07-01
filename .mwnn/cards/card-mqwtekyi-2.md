@@ -1,11 +1,11 @@
 ---
 id: card-mqwtekyi-2
 title: have an import plan into board feature
-column: col-mqxta6ho-4
-position: 1000
+column: col-mqwk2njn-4
+position: 2000
 assignee: { kind: human }
 createdAt: 1782592257690
-updatedAt: 1782905130769
+updatedAt: 1782922892098
 ---
 
 ## Description

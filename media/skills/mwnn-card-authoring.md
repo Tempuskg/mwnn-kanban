@@ -60,8 +60,11 @@ What the slice of work is.
   for a new card. Omit the key entirely rather than writing an empty value.
 - `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or
   `{ kind: human, name: Alice }`. Omit for unassigned.
-- `dependsOn` (optional) — array of card ids this card is blocked by, e.g.
-  `[card-x, card-y]`. Omit when empty.
+- `dependsOn` (optional) — array of ids of other cards this card is blocked by,
+  e.g. `[card-x, card-y]`. The card stays blocked until every listed card reaches
+  a `done` column, and a blocked card cannot advance past the Ready column.
+  Reference only ids that exist (or that you are creating in the same batch);
+  never list the card's own id or form a cycle. Omit the key when empty.
 
 ### Scalar quoting (match the extension's parser)
 

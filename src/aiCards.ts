@@ -126,7 +126,7 @@ export function buildPlanImportPrompt(
 
   return [
     'You are an AI agent importing a written plan into a Methodology With No Name (MWNN) Kanban board.',
-    'Turn the plan into Backlog cards: create one card per genuine, actionable unit of work — a discrete slice someone could pick up and do. For each card write a Description, a concrete Acceptance criteria checklist, and an assignee (Human or AI). Write the cards yourself as files; do not just describe them.',
+    'Turn the plan into Backlog cards: create one card per genuine, actionable unit of work — a discrete slice someone could pick up and do. For each card write a Description, a concrete Acceptance criteria checklist, an assignee (Human or AI), and any dependencies on other cards. Write the cards yourself as files; do not just describe them.',
     '',
     'Follow these repository skills for the full rules:',
     ...skillPaths.map((path) => `  - ${path}`),
@@ -144,6 +144,7 @@ export function buildPlanImportPrompt(
     `  column: ${target.columnId}`,
     '  position: <integer, ascending, after existing cards>',
     '  assignee: { kind: ai }   # or { kind: human }',
+    '  dependsOn: [card-<id>, …]   # omit this line when the card has no prerequisites',
     '  createdAt: <unix epoch ms>',
     '  updatedAt: <unix epoch ms>',
     '  ---',
@@ -159,7 +160,8 @@ export function buildPlanImportPrompt(
     `Target column: "${target.columnTitle}" (id ${target.columnId}), which already has ${target.existingCount} card(s). Give new cards unique ids and ascending position values (step ~1000) starting after the existing cards so plan order is preserved.`,
     'Fill "## Acceptance criteria" for every card with a short markdown checklist (- [ ] …) of concrete, testable conditions drawn from the item — do not leave it empty, but do not pad with filler.',
     'Set "assignee" on every card: use { kind: ai } for implementation, coding, refactoring, testing, or otherwise automatable work; use { kind: human } for product or design decisions, reviews and sign-off, or manual/external steps that need a person. When genuinely unsure, prefer { kind: ai }.',
-    'The extension watches the board folder and reloads automatically once the files are written.',
+    'Set "dependsOn" where the plan implies one item must be finished before another can start (wording like "after", "once … is done", "depends on", "requires", or a foundation/phase a later item builds on). List the prerequisite card\'s id(s) in the dependent card\'s dependsOn, and omit the line otherwise. Decide each card\'s id before writing so a later card can reference an earlier one. Only link genuine prerequisites — do NOT chain cards just because they are listed in order — and never create a self-dependency or a cycle. Reference only ids of cards in this import.',
+    'The extension watches the board folder and reloads automatically once the files are written. A card with unfinished dependencies is shown as blocked and cannot advance past the Ready column until they are done.',
     '',
     ...planSection,
     '',

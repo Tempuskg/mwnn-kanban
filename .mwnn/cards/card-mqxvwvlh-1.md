@@ -2,7 +2,7 @@
 id: card-mqxvwvlh-1
 title: allow user to zoom in and out on board
 column: col-mqwk2njn-4
-position: 5000
+position: 7000
 assignee: { kind: human }
 createdAt: 1782656936693
 updatedAt: 1782822023025

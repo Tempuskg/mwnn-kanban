@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import type { BoardStore } from './boardStore';
+import type { BoardPanelStatus } from './boardButton';
 import { cardNeedsDefinition } from './cardDefinition';
 import { canMoveCardToColumn } from './utils';
 import { isWebviewToHostMessage, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
@@ -41,6 +42,15 @@ export class BoardPanel {
 
   private static current: BoardPanel | undefined;
 
+  private static readonly onDidChangeStateEmitter = new vscode.EventEmitter<void>();
+
+  /**
+   * Fires whenever the board panel is opened, disposed, or gains/loses focus,
+   * so observers (e.g. the sidebar view) can re-render state that depends on the
+   * panel's presence or focus.
+   */
+  static readonly onDidChangeState = BoardPanel.onDidChangeStateEmitter.event;
+
   private readonly disposables: vscode.Disposable[] = [];
 
   private constructor(
@@ -49,6 +59,13 @@ export class BoardPanel {
   ) {
     this.panel.webview.html = this.renderHtml(this.panel.webview);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // Focus/blur (and show/hide) of the panel change what the sidebar button
+    // should offer, so surface every view-state change to observers.
+    this.panel.onDidChangeViewState(
+      () => BoardPanel.onDidChangeStateEmitter.fire(),
+      null,
+      this.disposables,
+    );
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => {
         if (!isWebviewToHostMessage(message)) {
@@ -62,9 +79,19 @@ export class BoardPanel {
     );
   }
 
+  /** The current open/focused status of the board panel singleton. */
+  static status(): BoardPanelStatus {
+    return {
+      open: BoardPanel.current !== undefined,
+      focused: BoardPanel.current?.panel.active ?? false,
+    };
+  }
+
   static show(deps: BoardPanelDeps): BoardPanel {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
     if (BoardPanel.current) {
+      // Revealing an already-open panel fires onDidChangeViewState, which
+      // notifies observers on its own.
       BoardPanel.current.panel.reveal(column);
       return BoardPanel.current;
     }
@@ -74,6 +101,7 @@ export class BoardPanel {
       localResourceRoots: [vscode.Uri.joinPath(deps.extensionUri, 'media')],
     });
     BoardPanel.current = new BoardPanel(panel, deps);
+    BoardPanel.onDidChangeStateEmitter.fire();
     return BoardPanel.current;
   }
 
@@ -102,6 +130,7 @@ export class BoardPanel {
     }
 
     BoardPanel.current = new BoardPanel(panel, deps);
+    BoardPanel.onDidChangeStateEmitter.fire();
     return BoardPanel.current;
   }
 
@@ -335,6 +364,7 @@ export class BoardPanel {
 
   private dispose(): void {
     BoardPanel.current = undefined;
+    BoardPanel.onDidChangeStateEmitter.fire();
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }

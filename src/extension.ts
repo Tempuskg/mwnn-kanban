@@ -233,7 +233,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       BoardSidebarViewProvider.viewType,
-      new BoardSidebarViewProvider(context.extensionUri, openBoard, () => void importPlan()),
+      new BoardSidebarViewProvider(
+        context.extensionUri,
+        openBoard,
+        () => void importPlan(),
+        () => BoardPanel.status(),
+        BoardPanel.onDidChangeState,
+      ),
     ),
   );
   context.subscriptions.push(
@@ -486,6 +492,10 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
         context.extensionUri,
         () => void showWorkspaceMessage(),
         () => void showWorkspaceMessage(),
+        // No workspace means no board can open; the button stays in its default
+        // "Open Board" state and never changes.
+        () => ({ open: false, focused: false }),
+        BoardPanel.onDidChangeState,
       ),
     ),
     vscode.commands.registerCommand('mwnn-kanban.openBoard', showWorkspaceMessage),

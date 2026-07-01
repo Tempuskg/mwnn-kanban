@@ -1,32 +1,52 @@
 /**
  * The activity-bar sidebar view for MWNN Kanban. Showing this view (by clicking
  * the activity-bar icon) opens the full Kanban board panel in the editor area,
- * and the view itself offers a button to (re)open the board on demand.
+ * and the view itself offers a button whose label/visibility reflects the board
+ * panel's current state: "Open Board" when closed, "Focus Board" when open but
+ * unfocused, and hidden when the board is already open and focused.
  */
 
 import * as vscode from 'vscode';
+import { boardButtonMode, boardButtonLabel, type BoardButtonMode, type BoardPanelStatus } from './boardButton';
 
 export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'mwnn-kanban.sidebar';
+
+  private view: vscode.WebviewView | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly openBoard: () => void,
     private readonly importPlan: () => void,
+    private readonly boardStatus: () => BoardPanelStatus,
+    private readonly onBoardStateChange: vscode.Event<void>,
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.view = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
     };
-    webviewView.webview.html = this.renderHtml(webviewView.webview);
+    webviewView.webview.html = this.renderHtml(webviewView.webview, boardButtonMode(this.boardStatus()));
 
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
       if (isSidebarMessage(message, 'openBoard')) {
+        // Routes through the singleton openBoard() path in every button state,
+        // so an existing panel is revealed rather than duplicated.
         this.openBoard();
       } else if (isSidebarMessage(message, 'importPlan')) {
         this.importPlan();
+      }
+    });
+
+    // Keep the button in sync as the board panel opens, closes, and gains or
+    // loses focus, without needing the sidebar to reload.
+    const stateSubscription = this.onBoardStateChange(() => this.postButtonState());
+    webviewView.onDidDispose(() => {
+      stateSubscription.dispose();
+      if (this.view === webviewView) {
+        this.view = undefined;
       }
     });
 
@@ -39,7 +59,15 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private renderHtml(webview: vscode.Webview): string {
+  /** Push the current button mode into the sidebar webview. */
+  private postButtonState(): void {
+    void this.view?.webview.postMessage({
+      type: 'boardButton',
+      mode: boardButtonMode(this.boardStatus()),
+    } satisfies SidebarButtonMessage);
+  }
+
+  private renderHtml(webview: vscode.Webview, mode: BoardButtonMode): string {
     const nonce = makeNonce();
     const csp = [
       `default-src 'none'`,
@@ -67,31 +95,58 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       font-family: inherit;
     }
     button:hover { background: var(--vscode-button-hoverBackground); }
+    /* Hidden entirely so it leaves no empty control or leftover spacing. */
+    button[hidden] { display: none; }
     button.secondary {
       margin-top: 8px;
       color: var(--vscode-button-secondaryForeground);
       background: var(--vscode-button-secondaryBackground);
     }
     button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    /* Drop the gap above "Import plan" when it is the only visible button. */
+    button#open[hidden] + button.secondary { margin-top: 0; }
   </style>
   <title>MWNN Kanban</title>
 </head>
 <body>
   <p>The MWNN Kanban board opens in the editor area.</p>
-  <button id="open" type="button">Open Board</button>
+  <button id="open" type="button"${mode === 'hidden' ? ' hidden' : ''}>${boardButtonLabel(mode)}</button>
   <button id="import" type="button" class="secondary" title="Hand a written plan to AI to import as Backlog cards">Import plan</button>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    document.getElementById('open').addEventListener('click', () => {
+    const openButton = document.getElementById('open');
+    openButton.addEventListener('click', () => {
       vscode.postMessage({ type: 'openBoard' });
     });
     document.getElementById('import').addEventListener('click', () => {
       vscode.postMessage({ type: 'importPlan' });
     });
+
+    function applyButtonMode(mode) {
+      if (mode === 'hidden') {
+        openButton.hidden = true;
+        return;
+      }
+      openButton.hidden = false;
+      openButton.textContent = mode === 'focus' ? 'Focus Board' : 'Open Board';
+    }
+
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (message && message.type === 'boardButton') {
+        applyButtonMode(message.mode);
+      }
+    });
   </script>
 </body>
 </html>`;
   }
+}
+
+/** Host → sidebar-webview message carrying the button presentation to render. */
+interface SidebarButtonMessage {
+  readonly type: 'boardButton';
+  readonly mode: BoardButtonMode;
 }
 
 function isSidebarMessage<T extends string>(message: unknown, type: T): message is { type: T } {
