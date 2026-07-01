@@ -44,12 +44,14 @@ const COMMANDS_SUPPORTING_POSITIONAL_PROMPT = new Set([
 // Candidate "open chat" commands per provider, in preference order. Verified
 // against the published extension manifests:
 //   - GitHub Copilot Chat: workbench.action.chat.open (built into VS Code)
-//   - openai.chatgpt (Codex): chatgpt.openSidebar / chatgpt.newChat
+//   - openai.chatgpt (Codex): chatgpt.newChat / chatgpt.openSidebar
 //   - anthropic.claude-code: editor.open / primaryEditor.open accept the prompt
 //     positionally; sidebar.open / newConversation are clipboard-only fallbacks.
 const HANDOFF_TARGET_CANDIDATES: Record<ChatProviderId, readonly string[]> = {
   copilot: ['workbench.action.chat.open'],
-  codex: ['chatgpt.openSidebar', 'chatgpt.newChat', 'chatgpt.newCodexPanel'],
+  // Prefer a fresh Codex thread so clipboard-based handoffs land in an empty
+  // composer instead of reopening the last active sidebar conversation.
+  codex: ['chatgpt.newChat', 'chatgpt.openSidebar', 'chatgpt.newCodexPanel'],
   'claude-code': [
     'claude-vscode.editor.open',
     'claude-vscode.primaryEditor.open',
@@ -104,4 +106,23 @@ export function listAvailableChatProviders(
   return providers
     .map((provider) => resolveChatHandoffTarget(provider, availableCommands, configuredCommands))
     .filter((target): target is ChatHandoffTarget => target !== undefined);
+}
+
+/** Whether this target should auto-paste the clipboard after opening chat. */
+export function shouldAutoPasteChatHandoff(target: ChatHandoffTarget): boolean {
+  return target.provider === 'codex' && target.commandId === 'chatgpt.newChat';
+}
+
+/** Human-readable detail text for the handoff provider picker. */
+export function describeChatHandoffTarget(target: ChatHandoffTarget): string {
+  if (target.promptDelivery === 'query') {
+    return 'Sends the card prompt straight to the chat input';
+  }
+  if (target.promptDelivery === 'positional') {
+    return 'Opens the chat window pre-filled with the card prompt';
+  }
+  if (shouldAutoPasteChatHandoff(target)) {
+    return 'Starts a fresh Codex thread and auto-pastes the prompt';
+  }
+  return 'Opens the chat window with the prompt on the clipboard to paste';
 }

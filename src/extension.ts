@@ -12,11 +12,21 @@ import {
 } from './aiCards';
 import {
   CHAT_PROVIDER_LABELS,
+  describeChatHandoffTarget,
   listAvailableChatProviders,
+  shouldAutoPasteChatHandoff,
   type ChatHandoffTarget,
   type ChatProviderCommands,
   type ChatProviderId,
 } from './chatHandoff';
+import {
+  buildDoabilityPrompt,
+  parseDoabilityDecision,
+  runBoardLoop,
+  type LoopGateways,
+  type LoopSummary,
+  type LoopTriageDecision,
+} from './boardLoop';
 import { BoardPanel } from './boardPanel';
 import { BoardSidebarViewProvider } from './sidebarView';
 import { createBoardStore, type FileSystemLike } from './boardStore';
@@ -207,6 +217,84 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   };
 
+  // At most one AI loop runs at a time; the flag doubles as its cancel switch.
+  let activeLoop: { cancelled: boolean } | undefined;
+
+  const runBoardLoopCommand = async (): Promise<void> => {
+    if (!readEnableRunWithAI()) {
+      void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to use this command.');
+      return;
+    }
+    if (activeLoop) {
+      void vscode.window.showInformationMessage('The MWNN AI loop is already running.');
+      return;
+    }
+
+    const target = await pickChatProvider();
+    if (!target) {
+      return;
+    }
+
+    const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
+    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+    const cardFilePath = (card: BoardCard): string => `${boardFolder}/cards/${card.id}.md`;
+
+    const gateways: LoopGateways = {
+      dispatchCard: async (card) => {
+        const handedOff = await handOffPromptToChat(target, buildCardHandoffPrompt(card, cardFilePath(card)), `"${card.title}"`);
+        if (handedOff) {
+          await store.appendActivity(card.id, formatHandoffEntry(providerLabel));
+          BoardPanel.postStateIfOpen();
+        }
+        return handedOff;
+      },
+      requestDefinition: async (card) => {
+        const handedOff = await handOffPromptToChat(target, buildCardDefinitionPrompt(card, cardFilePath(card)), `"${card.title}"`);
+        if (handedOff) {
+          await store.appendActivity(card.id, formatDefinitionHandoffEntry(providerLabel));
+          BoardPanel.postStateIfOpen();
+        }
+        return handedOff;
+      },
+      decideDoability: decideCardDoability,
+    };
+
+    const loop = { cancelled: false };
+    activeLoop = loop;
+    try {
+      const summary = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'MWNN AI loop',
+          cancellable: true,
+        },
+        (progress, token) => {
+          token.onCancellationRequested(() => {
+            loop.cancelled = true;
+          });
+          return runBoardLoop(
+            store,
+            gateways,
+            { isCancelled: () => loop.cancelled, delay: waitForMilliseconds },
+            { onEvent: (message) => progress.report({ message }) },
+          );
+        },
+      );
+      BoardPanel.postStateIfOpen();
+      void vscode.window.showInformationMessage(summarizeLoopRun(summary));
+    } finally {
+      activeLoop = undefined;
+    }
+  };
+
+  const stopBoardLoopCommand = (): void => {
+    if (!activeLoop) {
+      void vscode.window.showInformationMessage('The MWNN AI loop is not running.');
+      return;
+    }
+    activeLoop.cancelled = true;
+  };
+
   const boardPanelDeps = {
     store,
     extensionUri: context.extensionUri,
@@ -237,6 +325,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         context.extensionUri,
         openBoard,
         () => void importPlan(),
+        () => void runBoardLoopCommand(),
         () => BoardPanel.status(),
         BoardPanel.onDidChangeState,
       ),
@@ -333,6 +422,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('mwnn-kanban.runCardWithAI', async () => {
       await runCardWithAISelection();
+    }),
+    vscode.commands.registerCommand('mwnn-kanban.runBoardLoop', async () => {
+      await runBoardLoopCommand();
+    }),
+    vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', () => {
+      stopBoardLoopCommand();
     }),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', async () => {
       await importPlan();
@@ -492,6 +587,7 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
         context.extensionUri,
         () => void showWorkspaceMessage(),
         () => void showWorkspaceMessage(),
+        () => void showWorkspaceMessage(),
         // No workspace means no board can open; the button stays in its default
         // "Open Board" state and never changes.
         () => ({ open: false, focused: false }),
@@ -504,6 +600,8 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mwnn-kanban.deleteColumn', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.setColumnLimits', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.runCardWithAI', showWorkspaceMessage),
+    vscode.commands.registerCommand('mwnn-kanban.runBoardLoop', showWorkspaceMessage),
+    vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', showWorkspaceMessage),
   );
@@ -658,6 +756,57 @@ function findCardById(state: BoardState, cardId: string): BoardCard | undefined 
   return undefined;
 }
 
+/**
+ * Ask a language model whether an AI agent could complete this card, for the
+ * loop's unassigned-card triage. Uses the VS Code Language Model API (any
+ * available model) because — unlike the chat hand-off — the answer must come
+ * back programmatically. Returns undefined when no model is available or the
+ * response has no verdict, in which case the loop leaves the card unassigned.
+ */
+async function decideCardDoability(card: BoardCard): Promise<LoopTriageDecision | undefined> {
+  try {
+    const [model] = await vscode.lm.selectChatModels();
+    if (!model) {
+      return undefined;
+    }
+    const response = await model.sendRequest(
+      [vscode.LanguageModelChatMessage.User(buildDoabilityPrompt(card))],
+      {},
+    );
+    let text = '';
+    for await (const fragment of response.text) {
+      text += fragment;
+    }
+    return parseDoabilityDecision(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function summarizeLoopRun(summary: LoopSummary): string {
+  const parts: string[] = [];
+  if (summary.dispatched.length > 0) {
+    parts.push(`dispatched ${summary.dispatched.length}`);
+  }
+  if (summary.advanced.length > 0) {
+    parts.push(`advanced ${summary.advanced.length}`);
+  }
+  if (summary.parked.length > 0) {
+    parts.push(`parked ${summary.parked.length} in Verify for human sign-off`);
+  }
+  if (summary.triagedToAi.length > 0 || summary.triagedToHuman.length > 0) {
+    parts.push(`triaged ${summary.triagedToAi.length} to AI and ${summary.triagedToHuman.length} to Human`);
+  }
+  if (summary.definitionsRequested.length > 0) {
+    parts.push(`requested ${summary.definitionsRequested.length} definition(s)`);
+  }
+  if (summary.skipped.length > 0) {
+    parts.push(`skipped ${summary.skipped.length}`);
+  }
+  const activity = parts.length > 0 ? parts.join(', ') : 'no eligible cards found';
+  return summary.cancelled ? `MWNN AI loop stopped: ${activity}.` : `MWNN AI loop finished: ${activity}.`;
+}
+
 async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
   const availableCommands = await vscode.commands.getCommands(true);
   const targets = listAvailableChatProviders(availableCommands, readChatProviderCommands());
@@ -675,9 +824,7 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
   const choice = await vscode.window.showQuickPick(
     targets.map((target) => ({
       label: CHAT_PROVIDER_LABELS[target.provider],
-      detail: target.promptDelivery === 'clipboard'
-        ? 'Opens the chat window with the card prompt on the clipboard to paste'
-        : 'Sends the card prompt straight to the chat input',
+      detail: describeChatHandoffTarget(target),
       target,
     })),
     { placeHolder: 'Hand this card off to which AI chat?' },
@@ -714,6 +861,22 @@ async function handOffPromptToChat(
 
     await vscode.env.clipboard.writeText(prompt);
     await vscode.commands.executeCommand(target.commandId);
+    if (shouldAutoPasteChatHandoff(target)) {
+      try {
+        // Let Codex focus its composer before we issue the paste command.
+        await waitForMilliseconds(150);
+        await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+        void vscode.window.showInformationMessage(
+          `Opened a new ${providerLabel} thread for ${subject}. The prompt was pasted automatically and is still on your clipboard.`,
+        );
+      } catch (pasteError: unknown) {
+        const message = pasteError instanceof Error ? pasteError.message : String(pasteError);
+        void vscode.window.showWarningMessage(
+          `Opened a new ${providerLabel} thread for ${subject}, but auto-paste failed. The prompt is still on your clipboard.${message ? ` ${message}` : ''}`,
+        );
+      }
+      return true;
+    }
     void vscode.window.showInformationMessage(
       `Opened ${providerLabel} for ${subject}. The prompt is on your clipboard — paste it to start.`,
     );
@@ -723,6 +886,12 @@ async function handOffPromptToChat(
     void vscode.window.showWarningMessage(`Could not hand off to ${providerLabel}: ${message}`);
     return false;
   }
+}
+
+function waitForMilliseconds(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
 }
 
 async function promptForLimit(
@@ -756,4 +925,3 @@ async function promptForLimit(
     value: trimmed.length === 0 ? null : Number(trimmed),
   };
 }
-

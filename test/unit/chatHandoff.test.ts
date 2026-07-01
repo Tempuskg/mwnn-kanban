@@ -1,8 +1,10 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
+  describeChatHandoffTarget,
   listAvailableChatProviders,
   resolveChatHandoffTarget,
+  shouldAutoPasteChatHandoff,
 } from '../../src/chatHandoff';
 
 suite('chat handoff resolution', () => {
@@ -37,10 +39,10 @@ suite('chat handoff resolution', () => {
     assert.equal(resolveChatHandoffTarget('codex', ['some.unrelated.command']), undefined);
   });
 
-  test('prefers the first available candidate in preference order', () => {
+  test('prefers a fresh Codex thread before reopening the sidebar', () => {
     const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat', 'chatgpt.openSidebar']);
 
-    assert.equal(target?.commandId, 'chatgpt.openSidebar');
+    assert.equal(target?.commandId, 'chatgpt.newChat');
   });
 
   test('honours a configured command override before built-in candidates', () => {
@@ -64,5 +66,24 @@ suite('chat handoff resolution', () => {
       targets.map((target) => target.provider),
       ['copilot', 'claude-code'],
     );
+  });
+
+  test('describes Codex new-chat handoffs as clipboard-based fresh threads', () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat']);
+
+    assert.equal(
+      describeChatHandoffTarget(target!),
+      'Starts a fresh Codex thread and auto-pastes the prompt',
+    );
+  });
+
+  test('auto-paste is enabled only for Codex new-chat handoffs', () => {
+    const codexNewChat = resolveChatHandoffTarget('codex', ['chatgpt.newChat']);
+    const codexSidebar = resolveChatHandoffTarget('codex', ['chatgpt.openSidebar']);
+    const copilot = resolveChatHandoffTarget('copilot', ['workbench.action.chat.open']);
+
+    assert.equal(shouldAutoPasteChatHandoff(codexNewChat!), true);
+    assert.equal(shouldAutoPasteChatHandoff(codexSidebar!), false);
+    assert.equal(shouldAutoPasteChatHandoff(copilot!), false);
   });
 });

@@ -18,6 +18,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly openBoard: () => void,
     private readonly importPlan: () => void,
+    private readonly runAiLoop: () => void,
     private readonly boardStatus: () => BoardPanelStatus,
     private readonly onBoardStateChange: vscode.Event<void>,
   ) {}
@@ -37,6 +38,8 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
         this.openBoard();
       } else if (isSidebarMessage(message, 'importPlan')) {
         this.importPlan();
+      } else if (isSidebarMessage(message, 'runAiLoop')) {
+        this.runAiLoop();
       }
     });
 
@@ -112,6 +115,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   <p>The MWNN Kanban board opens in the editor area.</p>
   <button id="open" type="button"${mode === 'hidden' ? ' hidden' : ''}>${boardButtonLabel(mode)}</button>
   <button id="import" type="button" class="secondary" title="Hand a written plan to AI to import as Backlog cards">Import plan</button>
+  <button id="run-loop" type="button" class="secondary" title="Automatically triage and run AI-assigned and unassigned cards, parking finished work in Verify for human sign-off">Run AI loop</button>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const openButton = document.getElementById('open');
@@ -120,6 +124,9 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     });
     document.getElementById('import').addEventListener('click', () => {
       vscode.postMessage({ type: 'importPlan' });
+    });
+    document.getElementById('run-loop').addEventListener('click', () => {
+      vscode.postMessage({ type: 'runAiLoop' });
     });
 
     function applyButtonMode(mode) {

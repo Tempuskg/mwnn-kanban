@@ -79,6 +79,16 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.runBoardLoop",
+        "title": "Run Board with AI Loop",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.stopBoardLoop",
+        "title": "Stop AI Loop",
+        "category": "MWNN Kanban"
+      },
+      {
         "command": "mwnn-kanban.importPlan",
         "title": "Import Plan",
         "category": "MWNN Kanban"
@@ -169,6 +179,14 @@
         },
         {
           "command": "mwnn-kanban.runCardWithAI",
+          "when": "config.mwnn-kanban.enableRunWithAI"
+        },
+        {
+          "command": "mwnn-kanban.runBoardLoop",
+          "when": "config.mwnn-kanban.enableRunWithAI"
+        },
+        {
+          "command": "mwnn-kanban.stopBoardLoop",
           "when": "config.mwnn-kanban.enableRunWithAI"
         },
         {
