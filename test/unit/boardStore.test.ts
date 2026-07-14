@@ -127,6 +127,12 @@ function createDeps(overrides: Partial<BoardStoreDeps> = {}): BoardStoreDeps {
   };
 }
 
+function cardDocuments(snapshot: Map<string, string>): CardDocument[] {
+  return [...snapshot.entries()]
+    .filter(([filePath]) => filePath.startsWith('.mwnn/cards/') && filePath.endsWith('.md'))
+    .map(([, content]) => parseCard(content));
+}
+
 suite('board store', () => {
   test('initializes from default columns and writes the board files when storage is empty', async () => {
     const fileSystem = createFakeFileSystem();
@@ -297,6 +303,199 @@ suite('board store', () => {
     assert.deepEqual(
       store.getState().columns[0]!.cards.map((card) => card.title),
       ['A', 'B'],
+    );
+  });
+
+  test('preserves existing positions when appending a card', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const firstCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: { id: 'card-a', title: 'A', createdAt: 1 },
+    };
+    const secondCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 2000,
+      card: { id: 'card-b', title: 'B', createdAt: 2 },
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-a.md': serializeCard(firstCard),
+      '.mwnn/cards/card-b.md': serializeCard(secondCard),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.addCard('col-ready', 'C');
+
+    const after = fileSystem.snapshot();
+    assert.equal(after.get('.mwnn/cards/card-a.md'), before.get('.mwnn/cards/card-a.md'));
+    assert.equal(after.get('.mwnn/cards/card-b.md'), before.get('.mwnn/cards/card-b.md'));
+    const positions = cardDocuments(after).map((document) => [document.card.title, document.position]);
+    assert.deepEqual(positions.sort((left, right) => String(left[0]).localeCompare(String(right[0]))), [
+      ['A', 1000],
+      ['B', 2000],
+      ['C', 3000],
+    ]);
+  });
+
+  test('preserves sparse, fractional, and negative positions from an existing board', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const cards = [
+      { columnId: 'col-ready', position: -500.5, card: { id: 'card-a', title: 'A', createdAt: 1 } },
+      { columnId: 'col-ready', position: 42.25, card: { id: 'card-b', title: 'B', createdAt: 2 } },
+      { columnId: 'col-ready', position: 9000, card: { id: 'card-c', title: 'C', createdAt: 3 } },
+    ] satisfies CardDocument[];
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      ...Object.fromEntries(cards.map((card) => [`.mwnn/cards/${card.card.id}.md`, serializeCard(card)])),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.addCard('col-ready', 'D');
+
+    const after = fileSystem.snapshot();
+    for (const card of cards) {
+      const filePath = `.mwnn/cards/${card.card.id}.md`;
+      assert.equal(after.get(filePath), before.get(filePath));
+    }
+    assert.equal(cardDocuments(after).find((document) => document.card.title === 'D')?.position, 10000);
+  });
+
+  test('assigns only a duplicated card the midpoint position', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const firstCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: { id: 'card-a', title: 'A', createdAt: 1 },
+    };
+    const secondCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 2000,
+      card: { id: 'card-b', title: 'B', createdAt: 2 },
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-a.md': serializeCard(firstCard),
+      '.mwnn/cards/card-b.md': serializeCard(secondCard),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.duplicateCard('card-a');
+
+    const after = fileSystem.snapshot();
+    assert.equal(after.get('.mwnn/cards/card-a.md'), before.get('.mwnn/cards/card-a.md'));
+    assert.equal(after.get('.mwnn/cards/card-b.md'), before.get('.mwnn/cards/card-b.md'));
+    const duplicate = cardDocuments(after).find((document) => document.card.title === 'A (copy)');
+    assert.ok(duplicate);
+    assert.equal(duplicate.position, 1500);
+    const reloaded = await createBoardStore(createDeps({ fileSystem }));
+    assert.deepEqual(reloaded.getState().columns[0]!.cards.map((card) => card.title), ['A', 'A (copy)', 'B']);
+  });
+
+  test('updates only the moved card position during a same-column reorder', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const cards = [
+      { columnId: 'col-ready', position: 1000, card: { id: 'card-a', title: 'A', createdAt: 1 } },
+      { columnId: 'col-ready', position: 2000, card: { id: 'card-b', title: 'B', createdAt: 2 } },
+      { columnId: 'col-ready', position: 3000, card: { id: 'card-c', title: 'C', createdAt: 3 } },
+    ] satisfies CardDocument[];
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      ...Object.fromEntries(cards.map((card) => [`.mwnn/cards/${card.card.id}.md`, serializeCard(card)])),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.moveCard('card-a', 'col-ready', 3);
+
+    const after = fileSystem.snapshot();
+    assert.equal(after.get('.mwnn/cards/card-b.md'), before.get('.mwnn/cards/card-b.md'));
+    assert.equal(after.get('.mwnn/cards/card-c.md'), before.get('.mwnn/cards/card-c.md'));
+    assert.equal(parseCard(after.get('.mwnn/cards/card-a.md') ?? '').position, 4000);
+    const reloaded = await createBoardStore(createDeps({ fileSystem }));
+    assert.deepEqual(reloaded.getState().columns[0]!.cards.map((card) => card.title), ['B', 'C', 'A']);
+  });
+
+  test('repairs duplicate existing positions deterministically when the next card is added', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const firstCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: { id: 'card-a', title: 'A', createdAt: 1 },
+    };
+    const secondCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: { id: 'card-b', title: 'B', createdAt: 2 },
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-b.md': serializeCard(secondCard),
+      '.mwnn/cards/card-a.md': serializeCard(firstCard),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.addCard('col-ready', 'C');
+
+    const after = fileSystem.snapshot();
+    assert.equal(after.get('.mwnn/cards/card-a.md'), before.get('.mwnn/cards/card-a.md'));
+    assert.equal(parseCard(after.get('.mwnn/cards/card-b.md') ?? '').position, 2000);
+    assert.equal(cardDocuments(after).find((document) => document.card.title === 'C')?.position, 3000);
+    const reloaded = await createBoardStore(createDeps({ fileSystem }));
+    assert.deepEqual(reloaded.getState().columns[0]!.cards.map((card) => card.title), ['A', 'B', 'C']);
+  });
+
+  test('keeps repeated same-gap insertions unique after numeric midpoint precision is exhausted', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const firstCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 0,
+      card: { id: 'card-a', title: 'A', createdAt: 1 },
+    };
+    const secondCard: CardDocument = {
+      columnId: 'col-ready',
+      position: 1,
+      card: { id: 'card-b', title: 'B', createdAt: 2 },
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-a.md': serializeCard(firstCard),
+      '.mwnn/cards/card-b.md': serializeCard(secondCard),
+    });
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    for (let index = 0; index < 60; index += 1) {
+      await store.duplicateCard('card-a');
+    }
+
+    const documents = cardDocuments(fileSystem.snapshot());
+    const positions = documents.map((document) => document.position);
+    assert.equal(new Set(positions).size, positions.length);
+    assert.deepEqual(
+      store.getState().columns[0]!.cards.map((card) => card.id),
+      [...documents].sort((left, right) => left.position - right.position).map((document) => document.card.id),
     );
   });
 

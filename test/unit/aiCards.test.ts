@@ -164,19 +164,21 @@ suite('ai card helpers', () => {
     assert.match(prompt, /never create a self-dependency or a cycle/i);
   });
 
-  test('buildPlanImportPrompt embeds trimmed plan text for a clipboard source', () => {
+  test('buildPlanImportPrompt keeps the supplied path for the AI to read', () => {
     const prompt = buildPlanImportPrompt(
-      { kind: 'text', text: '\n\n- [ ] Ship the parser\n- [ ] Wire the command\n\n' },
+      { kind: 'file', path: 'C:\\plans\\implementation.md' },
       { columnId: 'col-1', columnTitle: 'To Do', existingCount: 0 },
       '.mwnn/',
       ['.github/instructions/mwnn-plan-import.instructions.md'],
     );
 
-    assert.match(prompt, /Here is the plan to import:/);
-    assert.match(prompt, /- \[ \] Ship the parser\n- \[ \] Wire the command/);
+    assert.match(prompt, /workspace-relative or absolute/);
+    assert.match(prompt, /C:\\plans\\implementation\.md/);
+    assert.match(prompt, /verify that the supplied path exists, is readable/i);
+    assert.match(prompt, /same plan again must be idempotent/i);
     // Trailing slash on the board folder is normalized in the cards path.
     assert.match(prompt, /\.mwnn\/cards\/<id>\.md/);
-    assert.doesNotMatch(prompt, /Read the plan document at this path/);
+    assert.match(prompt, /Read the plan document at this path/);
   });
 
   test('formatDefinitionHandoffEntry records the provider and a timestamped definition note', () => {

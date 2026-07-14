@@ -1,11 +1,11 @@
 ---
 id: card-mqz7b9ae-3
 title: Create an AI loop feature that automatically runs the board and leaves cards at the Verify column and assigns them to Human
-column: col-mqwk2njn-3
+column: col-mqwk2njn-4
 position: 1000
-assignee: { kind: ai }
+assignee: { kind: human }
 createdAt: 1782736549574
-updatedAt: 1782942935360
+updatedAt: 1783979860972
 dependsOn: [card-mqz791h5-2]
 ---
 

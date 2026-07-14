@@ -13,6 +13,38 @@ failure to avoid — most lines in a real plan are structure, metadata, or
 narrative, not tasks. Use judgment. Write cards using the companion **MWNN Card
 Authoring** skill's file contract.
 
+## Read the supplied path first
+
+The handoff supplies the plan's local path. If it is workspace-relative, resolve
+it from the current workspace root; if it is absolute, read it directly. Read
+the file before touching `.mwnn/`. The extension does not parse or provide the
+plan contents. If the path is missing, unreadable, invalid, or points to a
+directory, create no cards and report the exact path and reason with
+`STATUS: BLOCKED`.
+
+## Import verification and idempotency
+
+Treat an import as a repeatable synchronization, not a one-time append:
+
+1. Before writing, inventory the existing cards and derive a stable import key
+   for each actionable item from the source plan identity plus its location and
+   normalized title. Search existing card `Activity`, description, and title
+   for that key or an unambiguous equivalent scope.
+2. Reuse an existing matching card and do not create a duplicate. If a match is
+   ambiguous, stop that item for review rather than guessing. For new cards,
+   record the import key and source item in `Activity` so a later import can
+   recognize it.
+3. After writing, count the actionable items, existing matches, and newly
+   created cards. Verify that every intended item maps to exactly one card and
+   record the mapping of import key to card `id` in the import handoff.
+4. Validate every `dependsOn` reference against existing or newly created card
+   ids, and check for self-dependencies or cycles. Confirm each card filename
+   matches its frontmatter `id` and that all cards use the intended Backlog
+   column.
+5. Do not report the import as complete when counts, mappings, dependency
+   references, or file identities do not reconcile; fix the discrepancy or
+   report the specific unresolved item.
+
 ## What is a card
 
 A card is a discrete slice of work someone could pick up and do next — a task, a

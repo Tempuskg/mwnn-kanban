@@ -4,7 +4,10 @@
  *   - parks AI cards that reached the `verify` column and reassigns them to a
  *     human, so a person owns sign-off (the loop never moves cards into Done),
  *   - triages unassigned cards by asking the AI whether the card is doable by
- *     an agent (filling in the definition first when the card is title-only),
+ *     an agent (filling in the definition first when the card is title-only);
+ *     a card the loop defines this way is parked at the end of the Ready
+ *     column and rests there for the remainder of the run, so a human can
+ *     review the fresh definition before implementation starts,
  *   - advances unblocked AI cards through the ordered columns, handing the card
  *     off to the chat agent in each work column and waiting for its
  *     `STATUS: DONE` report before moving on.
@@ -21,12 +24,17 @@ import type { Assignee, BoardState, Card, Column } from './types';
 
 export type LoopTriageDecision = 'ai' | 'human';
 
+export interface DoabilityVerdict {
+  readonly decision: LoopTriageDecision;
+  /** One-sentence explanation of the decision, when the model gave one. */
+  readonly reason?: string;
+}
+
 /** Tokens the doability prompt asks for; parsing keys off these exact words. */
 const DOABLE_TOKEN = 'DOABLE_BY_AI';
 const NEEDS_HUMAN_TOKEN = 'NEEDS_HUMAN';
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
-const DEFAULT_WAIT_TIMEOUT_MS = 15 * 60_000;
 
 /** Subset of the BoardStore the loop mutates through (never direct file writes). */
 export interface LoopStore {
@@ -42,8 +50,17 @@ export interface LoopGateways {
   dispatchCard(card: Card): Promise<boolean>;
   /** Hand the card to the fill-with-AI definition flow. False = hand-off failed. */
   requestDefinition(card: Card): Promise<boolean>;
-  /** Ask the AI whether an agent can do this card; undefined = no answer. */
-  decideDoability(card: Card): Promise<LoopTriageDecision | undefined>;
+  /**
+   * Ask the AI directly whether an agent can do this card; undefined = no
+   * answer channel (e.g. no language model available) or no verdict.
+   */
+  decideDoability(card: Card): Promise<DoabilityVerdict | undefined>;
+  /**
+   * Fallback triage: hand the card to the chat agent with instructions to
+   * record its AI-vs-Human decision in the card file's `assignee` frontmatter.
+   * The loop then waits for the assignee to appear. False = hand-off failed.
+   */
+  requestTriage(card: Card): Promise<boolean>;
 }
 
 export interface LoopControl {
@@ -54,8 +71,6 @@ export interface LoopControl {
 export interface LoopOptions {
   /** How often to re-read the board while waiting on an agent. */
   readonly pollIntervalMs?: number;
-  /** How long to wait for a dispatched agent before giving up on the card. */
-  readonly waitTimeoutMs?: number;
   /** Clock override for tests. */
   readonly now?: () => number;
   /** Progress callback, e.g. for a notification's message line. */
@@ -65,6 +80,8 @@ export interface LoopOptions {
 export interface LoopSummary {
   dispatched: string[];
   advanced: string[];
+  /** Cards defined this run and parked in Ready for human review. */
+  movedToReady: string[];
   parked: string[];
   triagedToAi: string[];
   triagedToHuman: string[];
@@ -82,19 +99,41 @@ interface DispatchRecord {
   dispatchedAt: number;
 }
 
-interface DefinitionRequestRecord {
+interface WaitRecord {
   requestedAt: number;
 }
 
+interface TriageRequestRecord extends WaitRecord {
+  /**
+   * Length of the card's activity when the triage hand-off completed, so the
+   * loop can tell whether the agent appended its own decision note.
+   */
+  activityBaseline: number;
+}
+
 export interface LoopSession {
-  /** Cards the loop gave up on this run (failed hand-off, BLOCKED report, timeout, undecidable triage). */
+  /** Cards the loop gave up on this run (failed hand-off, BLOCKED report, undecidable triage). */
   readonly skipped: Set<string>;
   readonly dispatches: Map<string, DispatchRecord>;
-  readonly definitionRequests: Map<string, DefinitionRequestRecord>;
+  readonly definitionRequests: Map<string, WaitRecord>;
+  /** Fallback triage hand-offs waiting for the agent to record an assignee. */
+  readonly triageRequests: Map<string, TriageRequestRecord>;
+  /**
+   * Cards whose definition the loop filled in during this run. They rest in
+   * Ready (never advanced past it, never dispatched) until the next run, so a
+   * human gets a chance to review the fresh definition first.
+   */
+  readonly definedThisRun: Set<string>;
 }
 
 export function createLoopSession(): LoopSession {
-  return { skipped: new Set(), dispatches: new Map(), definitionRequests: new Map() };
+  return {
+    skipped: new Set(),
+    dispatches: new Map(),
+    definitionRequests: new Map(),
+    triageRequests: new Map(),
+    definedThisRun: new Set(),
+  };
 }
 
 export type LoopAction =
@@ -102,7 +141,9 @@ export type LoopAction =
   | { readonly kind: 'advance'; readonly card: Card; readonly toColumn: Column }
   | { readonly kind: 'abandon'; readonly card: Card }
   | { readonly kind: 'triage'; readonly card: Card }
+  | { readonly kind: 'record-triage'; readonly card: Card }
   | { readonly kind: 'request-definition'; readonly card: Card }
+  | { readonly kind: 'move-to-ready'; readonly card: Card; readonly toColumn: Column }
   | { readonly kind: 'dispatch'; readonly card: Card; readonly column: Column };
 
 type DispatchOutcome = 'pending' | 'done' | 'blocked';
@@ -126,9 +167,11 @@ function isPreWorkColumn(column: Column): boolean {
 }
 
 /**
- * Drop session records the board has since invalidated: a dispatch whose card
- * was moved out of the recorded column (or deleted), and a definition request
- * whose card vanished or was assigned by someone else in the meantime.
+ * Drop session records the board has since resolved or invalidated: a dispatch
+ * whose card was moved out of the recorded column (or deleted), a definition
+ * request whose card vanished, got assigned, or is now defined (the wait's
+ * success case, recorded in `definedThisRun`), and a triage request whose card
+ * vanished.
  */
 export function pruneLoopSession(state: BoardState, session: LoopSession): void {
   const columnByCardId = new Map<string, Column>();
@@ -147,8 +190,18 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
   }
   for (const cardId of [...session.definitionRequests.keys()]) {
     const card = cardById.get(cardId);
-    if (!card || card.assignee !== undefined) {
+    if (card && !cardNeedsDefinition(card)) {
+      // The definition wait succeeded: remember the card so this run parks it
+      // in Ready and never advances past Ready or dispatches it.
+      session.definedThisRun.add(cardId);
+    }
+    if (!card || card.assignee !== undefined || !cardNeedsDefinition(card)) {
       session.definitionRequests.delete(cardId);
+    }
+  }
+  for (const cardId of [...session.triageRequests.keys()]) {
+    if (!cardById.has(cardId)) {
+      session.triageRequests.delete(cardId);
     }
   }
 }
@@ -175,6 +228,25 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
     for (const card of column.cards) {
       if (session.skipped.has(card.id)) {
         continue;
+      }
+
+      if (session.definedThisRun.has(card.id) && column.role === 'backlog') {
+        // The loop just filled this card's definition in: park it at the end
+        // of Ready so a human can review the fresh Description and Acceptance
+        // criteria before implementation. Without a Ready column it stays put.
+        const readyColumn = state.columns.find((candidate) => candidate.role === 'ready');
+        if (readyColumn) {
+          return { kind: 'move-to-ready', card, toColumn: readyColumn };
+        }
+      }
+
+      if (session.triageRequests.has(card.id)) {
+        if (card.assignee !== undefined) {
+          // The fallback-triage agent recorded its decision in the card file;
+          // log it and let the card flow (or rest) under its new assignee.
+          return { kind: 'record-triage', card };
+        }
+        continue; // still waiting for the agent's decision
       }
 
       if (card.assignee === undefined) {
@@ -224,6 +296,9 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
       }
 
       if (isPreWorkColumn(column)) {
+        if (session.definedThisRun.has(card.id)) {
+          continue; // freshly defined — rests here until a human reviews it
+        }
         // Nothing to run in Backlog/Ready; the card trivially "completes" and
         // moves toward the work columns.
         if (nextColumn && nextColumn.role !== 'done') {
@@ -232,6 +307,9 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
         continue;
       }
 
+      if (session.definedThisRun.has(card.id)) {
+        continue; // freshly defined — never dispatched before a human review
+      }
       firstDispatch ??= { kind: 'dispatch', card, column };
     }
   }
@@ -239,7 +317,9 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
   if (firstPreWorkAdvance) {
     return firstPreWorkAdvance;
   }
-  if (firstTriage) {
+  // Triage is hand-off-gated too: when no direct answer channel is available
+  // it falls back to a chat hand-off, so it must not start while one is open.
+  if (!handoffPending && firstTriage) {
     return firstTriage;
   }
   if (!handoffPending && firstDefinition) {
@@ -254,7 +334,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
 interface PendingWait {
   readonly cardId: string;
   readonly startedAt: number;
-  readonly kind: 'dispatch' | 'definition';
+  readonly kind: 'dispatch' | 'definition' | 'triage';
 }
 
 function listPendingWaits(state: BoardState, session: LoopSession): PendingWait[] {
@@ -277,6 +357,13 @@ function listPendingWaits(state: BoardState, session: LoopSession): PendingWait[
       waits.push({ cardId, startedAt: record.requestedAt, kind: 'definition' });
     }
   }
+  for (const [cardId, record] of session.triageRequests) {
+    // Resolved once the agent records an assignee; until then it is an open
+    // hand-off the loop is waiting on.
+    if (!session.skipped.has(cardId) && cards.get(cardId)?.assignee === undefined) {
+      waits.push({ cardId, startedAt: record.requestedAt, kind: 'triage' });
+    }
+  }
   return waits;
 }
 
@@ -296,7 +383,6 @@ export async function runBoardLoop(
   options: LoopOptions = {},
 ): Promise<LoopSummary> {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const waitTimeoutMs = options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
   const now = options.now ?? Date.now;
   const report = options.onEvent ?? ((): void => undefined);
 
@@ -304,6 +390,7 @@ export async function runBoardLoop(
   const summary: LoopSummary = {
     dispatched: [],
     advanced: [],
+    movedToReady: [],
     parked: [],
     triagedToAi: [],
     triagedToHuman: [],
@@ -316,6 +403,7 @@ export async function runBoardLoop(
     session.skipped.add(card.id);
     session.dispatches.delete(card.id);
     session.definitionRequests.delete(card.id);
+    session.triageRequests.delete(card.id);
     summary.skipped.push(card.title);
   };
 
@@ -334,22 +422,16 @@ export async function runBoardLoop(
       break; // nothing actionable and nothing in flight — the loop is done
     }
 
-    const timedOut = waits.filter((wait) => now() - wait.startedAt > waitTimeoutMs);
-    if (timedOut.length > 0) {
-      for (const wait of timedOut) {
-        const card = findCard(state, wait.cardId);
-        if (card) {
-          markSkipped(card);
-          await store.appendActivity(card.id, formatLoopTimeoutEntry(wait.kind));
-        } else {
-          session.dispatches.delete(wait.cardId);
-          session.definitionRequests.delete(wait.cardId);
-        }
-      }
-      continue;
-    }
-
-    report(`Waiting on ${waits.length} card(s)…`);
+    // Waits have no deadline: real agent work routinely runs long, so elapsed
+    // time is never a reason to give up on a card. A wait ends only on the
+    // agent's terminal report, the board resolving/invalidating it (see
+    // pruneLoopSession), or the user cancelling the loop. The report says what
+    // is being waited on and for how long, so an indefinite wait never looks
+    // like a hang.
+    const longest = waits.reduce((a, b) => (b.startedAt < a.startedAt ? b : a));
+    const title = findCard(state, longest.cardId)?.title ?? longest.cardId;
+    const detail = `${WAIT_DESCRIPTIONS[longest.kind]} "${title}" (waiting ${formatWaitDuration(now() - longest.startedAt)})`;
+    report(waits.length === 1 ? `Waiting for ${detail}` : `Waiting on ${waits.length} hand-offs — longest: ${detail}`);
     await control.delay(pollIntervalMs);
   }
 
@@ -375,6 +457,13 @@ export async function runBoardLoop(
         summary.advanced.push(card.title);
         return;
       }
+      case 'move-to-ready': {
+        report(`Placing freshly defined "${card.title}" in ${action.toColumn.title}`);
+        await store.moveCard(card.id, action.toColumn.id, action.toColumn.cards.length);
+        await store.appendActivity(card.id, formatLoopDefinedReadyEntry(action.toColumn.title));
+        summary.movedToReady.push(card.title);
+        return;
+      }
       case 'abandon': {
         // The agent reported BLOCKED (its reason is already in the activity
         // log), or there is no Verify column to park in — leave it for a human.
@@ -384,13 +473,42 @@ export async function runBoardLoop(
       case 'triage': {
         report(`Triaging "${card.title}"`);
         session.definitionRequests.delete(card.id);
-        const decision = await gateways.decideDoability(card);
-        if (decision === undefined) {
-          markSkipped(card);
+        const verdict = await gateways.decideDoability(card);
+        if (verdict !== undefined) {
+          await store.setAssignee(card.id, { kind: verdict.decision });
+          await store.appendActivity(card.id, formatLoopTriageEntry(verdict.decision, verdict.reason));
+          (verdict.decision === 'ai' ? summary.triagedToAi : summary.triagedToHuman).push(card.title);
           return;
         }
-        await store.setAssignee(card.id, { kind: decision });
-        await store.appendActivity(card.id, formatLoopTriageEntry(decision));
+        // No direct answer channel — fall back to the chat agent, which
+        // records its decision in the card file's assignee frontmatter.
+        if (await gateways.requestTriage(card)) {
+          // Re-read the card so the baseline sits after anything the hand-off
+          // itself appended (e.g. the "Triage requested" entry): only text the
+          // agent adds later counts as its decision note.
+          const fresh = findCard(await store.reload(), card.id);
+          session.triageRequests.set(card.id, {
+            requestedAt: now(),
+            activityBaseline: (fresh?.activity ?? card.activity ?? '').length,
+          });
+          return;
+        }
+        markSkipped(card);
+        await store.appendActivity(card.id, formatLoopTriageSkippedEntry());
+        return;
+      }
+      case 'record-triage': {
+        // The fallback-triage agent set the assignee. It was asked to explain
+        // its decision in the Activity log itself; only add the loop's generic
+        // entry when it left no note, so the "why" is never missing but never
+        // duplicated either.
+        const record = session.triageRequests.get(card.id);
+        session.triageRequests.delete(card.id);
+        const decision: LoopTriageDecision = card.assignee?.kind === 'ai' ? 'ai' : 'human';
+        const agentNote = (card.activity ?? '').slice(record?.activityBaseline ?? 0).trim();
+        if (agentNote.length === 0) {
+          await store.appendActivity(card.id, formatLoopTriageEntry(decision));
+        }
         (decision === 'ai' ? summary.triagedToAi : summary.triagedToHuman).push(card.title);
         return;
       }
@@ -432,12 +550,14 @@ function findCard(state: BoardState, cardId: string): Card | undefined {
   return undefined;
 }
 
-/** Prompt asking the AI whether an agent could complete the card autonomously. */
+/** Prompt asking the AI whether an agent could implement the card autonomously. */
 export function buildDoabilityPrompt(card: Card): string {
   return [
     'You are triaging a Methodology With No Name (MWNN) Kanban card.',
-    'Decide whether an AI coding agent working inside this repository could complete the card autonomously (writing code, files, tests, running commands).',
-    `Answer ${NEEDS_HUMAN_TOKEN} when the card needs product or design decisions, review or sign-off, or manual/external steps that require a person.`,
+    'Decide whether an AI coding agent working inside this repository could IMPLEMENT the card autonomously (writing code, files, tests, running commands).',
+    'Judge the implementation only. Every card is verified by a human in the Verify column after implementation, so a need for manual verification, testing sign-off, or review is NOT a reason to route the card to a person.',
+    `Answer ${NEEDS_HUMAN_TOKEN} only when the implementation itself needs a person: product or design decisions the card leaves open, or manual/external steps an agent cannot perform (accounts, credentials, hardware, third-party approvals, physical actions).`,
+    `When genuinely unsure, prefer ${DOABLE_TOKEN}.`,
     '',
     `Title: ${card.title}`,
     '',
@@ -447,18 +567,57 @@ export function buildDoabilityPrompt(card: Card): string {
     'Acceptance criteria:',
     card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
     '',
-    `Reply with exactly one word on the last line: ${DOABLE_TOKEN} or ${NEEDS_HUMAN_TOKEN}.`,
+    'Reply with a line `REASON: <one concise sentence explaining your decision>`,',
+    `followed by exactly one word on the last line: ${DOABLE_TOKEN} or ${NEEDS_HUMAN_TOKEN}.`,
   ].join('\n');
 }
 
-/** Extract the triage verdict from a model response; undefined when absent. */
-export function parseDoabilityDecision(responseText: string): LoopTriageDecision | undefined {
+/**
+ * Fallback-triage hand-off prompt: the chat agent makes the AI-vs-Human call
+ * and records it in the card file's frontmatter, where the loop picks it up.
+ */
+export function buildTriagePrompt(card: Card, cardFilePath: string): string {
+  return [
+    'You are triaging a Methodology With No Name (MWNN) Kanban card.',
+    'Decide whether an AI coding agent working inside this repository could IMPLEMENT the card autonomously (writing code, files, tests, running commands).',
+    'Judge the implementation only. Every card is verified by a human in the Verify column after implementation, so a need for manual verification, testing sign-off, or review is NOT a reason to assign the card to a human — the board loop hands every finished card to a human at Verify anyway.',
+    'Assign to human only when the implementation itself needs a person: product or design decisions the card leaves open, or manual/external steps an agent cannot perform (accounts, credentials, hardware, third-party approvals, physical actions). When genuinely unsure, prefer AI.',
+    '',
+    `This card is stored as a markdown file at: ${cardFilePath}`,
+    'Record your decision by editing that file:',
+    '  - In the frontmatter, add (or replace) the assignee line with exactly `assignee: { kind: ai }` if an AI agent can do it, or `assignee: { kind: human }` if it needs a person.',
+    '  - Append a short entry to the "## Activity" section explaining WHY you decided AI or Human, in this shape:',
+    '      ### <current ISO timestamp> - Triage decision',
+    '      <one or two sentences explaining the decision>',
+    '  - Do not change any other frontmatter, the title, or the other body sections.',
+    '',
+    `Title: ${card.title}`,
+    '',
+    'Description:',
+    card.description?.trim() || 'No description provided.',
+    '',
+    'Acceptance criteria:',
+    card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
+    '',
+    'When you finish, report the result on its own line, exactly one of:',
+    '  STATUS: DONE — the assignee was recorded.',
+    '  STATUS: BLOCKED: <reason> — you could not decide and need a human.',
+  ].join('\n');
+}
+
+/**
+ * Extract the triage verdict (and the REASON line, when present) from a model
+ * response; undefined when there is no verdict at all.
+ */
+export function parseDoabilityDecision(responseText: string): DoabilityVerdict | undefined {
   const doableIndex = responseText.lastIndexOf(DOABLE_TOKEN);
   const humanIndex = responseText.lastIndexOf(NEEDS_HUMAN_TOKEN);
   if (doableIndex === -1 && humanIndex === -1) {
     return undefined;
   }
-  return doableIndex > humanIndex ? 'ai' : 'human';
+  const decision: LoopTriageDecision = doableIndex > humanIndex ? 'ai' : 'human';
+  const reason = /^\s*REASON:\s*(.+)$/im.exec(responseText)?.[1]?.trim();
+  return reason ? { decision, reason } : { decision };
 }
 
 export function formatLoopParkEntry(timestamp: Date = new Date()): string {
@@ -475,18 +634,55 @@ export function formatLoopAdvanceEntry(columnTitle: string, timestamp: Date = ne
   ].join('\n');
 }
 
-export function formatLoopTriageEntry(decision: LoopTriageDecision, timestamp: Date = new Date()): string {
+export function formatLoopDefinedReadyEntry(columnTitle: string, timestamp: Date = new Date()): string {
+  return [
+    `### ${timestamp.toISOString()} - AI loop placed this card in ${columnTitle}`,
+    `The definition was just filled in; moved to "${columnTitle}" to wait for a human to review the Description and Acceptance criteria before implementation starts.`,
+  ].join('\n');
+}
+
+export function formatLoopTriageEntry(
+  decision: LoopTriageDecision,
+  reason?: string,
+  timestamp: Date = new Date(),
+): string {
   const explanation =
     decision === 'ai'
       ? 'The AI judged this card doable by an agent and assigned it to AI.'
       : 'The AI judged this card as needing a person and assigned it to Human.';
-  return [`### ${timestamp.toISOString()} - AI loop triage`, explanation].join('\n');
+  const lines = [`### ${timestamp.toISOString()} - AI loop triage`, explanation];
+  lines.push(reason ? `Why: ${reason}` : 'No reason was recorded for this decision.');
+  return lines.join('\n');
 }
 
-export function formatLoopTimeoutEntry(kind: 'dispatch' | 'definition', timestamp: Date = new Date()): string {
-  const what = kind === 'dispatch' ? 'the dispatched agent to finish' : 'the definition to be filled in';
+/** What each pending-wait kind is waiting on, phrased for the progress line. */
+const WAIT_DESCRIPTIONS: Record<PendingWait['kind'], string> = {
+  dispatch: 'the agent working on',
+  definition: 'the definition of',
+  triage: 'the triage decision on',
+};
+
+/** Compact elapsed-time label for the wait progress line, e.g. "45s", "17m", "2h 5m". */
+function formatWaitDuration(elapsedMs: number): string {
+  const totalMinutes = Math.floor(Math.max(0, elapsedMs) / 60_000);
+  if (totalMinutes === 0) {
+    return `${Math.floor(Math.max(0, elapsedMs) / 1000)}s`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+export function formatLoopTriageSkippedEntry(timestamp: Date = new Date()): string {
   return [
-    `### ${timestamp.toISOString()} - AI loop timed out`,
-    `Gave up waiting for ${what}; the loop will not retry this card this run.`,
+    `### ${timestamp.toISOString()} - AI loop could not triage this card`,
+    'No language model was available for a direct doability decision and the chat hand-off failed, so the card was left unassigned. Assign it manually or re-run the loop.',
+  ].join('\n');
+}
+
+export function formatTriageHandoffEntry(providerLabel: string, timestamp: Date = new Date()): string {
+  return [
+    `### ${timestamp.toISOString()} - Triage requested from ${providerLabel}`,
+    `Asked ${providerLabel} to decide whether this card is doable by an AI agent and record the assignee.`,
   ].join('\n');
 }

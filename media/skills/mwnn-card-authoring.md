@@ -22,6 +22,31 @@ card files is enough to add cards — do not call any API or command.
 - Only touch files under the board folder. Never edit `columns.json` unless the
   task is explicitly about columns.
 
+## Completion and re-dispatch preflight
+
+Before creating, editing, or dispatching work for an existing card:
+
+1. Read the card and `columns.json`; identify the card's current column `id`,
+   title, and role. Do not infer status from the card title or from an old
+   session summary.
+2. Inspect the card's `## Activity` and every acceptance checkbox, then verify
+   any claimed completion evidence in the repository (for example, the named
+   files, focused tests, or build result).
+3. If the card is in a done/completed column, or its acceptance criteria are
+   already satisfied by current evidence, do not implement or dispatch it
+   again. Preserve the existing card and record concise evidence in `Activity`
+   only when the workflow requires a durable update.
+4. If a prior dispatch is recorded but acceptance evidence is incomplete or
+   contradictory, continue only with the unmet criteria and explain the gap in
+   `Activity`; do not duplicate already completed work.
+5. Create a new card only when the requested work is genuinely outside the
+   existing card's scope. Link the new card to the existing card when a real
+   dependency exists.
+
+Treat acceptance evidence and the current board state as authoritative workflow
+state. A prior assistant response, a timestamp, or an unchecked box by itself
+does not prove completion.
+
 ## Card file shape
 
 ```md

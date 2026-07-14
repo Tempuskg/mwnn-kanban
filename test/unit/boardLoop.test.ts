@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
   buildDoabilityPrompt,
+  buildTriagePrompt,
   createLoopSession,
   parseDoabilityDecision,
   planLoopAction,
@@ -119,7 +120,12 @@ function instantGateways(
     decideDoability: async (card) => {
       log.triaged.push(card.id);
       log.calls.push(`triage:${card.id}`);
-      return decide(card);
+      const decision = decide(card);
+      return decision ? { decision, reason: 'Deterministic test reason.' } : undefined;
+    },
+    requestTriage: async (card) => {
+      log.calls.push(`request-triage:${card.id}`);
+      return false;
     },
   };
   return { gateways, log };
@@ -258,6 +264,103 @@ suite('board loop run', () => {
     assert.deepEqual(summary.triagedToHuman.length, 1);
   });
 
+  test('falls back to a chat-handoff triage when no direct decision channel exists', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 0, 'Automatable, no LM');
+    const board = fakeBoard(state);
+    const calls: string[] = [];
+    const gateways: LoopGateways = {
+      dispatchCard: async (card) => {
+        calls.push(`dispatch:${card.id}`);
+        await board.store.appendActivity(card.id, 'STATUS: DONE — done.');
+        return true;
+      },
+      requestDefinition: async () => true,
+      decideDoability: async (card) => {
+        calls.push(`decide:${card.id}`);
+        return undefined; // e.g. vscode.lm has no models available
+      },
+      requestTriage: async (card) => {
+        calls.push(`request-triage:${card.id}`);
+        return true;
+      },
+    };
+
+    // The agent works asynchronously: after the hand-off it records its
+    // decision in the card file — assignee plus an explanatory Activity note.
+    const controlWithAgent: LoopControl = {
+      isCancelled: () => false,
+      delay: async () => {
+        if (board.findCard(cardId).assignee === undefined && calls.includes(`request-triage:${cardId}`)) {
+          board.mutate((current) =>
+            setAssignee(
+              appendActivity(current, cardId, '### now - Triage decision\nPure refactoring work, an agent can do it.'),
+              cardId,
+              { kind: 'ai' },
+            ),
+          );
+        }
+      },
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, controlWithAgent, { pollIntervalMs: 0 });
+
+    assert.deepEqual(
+      calls.slice(0, 2),
+      [`decide:${cardId}`, `request-triage:${cardId}`],
+      'direct decision is tried first, then the chat hand-off fallback',
+    );
+    assert.equal(summary.triagedToAi.length, 1);
+    // The triaged-to-AI card then flowed through the loop to Verify as usual.
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    const activity = board.findCard(cardId).activity ?? '';
+    // The agent's own reasoning is preserved and the loop does not duplicate
+    // it with its generic triage entry.
+    assert.match(activity, /Pure refactoring work, an agent can do it\./);
+    assert.doesNotMatch(activity, /AI loop triage/);
+  });
+
+  test('adds a generic triage entry when the fallback agent records no reason', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 0, 'Silently triaged');
+    const board = fakeBoard(state);
+    const gateways: LoopGateways = {
+      dispatchCard: async () => false,
+      requestDefinition: async () => true,
+      decideDoability: async () => undefined,
+      requestTriage: async (card) => {
+        // Agent sets the assignee but never explains itself.
+        board.mutate((current) => setAssignee(current, card.id, { kind: 'human' }));
+        return true;
+      },
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.equal(summary.triagedToHuman.length, 1);
+    const activity = board.findCard(cardId).activity ?? '';
+    assert.match(activity, /AI loop triage/);
+    assert.match(activity, /needing a person and assigned it to Human/);
+    assert.match(activity, /No reason was recorded for this decision\./);
+  });
+
+  test('skips with an observable activity entry when no triage channel works', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 0, 'Untriageable');
+    const board = fakeBoard(state);
+    const gateways: LoopGateways = {
+      dispatchCard: async () => true,
+      requestDefinition: async () => true,
+      decideDoability: async () => undefined,
+      requestTriage: async () => false,
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.equal(summary.skipped.length, 1);
+    assert.equal(board.findCard(cardId).assignee, undefined);
+    assert.equal(board.columnTitleOf(cardId), 'Backlog');
+    assert.match(board.findCard(cardId).activity ?? '', /AI loop could not triage this card/);
+  });
+
   test('fills the definition before triaging a title-only unassigned card', async () => {
     let state = defaultBoard([...FULL_COLUMNS]);
     state = addCard(state, state.columns[0]!.id, 'Bare title card');
@@ -270,6 +373,68 @@ suite('board loop run', () => {
 
     assert.deepEqual(log.calls, [`define:${cardId}`, `triage:${cardId}`]);
     assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+  });
+
+  test('a card defined from the Backlog lands in Ready and is not dispatched that run', async () => {
+    let state = defaultBoard([...FULL_COLUMNS]);
+    state = addCard(state, state.columns[1]!.id, 'Already waiting in Ready');
+    const existingReadyCardId = state.columns[1]!.cards[0]!.id;
+    state = setDescription(state, existingReadyCardId, 'Defined');
+    state = setAcceptanceCriteria(state, existingReadyCardId, '- [ ] Criterion');
+    state = setAssignee(state, existingReadyCardId, { kind: 'human' });
+    state = addCard(state, state.columns[0]!.id, 'Title-only idea');
+    const cardId = state.columns[0]!.cards[0]!.id;
+
+    const board = fakeBoard(state);
+    // Triage says AI — the freshly defined card must still stop in Ready.
+    const { gateways, log } = instantGateways(board, () => 'ai');
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.deepEqual(log.calls, [`define:${cardId}`, `triage:${cardId}`]);
+    assert.deepEqual(log.dispatched, []);
+    assert.equal(board.columnTitleOf(cardId), 'Ready');
+    // Placed at the end of Ready, after the card that was already there.
+    assert.deepEqual(
+      board.getState().columns[1]!.cards.map((card) => card.id),
+      [existingReadyCardId, cardId],
+    );
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
+    assert.equal(summary.movedToReady.length, 1);
+    assert.match(board.findCard(cardId).activity ?? '', /AI loop placed this card in Ready/);
+  });
+
+  test('a card defined while sitting in Ready stays in Ready without a move', async () => {
+    let state = defaultBoard([...FULL_COLUMNS]);
+    state = addCard(state, state.columns[1]!.id, 'Undefined in Ready');
+    const cardId = state.columns[1]!.cards[0]!.id;
+
+    const board = fakeBoard(state);
+    const { gateways, log } = instantGateways(board, () => 'ai');
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.deepEqual(log.calls, [`define:${cardId}`, `triage:${cardId}`]);
+    assert.deepEqual(log.dispatched, []);
+    assert.equal(board.columnTitleOf(cardId), 'Ready');
+    assert.equal(summary.movedToReady.length, 0);
+    assert.doesNotMatch(board.findCard(cardId).activity ?? '', /AI loop advanced this card/);
+  });
+
+  test('a freshly defined card stays put when the board has no Ready column', async () => {
+    let state = defaultBoard(['Backlog', 'In Progress', 'Verify', 'Done']);
+    state = addCard(state, state.columns[0]!.id, 'No Ready column here');
+    const cardId = state.columns[0]!.cards[0]!.id;
+
+    const board = fakeBoard(state);
+    const { gateways, log } = instantGateways(board, () => 'ai');
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.equal(board.columnTitleOf(cardId), 'Backlog');
+    assert.deepEqual(log.dispatched, []);
+    assert.equal(summary.movedToReady.length, 0);
+    assert.equal(summary.cancelled, false);
   });
 
   test('does not advance blocked cards', async () => {
@@ -313,7 +478,8 @@ suite('board loop run', () => {
         return true;
       },
       requestDefinition: async () => true,
-      decideDoability: async () => 'ai',
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
     };
 
     const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
@@ -334,7 +500,8 @@ suite('board loop run', () => {
         return false;
       },
       requestDefinition: async () => true,
-      decideDoability: async () => 'ai',
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
     };
 
     const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
@@ -366,32 +533,112 @@ suite('board loop run', () => {
     assert.notEqual(board.columnTitleOf(cardId), 'Verify');
   });
 
-  test('times out a dispatch that never completes and terminates', async () => {
-    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Silent agent', { kind: 'ai' });
+  test('waits far past the old 15-minute limit and still advances on a late STATUS: DONE', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Slow agent', { kind: 'ai' });
+    const board = fakeBoard(state);
+    const gateways: LoopGateways = {
+      dispatchCard: async () => true, // the agent reports back much later, via the clock below
+      requestDefinition: async () => true,
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
+    };
+
+    // Each poll advances the clock by 10 minutes; the agent reports DONE only
+    // after 50 minutes — well past the removed 15-minute timeout.
+    let clock = 0;
+    const control: LoopControl = {
+      isCancelled: () => false,
+      delay: async () => {
+        clock += 10 * 60_000;
+        if (clock >= 50 * 60_000 && board.findCard(cardId).assignee?.kind === 'ai') {
+          board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE — finally finished.'));
+        }
+      },
+    };
+
+    const messages: string[] = [];
+    const summary = await runBoardLoop(board.store, gateways, control, {
+      pollIntervalMs: 0,
+      now: () => clock,
+      onEvent: (message) => messages.push(message),
+    });
+
+    // The card was never skipped or timed out: it advanced to Verify and was
+    // parked for a human exactly as a fast card would have been.
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(summary.advanced.length, 1);
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    assert.doesNotMatch(board.findCard(cardId).activity ?? '', /AI loop timed out/);
+    // While waiting, progress reported what was pending and for how long.
+    const waitMessages = messages.filter((message) => message.includes('Slow agent') && message.includes('Waiting'));
+    assert.ok(waitMessages.length > 0, `expected wait progress messages, got: ${JSON.stringify(messages)}`);
+    assert.ok(
+      waitMessages.some((message) => /40m/.test(message)),
+      `expected a wait message reporting elapsed time, got: ${JSON.stringify(waitMessages)}`,
+    );
+  });
+
+  test('cancelling during a pending wait exits promptly without marking the card failed', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Still working', { kind: 'ai' });
+    const board = fakeBoard(state);
+    const activityBefore = board.findCard(cardId).activity ?? '';
+    const gateways: LoopGateways = {
+      dispatchCard: async () => true, // agent never reports back
+      requestDefinition: async () => true,
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
+    };
+
+    let polls = 0;
+    const control: LoopControl = {
+      isCancelled: () => polls >= 3,
+      delay: async () => {
+        polls += 1;
+      },
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, control, { pollIntervalMs: 0 });
+
+    assert.equal(summary.cancelled, true);
+    assert.equal(polls, 3, 'the loop stopped as soon as cancellation was observed');
+    // The waited-on card is untouched: not skipped, no failure entry appended.
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(board.columnTitleOf(cardId), 'In Progress');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
+    assert.equal(board.findCard(cardId).activity ?? '', activityBefore);
+  });
+
+  test('a waited-on card moved out of its dispatch column drops the wait without stalling', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Reprioritized', { kind: 'ai' });
     const board = fakeBoard(state);
     const gateways: LoopGateways = {
       dispatchCard: async () => true, // agent never reports back
       requestDefinition: async () => true,
-      decideDoability: async () => 'ai',
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
     };
 
-    let clock = 0;
-    const summary = await runBoardLoop(
-      board.store,
-      gateways,
-      { isCancelled: () => false, delay: async () => undefined },
-      {
-        pollIntervalMs: 0,
-        waitTimeoutMs: 100,
-        now: () => {
-          clock += 60;
-          return clock;
-        },
+    // On the first poll a human drags the card to Done, invalidating the wait.
+    let polls = 0;
+    const control: LoopControl = {
+      isCancelled: () => false,
+      delay: async () => {
+        polls += 1;
+        assert.ok(polls < 10, 'the loop must terminate once the wait is invalidated');
+        board.mutate((current) => {
+          const doneId = current.columns[4]!.id;
+          return moveCard(current, cardId, doneId, 0);
+        });
       },
-    );
+    };
 
-    assert.equal(summary.skipped.length, 1);
-    assert.match(board.findCard(cardId).activity ?? '', /AI loop timed out/);
+    const summary = await runBoardLoop(board.store, gateways, control, { pollIntervalMs: 0 });
+
+    assert.equal(summary.cancelled, false);
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(board.columnTitleOf(cardId), 'Done');
+    assert.doesNotMatch(board.findCard(cardId).activity ?? '', /AI loop timed out/);
   });
 });
 
@@ -407,15 +654,46 @@ suite('doability prompt and parsing', () => {
     assert.match(prompt, /Title: Refactor the parser/);
     assert.match(prompt, /Split parse and serialize\./);
     assert.match(prompt, /DOABLE_BY_AI or NEEDS_HUMAN/);
+    // Verification never routes a card to a human — a person always verifies
+    // in the Verify column, so triage must judge implementability only.
+    assert.match(prompt, /verified by a human in the Verify column/);
+    assert.match(prompt, /NOT a reason/);
+    assert.match(prompt, /When genuinely unsure, prefer DOABLE_BY_AI/);
+  });
+
+  test('buildTriagePrompt judges implementability only, not verification needs', () => {
+    const prompt = buildTriagePrompt(
+      {
+        id: 'card-1',
+        title: 'Fix the sidebar bug',
+        createdAt: 0,
+        description: 'The saved session does not appear.',
+        acceptanceCriteria: '- [ ] Session appears in the sidebar',
+      },
+      '.mwnn/cards/card-1.md',
+    );
+    assert.match(prompt, /IMPLEMENT the card autonomously/);
+    assert.match(prompt, /verified by a human in the Verify column/);
+    assert.match(prompt, /NOT a reason to assign the card to a human/);
+    assert.match(prompt, /When genuinely unsure, prefer AI/);
+    assert.match(prompt, /assignee: \{ kind: ai \}/);
   });
 
   test('parseDoabilityDecision reads the final verdict', () => {
-    assert.equal(parseDoabilityDecision('Reasoning...\nDOABLE_BY_AI'), 'ai');
-    assert.equal(parseDoabilityDecision('This needs review.\nNEEDS_HUMAN'), 'human');
+    assert.equal(parseDoabilityDecision('Reasoning...\nDOABLE_BY_AI')?.decision, 'ai');
+    assert.equal(parseDoabilityDecision('This needs review.\nNEEDS_HUMAN')?.decision, 'human');
     assert.equal(
-      parseDoabilityDecision('It could be DOABLE_BY_AI, but on reflection: NEEDS_HUMAN'),
+      parseDoabilityDecision('It could be DOABLE_BY_AI, but on reflection: NEEDS_HUMAN')?.decision,
       'human',
     );
     assert.equal(parseDoabilityDecision('No verdict here.'), undefined);
+  });
+
+  test('parseDoabilityDecision extracts the REASON line when present', () => {
+    const verdict = parseDoabilityDecision('REASON: Requires stakeholder sign-off.\nNEEDS_HUMAN');
+    assert.deepEqual(verdict, { decision: 'human', reason: 'Requires stakeholder sign-off.' });
+
+    const noReason = parseDoabilityDecision('DOABLE_BY_AI');
+    assert.deepEqual(noReason, { decision: 'ai' });
   });
 });

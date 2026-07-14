@@ -264,8 +264,9 @@ async function writeBoardState(deps: BoardStoreDeps, state: BoardState): Promise
 
   const existingCardNames = await deps.fileSystem.readDirectory(boardPath(deps.boardFolder, CARDS_DIR));
   const existingCardFiles = new Set(existingCardNames.filter((name) => name.endsWith('.md')));
+  const existingDocuments = await readCardDocuments(deps);
   const nextCardIds = new Set<string>();
-  for (const document of buildCardDocuments(state)) {
+  for (const document of buildCardDocuments(state, existingDocuments)) {
     nextCardIds.add(document.card.id);
     const fileName = `${document.card.id}.md`;
     const cardPath = boardPath(deps.boardFolder, CARDS_DIR, fileName);
@@ -302,23 +303,257 @@ async function ensureBoardReadme(deps: BoardStoreDeps): Promise<void> {
   await deps.fileSystem.writeFile(readmePath, buildBoardReadme());
 }
 
-function buildCardDocuments(state: BoardState): CardDocument[] {
+interface PositionEntry {
+  readonly card: Card;
+  existing?: CardDocument;
+  position?: number;
+}
+
+const CARD_POSITION_STEP = 1000;
+
+function buildCardDocuments(state: BoardState, existingDocuments: readonly CardDocument[] = []): CardDocument[] {
+  const existingById = new Map<string, CardDocument>();
+  for (const document of existingDocuments) {
+    if (!existingById.has(document.card.id)) {
+      existingById.set(document.card.id, document);
+    }
+  }
+
   const documents: CardDocument[] = [];
   for (const column of state.columns) {
-    let previousPosition: number | undefined;
-    for (const card of column.cards) {
-      const position = previousPosition === undefined
-        ? calculateCardPosition({})
-        : calculateCardPosition({ previous: previousPosition });
-      previousPosition = position;
+    const entries: PositionEntry[] = column.cards.map((card) => {
+      const existing = existingById.get(card.id);
+      const entry: PositionEntry = { card };
+      if (existing !== undefined) {
+        entry.existing = existing;
+      }
+      return entry;
+    });
+
+    preserveExistingPositions(entries, column.id);
+    assignUnplacedPositions(entries);
+
+    for (const entry of entries) {
+      const position = entry.position;
+      if (position === undefined || !Number.isFinite(position)) {
+        throw new Error(`Unable to assign a finite position to card ${entry.card.id}.`);
+      }
       documents.push({
         columnId: column.id,
         position,
-        card: cloneCard(card),
+        card: cloneCard(entry.card),
       });
     }
   }
   return documents;
+}
+
+/**
+ * Preserve the largest ordered subset of existing cards. This keeps a normal
+ * insertion local to the new card while still giving a deterministic repair
+ * path when an existing board contains duplicate or out-of-order positions.
+ */
+function preserveExistingPositions(entries: PositionEntry[], columnId: string): void {
+  const lengths = entries.map(() => 0);
+  const predecessors = entries.map(() => -1);
+  let bestEnd = -1;
+  let bestLength = 0;
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const existing = entry?.existing;
+    if (!entry || !existing || existing.columnId !== columnId || !Number.isFinite(existing.position)) {
+      continue;
+    }
+
+    lengths[index] = 1;
+    for (let previous = 0; previous < index; previous += 1) {
+      const previousEntry = entries[previous];
+      const previousExisting = previousEntry?.existing;
+      const previousLength = lengths[previous] ?? 0;
+      const currentLength = lengths[index] ?? 0;
+      if (
+        previousLength > 0 &&
+        previousExisting !== undefined &&
+        previousExisting.columnId === columnId &&
+        previousExisting.position < existing.position &&
+        previousLength + 1 > currentLength
+      ) {
+        lengths[index] = previousLength + 1;
+        predecessors[index] = previous;
+      }
+    }
+
+    // Keep the first equally long sequence so repairs are stable across runs.
+    const currentLength = lengths[index] ?? 0;
+    if (currentLength > bestLength) {
+      bestLength = currentLength;
+      bestEnd = index;
+    }
+  }
+
+  let index = bestEnd;
+  while (index !== -1) {
+    const entry = entries[index];
+    const existing = entry?.existing;
+    if (!entry || !existing) {
+      break;
+    }
+    entry.position = existing.position;
+    index = predecessors[index] ?? -1;
+  }
+}
+
+function assignUnplacedPositions(entries: PositionEntry[]): void {
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (!entry || entry.position !== undefined) {
+      continue;
+    }
+
+    let previousIndex = findPreviousPositionIndex(entries, index);
+    let nextIndex = findNextPositionIndex(entries, index);
+    let candidate = calculatePositionBetween(entries, previousIndex, nextIndex);
+
+    if (!isUsablePosition(candidate, entries, previousIndex, nextIndex)) {
+      const rebalancedWholeColumn = rebalanceForGap(entries, index, previousIndex, nextIndex);
+      if (rebalancedWholeColumn) {
+        continue;
+      }
+
+      previousIndex = findPreviousPositionIndex(entries, index);
+      nextIndex = findNextPositionIndex(entries, index);
+      candidate = calculatePositionBetween(entries, previousIndex, nextIndex);
+    }
+
+    if (!isUsablePosition(candidate, entries, previousIndex, nextIndex)) {
+      rebalanceWholeColumn(entries);
+      continue;
+    }
+
+    entry.position = candidate;
+  }
+}
+
+function findPreviousPositionIndex(entries: readonly PositionEntry[], index: number): number | undefined {
+  for (let previous = index - 1; previous >= 0; previous -= 1) {
+    if (entries[previous]?.position !== undefined) {
+      return previous;
+    }
+  }
+  return undefined;
+}
+
+function findNextPositionIndex(entries: readonly PositionEntry[], index: number): number | undefined {
+  for (let next = index + 1; next < entries.length; next += 1) {
+    if (entries[next]?.position !== undefined) {
+      return next;
+    }
+  }
+  return undefined;
+}
+
+function calculatePositionBetween(
+  entries: readonly PositionEntry[],
+  previousIndex: number | undefined,
+  nextIndex: number | undefined,
+): number {
+  const previous = previousIndex === undefined ? undefined : entries[previousIndex]?.position;
+  const next = nextIndex === undefined ? undefined : entries[nextIndex]?.position;
+
+  if (previous === undefined && next === undefined) {
+    return calculateCardPosition({});
+  }
+  if (previous === undefined) {
+    return calculateCardPosition({ next: next as number });
+  }
+  if (next === undefined) {
+    return calculateCardPosition({ previous });
+  }
+  return calculateCardPosition({ previous, next });
+}
+
+function isUsablePosition(
+  candidate: number,
+  entries: readonly PositionEntry[],
+  previousIndex: number | undefined,
+  nextIndex: number | undefined,
+): boolean {
+  if (!Number.isFinite(candidate)) {
+    return false;
+  }
+
+  const previous = previousIndex === undefined ? undefined : entries[previousIndex]?.position;
+  const next = nextIndex === undefined ? undefined : entries[nextIndex]?.position;
+  if (previous !== undefined && candidate <= previous) {
+    return false;
+  }
+  if (next !== undefined && candidate >= next) {
+    return false;
+  }
+
+  return !entries.some((entry) => entry.position === candidate);
+}
+
+/**
+ * Shift the smaller side of an exhausted interval to create room for the
+ * pending cards. A full-column rebalance is reserved for numeric overflow or
+ * an interval that cannot be repaired locally.
+ */
+function rebalanceForGap(
+  entries: PositionEntry[],
+  index: number,
+  previousIndex: number | undefined,
+  nextIndex: number | undefined,
+): boolean {
+  const previous = previousIndex === undefined ? undefined : entries[previousIndex]?.position;
+  const next = nextIndex === undefined ? undefined : entries[nextIndex]?.position;
+  if (previous === undefined || next === undefined || previousIndex === undefined || nextIndex === undefined) {
+    rebalanceWholeColumn(entries);
+    return true;
+  }
+
+  const requiredGap = CARD_POSITION_STEP * (nextIndex - index + 1);
+  const leftAffected = previousIndex + 1;
+  const rightAffected = entries.length - nextIndex;
+
+  if (rightAffected <= leftAffected) {
+    const targetNext = previous + requiredGap;
+    const delta = targetNext - next;
+    if (!Number.isFinite(delta) || delta <= 0) {
+      rebalanceWholeColumn(entries);
+      return true;
+    }
+    shiftDefinedPositions(entries, nextIndex, entries.length - 1, delta);
+    return false;
+  }
+
+  const targetPrevious = next - requiredGap;
+  const delta = targetPrevious - previous;
+  if (!Number.isFinite(delta) || delta >= 0) {
+    rebalanceWholeColumn(entries);
+    return true;
+  }
+  shiftDefinedPositions(entries, 0, previousIndex, delta);
+  return false;
+}
+
+function shiftDefinedPositions(entries: PositionEntry[], start: number, end: number, delta: number): void {
+  for (let index = start; index <= end; index += 1) {
+    const entry = entries[index];
+    if (!entry || entry.position === undefined) {
+      continue;
+    }
+    entry.position += delta;
+  }
+}
+
+function rebalanceWholeColumn(entries: PositionEntry[]): void {
+  let position = CARD_POSITION_STEP;
+  for (const entry of entries) {
+    entry.position = position;
+    position += CARD_POSITION_STEP;
+  }
 }
 
 function materializeColumn(config: ColumnConfig, documents: readonly CardDocument[]): Column {
@@ -357,7 +592,10 @@ function toColumnConfig(column: Column): ColumnConfig {
 }
 
 function sortCardDocuments(documents: readonly CardDocument[]): CardDocument[] {
-  return [...documents].sort((left, right) => left.position - right.position);
+  return [...documents].sort((left, right) => {
+    const positionOrder = left.position - right.position;
+    return positionOrder !== 0 ? positionOrder : left.card.id.localeCompare(right.card.id);
+  });
 }
 
 function boardPath(boardFolder: string, ...segments: string[]): string {

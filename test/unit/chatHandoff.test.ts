@@ -2,6 +2,9 @@ import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
   describeChatHandoffTarget,
+  createChatHandoffInFlight,
+  deliverClipboardHandoff,
+  formatChatHandoffFailure,
   listAvailableChatProviders,
   resolveChatHandoffTarget,
   shouldAutoPasteChatHandoff,
@@ -43,6 +46,7 @@ suite('chat handoff resolution', () => {
     const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat', 'chatgpt.openSidebar']);
 
     assert.equal(target?.commandId, 'chatgpt.newChat');
+    assert.equal(target?.prepareCommandId, 'chatgpt.openSidebar');
   });
 
   test('honours a configured command override before built-in candidates', () => {
@@ -85,5 +89,128 @@ suite('chat handoff resolution', () => {
     assert.equal(shouldAutoPasteChatHandoff(codexNewChat!), true);
     assert.equal(shouldAutoPasteChatHandoff(codexSidebar!), false);
     assert.equal(shouldAutoPasteChatHandoff(copilot!), false);
+  });
+
+  test('activates and prepares Codex before sending the new-chat command', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat', 'chatgpt.openSidebar'])!;
+    const events: string[] = [];
+    let releaseActivation!: () => void;
+    const activation = new Promise<void>((resolve) => {
+      releaseActivation = resolve;
+    });
+    const resultPromise = deliverClipboardHandoff(target, 'complete card prompt', {
+      writeClipboard: async (prompt) => {
+        events.push(`clipboard:${prompt}`);
+      },
+      activateProvider: async () => {
+        events.push('activate:start');
+        await activation;
+        events.push('activate:done');
+      },
+      executeCommand: async (commandId) => {
+        events.push(`command:${commandId}`);
+      },
+      wait: async (delayMs) => {
+        events.push(`wait:${delayMs}`);
+      },
+    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0 });
+
+    await Promise.resolve();
+    assert.deepEqual(events, ['clipboard:complete card prompt', 'activate:start']);
+    releaseActivation();
+
+    assert.deepEqual(await resultPromise, { delivered: true });
+    assert.deepEqual(events, [
+      'clipboard:complete card prompt',
+      'activate:start',
+      'activate:done',
+      'command:chatgpt.openSidebar',
+      'wait:0',
+      'command:chatgpt.newChat',
+      'wait:0',
+      'command:editor.action.clipboardPasteAction',
+    ]);
+  });
+
+  test('delivers the complete prompt on the first attempt with one paste', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
+    const clipboard: string[] = [];
+    const commands: string[] = [];
+    const result = await deliverClipboardHandoff(target, 'Title\nDescription\nAcceptance criteria', {
+      writeClipboard: async (prompt) => {
+        clipboard.push(prompt);
+      },
+      executeCommand: async (commandId) => {
+        commands.push(commandId);
+      },
+      wait: async () => undefined,
+    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0 });
+
+    assert.deepEqual(result, { delivered: true });
+    assert.deepEqual(clipboard, ['Title\nDescription\nAcceptance criteria']);
+    assert.deepEqual(commands, ['chatgpt.newChat', 'editor.action.clipboardPasteAction']);
+  });
+
+  test('does not start a second handoff while the first is in progress', async () => {
+    const inFlight = createChatHandoffInFlight();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let actions = 0;
+    const first = inFlight.run('card-1', async () => {
+      actions += 1;
+      await gate;
+      return true;
+    });
+    const second = await inFlight.run('card-1', async () => {
+      actions += 1;
+      return true;
+    });
+
+    assert.deepEqual(second, { started: false });
+    assert.equal(actions, 1);
+    release();
+    assert.deepEqual(await first, { started: true, value: true });
+  });
+
+  test('returns a visible retry message and no success when paste cannot be delivered', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
+    const result = await deliverClipboardHandoff(target, 'complete card prompt', {
+      writeClipboard: async () => undefined,
+      executeCommand: async (commandId) => {
+        if (commandId === 'editor.action.clipboardPasteAction') {
+          throw new Error('Codex composer is still unavailable');
+        }
+      },
+      wait: async () => undefined,
+    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0 });
+
+    assert.equal(result.delivered, false);
+    if (result.delivered) {
+      assert.fail('expected delivery to fail');
+    }
+    assert.match(formatChatHandoffFailure('Codex (ChatGPT)', '"Example card"', result.error), /Could not hand off/);
+    assert.match(formatChatHandoffFailure('Codex (ChatGPT)', '"Example card"', result.error), /Try again/);
+    assert.match(formatChatHandoffFailure('Codex (ChatGPT)', '"Example card"', result.error), /No activity entry was recorded/);
+  });
+
+  test('does not paste or report success when Codex cannot open', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
+    const commands: string[] = [];
+    const result = await deliverClipboardHandoff(target, 'complete card prompt', {
+      writeClipboard: async () => undefined,
+      executeCommand: async (commandId) => {
+        commands.push(commandId);
+        if (commandId === 'chatgpt.newChat') {
+          throw new Error('Codex failed to open');
+        }
+      },
+      wait: async () => undefined,
+    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0 });
+
+    assert.deepEqual(result, { delivered: false, error: 'Codex failed to open' });
+    assert.deepEqual(commands, ['chatgpt.newChat']);
+    assert.match(formatChatHandoffFailure('Codex (ChatGPT)', '"Example card"', result.error), /Try again/);
   });
 });

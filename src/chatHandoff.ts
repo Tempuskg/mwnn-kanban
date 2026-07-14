@@ -6,8 +6,9 @@
  *   - 'positional' Claude Code's editor open commands accept the prompt as a
  *                  positional `(sessionId, initialPrompt)` argument, so the new
  *                  chat panel opens pre-filled with the prompt.
- *   - 'clipboard'  The provider exposes only a bare "open" command, so the
- *                  prompt is placed on the clipboard for the user to paste.
+ *   - 'clipboard'  The provider exposes an open command, so the prompt is
+ *                  placed on the clipboard and pasted after its composer is
+ *                  ready.
  */
 
 export type ChatProviderId = 'copilot' | 'codex' | 'claude-code';
@@ -19,15 +20,66 @@ export interface ChatHandoffTarget {
   readonly commandId: string;
   /** How the prompt reaches the chat for this command. */
   readonly promptDelivery: PromptDelivery;
+  /** Optional command used to make the provider's host view ready first. */
+  readonly prepareCommandId?: string;
 }
 
 export type ChatProviderCommands = Partial<Record<ChatProviderId, string>>;
+
+export interface ClipboardHandoffExecutor {
+  readonly writeClipboard: (prompt: string) => PromiseLike<void>;
+  readonly executeCommand: (commandId: string) => PromiseLike<unknown>;
+  /** Activates the provider before its command is invoked, when available. */
+  readonly activateProvider?: () => PromiseLike<void>;
+  readonly wait: (delayMs: number) => Promise<void>;
+}
+
+export interface ClipboardHandoffOptions {
+  /** Time to let a newly revealed provider view create its composer. */
+  readonly providerReadyDelayMs?: number;
+  /** Time to let the requested new conversation focus its composer. */
+  readonly composerReadyDelayMs?: number;
+}
+
+export type ClipboardHandoffResult =
+  | { readonly delivered: true }
+  | { readonly delivered: false; readonly error: string };
+
+export type ChatHandoffAttempt<T> = { readonly started: true; readonly value: T } | { readonly started: false };
+
+export interface ChatHandoffInFlight {
+  run<T>(key: string, action: () => Promise<T>): Promise<ChatHandoffAttempt<T>>;
+}
 
 export const CHAT_PROVIDER_LABELS: Record<ChatProviderId, string> = {
   copilot: 'GitHub Copilot',
   codex: 'Codex (ChatGPT)',
   'claude-code': 'Claude Code',
 };
+
+/**
+ * Serializes hand-offs per card. The lock is held through prompt delivery and
+ * the activity write, so a double activation cannot create two conversations
+ * or two activity entries.
+ */
+export function createChatHandoffInFlight(): ChatHandoffInFlight {
+  const pending = new Set<string>();
+
+  return {
+    async run<T>(key: string, action: () => Promise<T>): Promise<ChatHandoffAttempt<T>> {
+      if (pending.has(key)) {
+        return { started: false };
+      }
+
+      pending.add(key);
+      try {
+        return { started: true, value: await action() };
+      } finally {
+        pending.delete(key);
+      }
+    },
+  };
+}
 
 // Commands that accept a `{ query }` argument so the prompt can be injected
 // directly into the chat input.
@@ -86,11 +138,15 @@ export function resolveChatHandoffTarget(
 
   for (const commandId of candidates) {
     if (available.has(commandId)) {
-      return {
+      const target: ChatHandoffTarget = {
         provider,
         commandId,
         promptDelivery: promptDeliveryFor(commandId),
       };
+      if (provider === 'codex' && commandId === 'chatgpt.newChat' && available.has('chatgpt.openSidebar')) {
+        return { ...target, prepareCommandId: 'chatgpt.openSidebar' };
+      }
+      return target;
     }
   }
 
@@ -111,6 +167,46 @@ export function listAvailableChatProviders(
 /** Whether this target should auto-paste the clipboard after opening chat. */
 export function shouldAutoPasteChatHandoff(target: ChatHandoffTarget): boolean {
   return target.provider === 'codex' && target.commandId === 'chatgpt.newChat';
+}
+
+/**
+ * Delivers a clipboard-based hand-off exactly once. Provider activation and a
+ * separate view-open command happen before the new-chat command, which avoids
+ * losing Codex's initial new-chat message while its webview is starting.
+ */
+export async function deliverClipboardHandoff(
+  target: ChatHandoffTarget,
+  prompt: string,
+  executor: ClipboardHandoffExecutor,
+  options: ClipboardHandoffOptions = {},
+): Promise<ClipboardHandoffResult> {
+  if (prompt.trim().length === 0) {
+    return { delivered: false, error: 'the generated prompt was empty' };
+  }
+
+  try {
+    await executor.writeClipboard(prompt);
+    if (executor.activateProvider) {
+      await executor.activateProvider();
+    }
+    if (target.prepareCommandId) {
+      await executor.executeCommand(target.prepareCommandId);
+      await executor.wait(options.providerReadyDelayMs ?? 300);
+    }
+    await executor.executeCommand(target.commandId);
+    await executor.wait(options.composerReadyDelayMs ?? 300);
+    await executor.executeCommand('editor.action.clipboardPasteAction');
+    return { delivered: true };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { delivered: false, error: message || 'the Codex composer did not become ready' };
+  }
+}
+
+/** Builds the visible failure message used when no activity entry is written. */
+export function formatChatHandoffFailure(providerLabel: string, subject: string, reason: string): string {
+  const detail = reason.trim().replace(/[.!?]+$/, '') || 'the chat composer did not become ready';
+  return `Could not hand off ${subject} to ${providerLabel}: ${detail}. No activity entry was recorded. Try again after opening ${providerLabel}.`;
 }
 
 /** Human-readable detail text for the handoff provider picker. */

@@ -2,7 +2,7 @@
 id: card-mqxt1jxu-2
 title: Remove ai name from card details
 column: col-mqwk2njn-4
-position: 11000
+position: 14000
 assignee: { kind: human }
 createdAt: 1782652116018
 updatedAt: 1782744955992

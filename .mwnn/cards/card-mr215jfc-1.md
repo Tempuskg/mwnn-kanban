@@ -2,7 +2,7 @@
 id: card-mr215jfc-1
 title: Open Board when board is already open
 column: col-mqwk2njn-4
-position: 1000
+position: 4000
 assignee: { kind: human }
 createdAt: 1782907603608
 updatedAt: 1782923059218

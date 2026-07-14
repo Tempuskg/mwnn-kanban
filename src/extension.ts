@@ -12,7 +12,10 @@ import {
 } from './aiCards';
 import {
   CHAT_PROVIDER_LABELS,
+  createChatHandoffInFlight,
+  deliverClipboardHandoff,
   describeChatHandoffTarget,
+  formatChatHandoffFailure,
   listAvailableChatProviders,
   shouldAutoPasteChatHandoff,
   type ChatHandoffTarget,
@@ -21,11 +24,13 @@ import {
 } from './chatHandoff';
 import {
   buildDoabilityPrompt,
+  buildTriagePrompt,
+  formatTriageHandoffEntry,
   parseDoabilityDecision,
   runBoardLoop,
+  type DoabilityVerdict,
   type LoopGateways,
   type LoopSummary,
-  type LoopTriageDecision,
 } from './boardLoop';
 import { BoardPanel } from './boardPanel';
 import { BoardSidebarViewProvider } from './sidebarView';
@@ -96,6 +101,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     legacyMemento: context.workspaceState,
   });
 
+  const inFlightCardHandoffs = createChatHandoffInFlight();
+
+  const runCardHandoff = async (cardId: string, action: () => Promise<boolean>): Promise<boolean> => {
+    const attempt = await inFlightCardHandoffs.run(cardId, action);
+    if (!attempt.started) {
+      void vscode.window.showInformationMessage('A handoff for this card is already in progress. Please wait for it to finish.');
+      return false;
+    }
+    return attempt.value;
+  };
+
   const runCardWithAISelection = async (cardId?: string): Promise<void> => {
     if (!readEnableRunWithAI()) {
       void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to use this command.');
@@ -111,23 +127,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    const target = await pickChatProvider();
-    if (!target) {
-      return;
-    }
+    await runCardHandoff(selection.card.id, async () => {
+      const target = await pickChatProvider();
+      if (!target) {
+        return false;
+      }
 
-    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
-    const cardFilePath = `${boardFolder}/cards/${selection.card.id}.md`;
-    const prompt = buildCardHandoffPrompt(selection.card, cardFilePath);
-    const handedOff = await handOffPromptToChat(target, prompt, `"${selection.card.title}"`);
-    if (!handedOff) {
-      return;
-    }
+      const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+      const cardFilePath = `${boardFolder}/cards/${selection.card.id}.md`;
+      const prompt = buildCardHandoffPrompt(selection.card, cardFilePath);
+      const handedOff = await handOffPromptToChat(target, prompt, `"${selection.card.title}"`);
+      if (!handedOff) {
+        return false;
+      }
 
-    // Record the dispatch ourselves: the hand-off is fire-and-forget, so we
-    // cannot rely on the external agent to leave any trace in the activity log.
-    await store.appendActivity(selection.card.id, formatHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
-    BoardPanel.postStateIfOpen();
+      // Record the dispatch ourselves: the hand-off is fire-and-forget, so we
+      // cannot rely on the external agent to leave any trace in the activity log.
+      await store.appendActivity(selection.card.id, formatHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
+      BoardPanel.postStateIfOpen();
+      return true;
+    });
   };
 
   const fillCardDefinitionWithAI = async (cardId: string): Promise<void> => {
@@ -141,21 +160,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    const target = await pickChatProvider();
-    if (!target) {
-      return;
-    }
+    await runCardHandoff(card.id, async () => {
+      const target = await pickChatProvider();
+      if (!target) {
+        return false;
+      }
 
-    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
-    const cardFilePath = `${boardFolder}/cards/${card.id}.md`;
-    const prompt = buildCardDefinitionPrompt(card, cardFilePath);
-    const handedOff = await handOffPromptToChat(target, prompt, `"${card.title}"`);
-    if (!handedOff) {
-      return;
-    }
+      const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+      const cardFilePath = `${boardFolder}/cards/${card.id}.md`;
+      const prompt = buildCardDefinitionPrompt(card, cardFilePath);
+      const handedOff = await handOffPromptToChat(target, prompt, `"${card.title}"`);
+      if (!handedOff) {
+        return false;
+      }
 
-    await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
-    BoardPanel.postStateIfOpen();
+      await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
+      BoardPanel.postStateIfOpen();
+      return true;
+    });
   };
 
   const importPlan = async (): Promise<void> => {
@@ -169,11 +191,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // The user cancelled at the source picker, file picker, or had no files.
       return;
     }
-    if (source.kind === 'text' && source.text.trim().length === 0) {
-      void vscode.window.showInformationMessage('The clipboard is empty. Copy a plan first, then import it.');
-      return;
-    }
-
     const state = store.getState();
     const targetColumn = state.columns.find((column) => column.role === 'backlog') ?? state.columns[0];
     if (!targetColumn) {
@@ -241,22 +258,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const gateways: LoopGateways = {
       dispatchCard: async (card) => {
-        const handedOff = await handOffPromptToChat(target, buildCardHandoffPrompt(card, cardFilePath(card)), `"${card.title}"`);
-        if (handedOff) {
-          await store.appendActivity(card.id, formatHandoffEntry(providerLabel));
-          BoardPanel.postStateIfOpen();
-        }
-        return handedOff;
+        return runCardHandoff(card.id, async () => {
+          const handedOff = await handOffPromptToChat(target, buildCardHandoffPrompt(card, cardFilePath(card)), `"${card.title}"`);
+          if (handedOff) {
+            await store.appendActivity(card.id, formatHandoffEntry(providerLabel));
+            BoardPanel.postStateIfOpen();
+          }
+          return handedOff;
+        });
       },
       requestDefinition: async (card) => {
-        const handedOff = await handOffPromptToChat(target, buildCardDefinitionPrompt(card, cardFilePath(card)), `"${card.title}"`);
-        if (handedOff) {
-          await store.appendActivity(card.id, formatDefinitionHandoffEntry(providerLabel));
-          BoardPanel.postStateIfOpen();
-        }
-        return handedOff;
+        return runCardHandoff(card.id, async () => {
+          const handedOff = await handOffPromptToChat(target, buildCardDefinitionPrompt(card, cardFilePath(card)), `"${card.title}"`);
+          if (handedOff) {
+            await store.appendActivity(card.id, formatDefinitionHandoffEntry(providerLabel));
+            BoardPanel.postStateIfOpen();
+          }
+          return handedOff;
+        });
       },
       decideDoability: decideCardDoability,
+      requestTriage: async (card) => {
+        return runCardHandoff(card.id, async () => {
+          const handedOff = await handOffPromptToChat(target, buildTriagePrompt(card, cardFilePath(card)), `"${card.title}"`);
+          if (handedOff) {
+            await store.appendActivity(card.id, formatTriageHandoffEntry(providerLabel));
+            BoardPanel.postStateIfOpen();
+          }
+          return handedOff;
+        });
+      },
     };
 
     const loop = { cancelled: false };
@@ -524,10 +555,9 @@ async function detectAiEnvironments(fs: FileSystemLike): Promise<Set<AiEnvironme
 }
 
 /**
- * Install the bundled skills into every AI tool the workspace uses, plus the
- * `providerEnv` we are about to hand off to. Falls back to Copilot when the
- * workspace has no detectable AI tool. Skips files whose content is unchanged so
- * re-imports don't churn. Returns the paths written this run.
+ * Install the bundled skills into each detected AI environment, plus the
+ * detected provider we are about to hand off to. Skips files whose content is
+ * unchanged so re-imports don't churn. Returns the paths written this run.
  */
 async function ensureSkillsInstalled(
   extensionUri: vscode.Uri,
@@ -538,9 +568,6 @@ async function ensureSkillsInstalled(
 
   const environments = await detectAiEnvironments(fs);
   environments.add(providerEnv);
-  if (environments.size === 0) {
-    environments.add('copilot');
-  }
 
   const existingAgentsMd = environments.has('codex') && (await fs.exists('AGENTS.md'))
     ? await fs.readFile('AGENTS.md')
@@ -656,49 +683,20 @@ function registerBoardWatcher(
 }
 
 /**
- * Choose the plan to import. The user either pastes from the clipboard (which
- * preserves a multi-line plan) or picks a markdown file from the workspace. For
- * a file we return its workspace-relative path so the agent reads the full
- * document itself; for the clipboard we return the text. Returns `undefined`
- * when the user cancels or no source is available.
+ * Ask for the plan path and pass it through unchanged so the AI handoff reads
+ * the source itself. The extension intentionally does not inspect or parse the
+ * plan, and accepts either a workspace-relative or absolute local path.
  */
 async function collectPlanSource(): Promise<PlanImportSource | undefined> {
-  const fromClipboard = 'Paste from clipboard';
-  const fromFile = 'Select a markdown file from the workspace';
-
-  const source = await vscode.window.showQuickPick(
-    [
-      { label: fromClipboard, detail: 'Import the plan text currently on your clipboard' },
-      { label: fromFile, detail: 'Pick a .md file in this workspace to import' },
-    ],
-    { placeHolder: 'Import plan from…' },
-  );
-  if (!source) {
-    return undefined;
-  }
-
-  if (source.label === fromClipboard) {
-    return { kind: 'text', text: await vscode.env.clipboard.readText() };
-  }
-
-  const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**');
-  if (files.length === 0) {
-    void vscode.window.showInformationMessage('No markdown files were found in this workspace.');
-    return undefined;
-  }
-
-  const sorted = [...files].sort((left, right) =>
-    vscode.workspace.asRelativePath(left).localeCompare(vscode.workspace.asRelativePath(right)),
-  );
-  const pick = await vscode.window.showQuickPick(
-    sorted.map((uri) => ({ label: vscode.workspace.asRelativePath(uri), uri })),
-    { placeHolder: 'Select a markdown plan file' },
-  );
-  if (!pick) {
-    return undefined;
-  }
-
-  return { kind: 'file', path: vscode.workspace.asRelativePath(pick.uri) };
+  const path = await vscode.window.showInputBox({
+    prompt: 'Path to the local plan file for AI to import',
+    placeHolder: 'Workspace-relative or absolute path (for example, docs/plan.md)',
+    ignoreFocusOut: true,
+    validateInput: (value) =>
+      value.trim().length > 0 ? undefined : 'Enter a workspace-relative or absolute local file path.',
+  });
+  const normalizedPath = path?.trim();
+  return normalizedPath ? { kind: 'file', path: normalizedPath } : undefined;
 }
 
 async function pickColumn(
@@ -761,9 +759,10 @@ function findCardById(state: BoardState, cardId: string): BoardCard | undefined 
  * loop's unassigned-card triage. Uses the VS Code Language Model API (any
  * available model) because — unlike the chat hand-off — the answer must come
  * back programmatically. Returns undefined when no model is available or the
- * response has no verdict, in which case the loop leaves the card unassigned.
+ * response has no verdict, in which case the loop falls back to a chat
+ * hand-off triage.
  */
-async function decideCardDoability(card: BoardCard): Promise<LoopTriageDecision | undefined> {
+async function decideCardDoability(card: BoardCard): Promise<DoabilityVerdict | undefined> {
   try {
     const [model] = await vscode.lm.selectChatModels();
     if (!model) {
@@ -791,6 +790,9 @@ function summarizeLoopRun(summary: LoopSummary): string {
   if (summary.advanced.length > 0) {
     parts.push(`advanced ${summary.advanced.length}`);
   }
+  if (summary.movedToReady.length > 0) {
+    parts.push(`placed ${summary.movedToReady.length} freshly defined in Ready for review`);
+  }
   if (summary.parked.length > 0) {
     parts.push(`parked ${summary.parked.length} in Verify for human sign-off`);
   }
@@ -808,10 +810,31 @@ function summarizeLoopRun(summary: LoopSummary): string {
 }
 
 async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
-  const availableCommands = await vscode.commands.getCommands(true);
+  let availableCommands = await vscode.commands.getCommands(true);
+  let codexActivationFailure: string | undefined;
+  // Contributed commands can be absent until a closed provider has activated.
+  // Activate Codex once at discovery time, then refresh the command list so the
+  // first card hand-off can use its new-chat command immediately.
+  if (!availableCommands.some((commandId) => commandId.startsWith('chatgpt.'))) {
+    const codex = vscode.extensions.getExtension('openai.chatgpt');
+    if (codex) {
+      try {
+        await codex.activate();
+        availableCommands = await vscode.commands.getCommands(true);
+      } catch (error: unknown) {
+        codexActivationFailure = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
   const targets = listAvailableChatProviders(availableCommands, readChatProviderCommands());
 
   if (targets.length === 0) {
+    if (codexActivationFailure) {
+      void vscode.window.showWarningMessage(
+        formatChatHandoffFailure(CHAT_PROVIDER_LABELS.codex, 'the card', codexActivationFailure),
+      );
+      return undefined;
+    }
     void vscode.window.showInformationMessage(
       'No supported AI chat extension was found. Install GitHub Copilot, Codex (ChatGPT), or Claude Code to hand off cards.',
     );
@@ -835,7 +858,7 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
 /**
  * Deliver a prompt to the chosen AI chat provider. `subject` names what is being
  * handed off (e.g. a quoted card title, or "the plan") for the user-facing
- * confirmation. Returns whether the hand-off command ran.
+ * confirmation. Returns whether the prompt was delivered and can be recorded.
  */
 async function handOffPromptToChat(
   target: ChatHandoffTarget,
@@ -859,22 +882,20 @@ async function handOffPromptToChat(
       return true;
     }
 
-    await vscode.env.clipboard.writeText(prompt);
-    await vscode.commands.executeCommand(target.commandId);
     if (shouldAutoPasteChatHandoff(target)) {
-      try {
-        // Let Codex focus its composer before we issue the paste command.
-        await waitForMilliseconds(150);
-        await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
-        void vscode.window.showInformationMessage(
-          `Opened a new ${providerLabel} thread for ${subject}. The prompt was pasted automatically and is still on your clipboard.`,
-        );
-      } catch (pasteError: unknown) {
-        const message = pasteError instanceof Error ? pasteError.message : String(pasteError);
-        void vscode.window.showWarningMessage(
-          `Opened a new ${providerLabel} thread for ${subject}, but auto-paste failed. The prompt is still on your clipboard.${message ? ` ${message}` : ''}`,
-        );
+      const result = await deliverClipboardHandoff(target, prompt, {
+        writeClipboard: (value) => vscode.env.clipboard.writeText(value),
+        activateProvider: () => activateChatProvider(target),
+        executeCommand: (commandId) => vscode.commands.executeCommand(commandId),
+        wait: waitForMilliseconds,
+      });
+      if (!result.delivered) {
+        void vscode.window.showWarningMessage(formatChatHandoffFailure(providerLabel, subject, result.error));
+        return false;
       }
+      void vscode.window.showInformationMessage(
+        `Opened a new ${providerLabel} thread for ${subject}. The complete prompt was pasted automatically and is still on your clipboard.`,
+      );
       return true;
     }
     void vscode.window.showInformationMessage(
@@ -883,8 +904,20 @@ async function handOffPromptToChat(
     return true;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showWarningMessage(`Could not hand off to ${providerLabel}: ${message}`);
+    void vscode.window.showWarningMessage(formatChatHandoffFailure(providerLabel, subject, message));
     return false;
+  }
+}
+
+async function activateChatProvider(target: ChatHandoffTarget): Promise<void> {
+  const extensionIdByProvider: Record<ChatHandoffTarget['provider'], string> = {
+    copilot: 'github.copilot-chat',
+    codex: 'openai.chatgpt',
+    'claude-code': 'anthropic.claude-code',
+  };
+  const extension = vscode.extensions.getExtension(extensionIdByProvider[target.provider]);
+  if (extension) {
+    await extension.activate();
   }
 }
 

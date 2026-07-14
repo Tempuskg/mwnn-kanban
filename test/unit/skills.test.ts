@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
+  AI_ENVIRONMENTS,
   MANAGED_BLOCK_MARKER,
   parseSkillDocument,
   planSkillInstallation,
@@ -107,6 +108,10 @@ suite('managed block upsert', () => {
 
 suite('install planning', () => {
   const skills = [parseSample(), parseSkillDocument('mwnn-card-authoring', '---\nname: "MWNN Card Authoring"\ndescription: "Card contract."\n---\n\nCard body.')];
+
+  test('includes every supported provider environment', () => {
+    assert.deepEqual([...AI_ENVIRONMENTS], ['copilot', 'codex', 'claude-code', 'cursor']);
+  });
 
   test('skillFilePath maps each environment to its native location', () => {
     assert.equal(skillFilePath('copilot', 'x'), '.github/instructions/x.instructions.md');
