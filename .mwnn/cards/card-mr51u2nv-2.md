@@ -1,11 +1,11 @@
 ---
 id: card-mr51u2nv-2
 title: "In AI Loop it is timing out, rearchitect the loop so it never timesout"
-column: col-mqxta6ho-4
-position: 1000
+column: col-mqwk2njn-4
+position: -6000
 assignee: { kind: human }
 createdAt: 1783090146811
-updatedAt: 1783166329917
+updatedAt: 1784880800285
 ---
 
 ## Description

@@ -1,11 +1,11 @@
 ---
 id: card-mrjtrrcv-2
 title: In AI loop the loop took the Unassigned Undefined backlog item and defined it and put it in the Ready column and assigned it to AI but then stopped.  The AI loop shouldn't stop if there is a card assigned to AI.
-column: col-mqwk2njn-2
-position: 2000
+column: col-mqwk2njn-4
+position: -5000
 assignee: { kind: ai }
 createdAt: 1783983594559
-updatedAt: 1784031022801
+updatedAt: 1784880793544
 ---
 
 ## Description

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createAiLoopProgressOptions } from './aiLoopProgress';
 import {
   buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
@@ -294,11 +295,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     activeLoop = loop;
     try {
       const summary = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: 'MWNN AI loop',
-          cancellable: true,
-        },
+        createAiLoopProgressOptions(vscode.ProgressLocation),
         (progress, token) => {
           token.onCancellationRequested(() => {
             loop.cancelled = true;
@@ -683,20 +680,61 @@ function registerBoardWatcher(
 }
 
 /**
- * Ask for the plan path and pass it through unchanged so the AI handoff reads
- * the source itself. The extension intentionally does not inspect or parse the
- * plan, and accepts either a workspace-relative or absolute local path.
+ * Choose a plan source for the existing AI handoff. Clipboard text and the
+ * workspace markdown picker remain available; the added path option accepts a
+ * workspace-relative or absolute local path. File imports pass the path through
+ * unchanged, and the extension never parses a plan.
  */
 async function collectPlanSource(): Promise<PlanImportSource | undefined> {
-  const path = await vscode.window.showInputBox({
-    prompt: 'Path to the local plan file for AI to import',
-    placeHolder: 'Workspace-relative or absolute path (for example, docs/plan.md)',
-    ignoreFocusOut: true,
-    validateInput: (value) =>
-      value.trim().length > 0 ? undefined : 'Enter a workspace-relative or absolute local file path.',
-  });
-  const normalizedPath = path?.trim();
-  return normalizedPath ? { kind: 'file', path: normalizedPath } : undefined;
+  const fromClipboard = 'Paste from clipboard';
+  const fromWorkspaceFile = 'Select a markdown file from the workspace';
+  const fromPath = 'Enter a local file path';
+  const source = await vscode.window.showQuickPick(
+    [
+      { label: fromClipboard, detail: 'Import the plan text currently on your clipboard' },
+      { label: fromWorkspaceFile, detail: 'Pick a .md file in this workspace for the AI to read' },
+      { label: fromPath, detail: 'Use a workspace-relative or absolute local path for the AI to read' },
+    ],
+    { placeHolder: 'Import plan from…' },
+  );
+  if (!source) {
+    return undefined;
+  }
+
+  if (source.label === fromClipboard) {
+    return { kind: 'text', text: await vscode.env.clipboard.readText() };
+  }
+
+  if (source.label === fromPath) {
+    const path = await vscode.window.showInputBox({
+      prompt: 'Path to the local plan file for AI to import',
+      placeHolder: 'Workspace-relative or absolute path (for example, docs/plan.md)',
+      ignoreFocusOut: true,
+      validateInput: (value) =>
+        value.trim().length > 0 ? undefined : 'Enter a workspace-relative or absolute local file path.',
+    });
+    const normalizedPath = path?.trim();
+    return normalizedPath ? { kind: 'file', path: normalizedPath } : undefined;
+  }
+
+  const files = await vscode.workspace.findFiles('**/*.md', '**/node_modules/**');
+  if (files.length === 0) {
+    void vscode.window.showInformationMessage('No markdown files were found in this workspace.');
+    return undefined;
+  }
+
+  const sorted = [...files].sort((left, right) =>
+    vscode.workspace.asRelativePath(left).localeCompare(vscode.workspace.asRelativePath(right)),
+  );
+  const pick = await vscode.window.showQuickPick(
+    sorted.map((uri) => ({ label: vscode.workspace.asRelativePath(uri), uri })),
+    { placeHolder: 'Select a markdown plan file' },
+  );
+  if (!pick) {
+    return undefined;
+  }
+
+  return { kind: 'file', path: vscode.workspace.asRelativePath(pick.uri) };
 }
 
 async function pickColumn(

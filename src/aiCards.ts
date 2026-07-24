@@ -55,7 +55,7 @@ export function buildCardHandoffPrompt(card: BoardCard, cardFilePath: string): s
     'Do the actual work this card describes in the current workspace — write code, create files, run commands as needed. Do not just describe the work.',
     '',
     `This card is stored as a markdown file at: ${cardFilePath}`,
-    'When you finish, update that file: append a short summary of what you did under its "Activity" section.',
+    'When you finish, update that file: append a short summary of what you did under its "Activity" section. Also append the exact terminal marker `STATUS: DONE` or `STATUS: BLOCKED: <reason>` on its own line in that Activity entry; the AI loop cannot read your chat response after this hand-off.',
     'End your work by reporting the card status on its own line, exactly one of:',
     '  STATUS: DONE — the acceptance criteria are met.',
     '  STATUS: BLOCKED: <reason> — you cannot proceed and need a human.',
@@ -91,10 +91,9 @@ export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string)
   ].join('\n');
 }
 
-export interface PlanImportSource {
-  readonly kind: 'file';
-  readonly path: string;
-}
+export type PlanImportSource =
+  | { readonly kind: 'file'; readonly path: string }
+  | { readonly kind: 'text'; readonly text: string };
 
 export interface PlanImportTarget {
   readonly columnId: string;
@@ -106,8 +105,8 @@ export interface PlanImportTarget {
 /**
  * Build the hand-off prompt for importing a written plan into Backlog cards. The
  * agent reads the plan, decomposes it into genuine work items, and writes one
- * `.mwnn/cards/<id>.md` file per item directly into the target column. The
- * extension deliberately passes the path through without reading the plan.
+ * `.mwnn/cards/<id>.md` file per item directly into the target column. File
+ * imports deliberately pass the supplied path through without reading the plan.
  *
  * The prompt is self-contained (it embeds the essential card-file contract and
  * decomposition rules so it works even when the chat provider does not
@@ -121,12 +120,24 @@ export function buildPlanImportPrompt(
   skillPaths: readonly string[],
 ): string {
   const cardsDir = `${boardFolder.replace(/\/+$/, '')}/cards`;
+  const sourceInstructions =
+    plan.kind === 'file'
+      ? [
+          'The existing handoff is the import entry point. Read the supplied local plan file yourself and write the resulting cards; the extension does not parse or transform the plan for you.',
+          'Accept either a workspace-relative or absolute local path. Resolve a workspace-relative path from the current workspace root; read an absolute path directly.',
+          'Before changing any board file, verify that the supplied path exists, is readable, and is a regular file. If it is missing, inaccessible, invalid, or a directory, create no cards and report the exact path and reason clearly with STATUS: BLOCKED.',
+        ]
+      : [
+          'The existing handoff is the import entry point. Use the plan text supplied below and write the resulting cards; the extension does not parse or decompose the plan for you.',
+        ];
+  const planSection =
+    plan.kind === 'file'
+      ? ['Read the plan document at this path:', plan.path]
+      : ['Here is the plan to import:', '', plan.text.trim()];
 
   return [
     'You are an AI agent importing a written plan into a Methodology With No Name (MWNN) Kanban board.',
-    'The existing handoff is the import entry point. Read the supplied local plan file yourself and write the resulting cards; the extension does not parse, paste, or transform the plan for you.',
-    'Accept either a workspace-relative or absolute local path. Resolve a workspace-relative path from the current workspace root; read an absolute path directly.',
-    'Before changing any board file, verify that the supplied path exists, is readable, and is a regular file. If it is missing, inaccessible, invalid, or a directory, create no cards and report the exact path and reason clearly with STATUS: BLOCKED.',
+    ...sourceInstructions,
     'Turn the plan into Backlog cards: create exactly one card per genuine, outstanding actionable unit of work — a discrete slice someone could pick up and do. For each card write a concise title, a non-empty Description, a concrete Acceptance criteria checklist, an assignee (Human or AI), and any dependencies on other cards. Write the cards yourself as files; do not just describe them.',
     '',
     'Follow these repository skills for the full rules:',
@@ -164,15 +175,14 @@ export function buildPlanImportPrompt(
     'Set "assignee" on every card: use { kind: ai } for implementation, coding, refactoring, testing, or otherwise automatable work; use { kind: human } for product or design decisions, reviews and sign-off, or manual/external steps that need a person. When genuinely unsure, prefer { kind: ai }.',
     'Set "dependsOn" where the plan implies one item must be finished before another can start (wording like "after", "once … is done", "depends on", "requires", or a foundation/phase a later item builds on). List the prerequisite card\'s id(s) in the dependent card\'s dependsOn, and omit the line otherwise. Decide each card\'s id before writing so a later card can reference an earlier one. Only link genuine prerequisites — do NOT chain cards just because they are listed in order — and never create a self-dependency or a cycle. Reference only ids of cards in this import.',
     'The extension watches the board folder and reloads automatically once the files are written. A card with unfinished dependencies is shown as blocked and cannot advance past the Ready column until they are done.',
-    'Importing the same plan again must be idempotent. Canonicalize the supplied source path, then derive a stable import key from that source identity, the actionable item location in the plan, and its normalized title. Inventory all existing cards and match that key (or an unambiguous equivalent scope) before writing; reuse matching cards and never create duplicates. Record the key/source item in each new card Activity so a later import can recognize it. Report the number of outstanding items, existing matches, and newly created cards.',
+    'Importing the same plan again must be idempotent. Derive a stable import key from the source identity (canonicalized path for a file import), the actionable item location in the plan, and its normalized title. Inventory all existing cards and match that key (or an unambiguous equivalent scope) before writing; reuse matching cards and never create duplicates. Record the key/source item in each new card Activity so a later import can recognize it. Report the number of outstanding items, existing matches, and newly created cards.',
     'If the plan contains no outstanding actionable items, create no cards and report that clearly as a successful zero-card import.',
     '',
-    'Read the plan document at this path:',
-    plan.path,
+    ...planSection,
     '',
     'When you finish, report the result on its own line, exactly one of:',
     '  STATUS: DONE — the plan was imported or already synchronized (state outstanding item, existing match, and newly created card counts).',
-    '  STATUS: BLOCKED: <reason> — include the supplied path and any inaccessible, invalid, ambiguous, or unreconciled item that needs a human.',
+    '  STATUS: BLOCKED: <reason> — include the supplied path for a file import and any inaccessible, invalid, ambiguous, or unreconciled item that needs a human.',
   ].join('\n');
 }
 

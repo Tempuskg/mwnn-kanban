@@ -5,6 +5,9 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- AI-loop progress now appears in the VS Code status bar so it remains visible without covering the built-in chat composer or submit button.
+
 ### Added
 - Initial Kanban board webview with columns, cards, drag-and-drop, and per-workspace persistence.
 - Commands: `MWNN Kanban: Open Board`, `Add Column`, `Reset Board`.

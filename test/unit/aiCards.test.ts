@@ -93,6 +93,8 @@ suite('ai card helpers', () => {
     assert.match(prompt, /Create a 128x128 icon\./);
     assert.match(prompt, /- \[ \] icon\.png exists/);
     assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
+    assert.match(prompt, /exact terminal marker.*Activity entry/i);
+    assert.match(prompt, /cannot read your chat response/i);
     assert.match(prompt, /STATUS: DONE/);
     assert.match(prompt, /STATUS: BLOCKED/);
   });
@@ -179,6 +181,21 @@ suite('ai card helpers', () => {
     // Trailing slash on the board folder is normalized in the cards path.
     assert.match(prompt, /\.mwnn\/cards\/<id>\.md/);
     assert.match(prompt, /Read the plan document at this path/);
+  });
+
+  test('buildPlanImportPrompt continues to embed clipboard plan text', () => {
+    const prompt = buildPlanImportPrompt(
+      { kind: 'text', text: '\n\n- [ ] Ship the parser\n- [ ] Wire the command\n\n' },
+      { columnId: 'col-1', columnTitle: 'To Do', existingCount: 0 },
+      '.mwnn/',
+      ['.github/instructions/mwnn-plan-import.instructions.md'],
+    );
+
+    assert.match(prompt, /Here is the plan to import:/);
+    assert.match(prompt, /- \[ \] Ship the parser\n- \[ \] Wire the command/);
+    assert.doesNotMatch(prompt, /Read the plan document at this path/);
+    assert.doesNotMatch(prompt, /verify that the supplied path exists/i);
+    assert.match(prompt, /same plan again must be idempotent/i);
   });
 
   test('formatDefinitionHandoffEntry records the provider and a timestamped definition note', () => {

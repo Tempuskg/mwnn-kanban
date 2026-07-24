@@ -1,11 +1,11 @@
 ---
 id: card-mr50aj71-1
 title: "In AI Loop when it picks a card from the backlog and defines it, it should be placed in the Ready column. Currently it is going into the Implement Column."
-column: col-mqxta6ho-4
-position: 2000
+column: col-mqwk2njn-4
+position: -2000
 assignee: { kind: human }
 createdAt: 1783087555501
-updatedAt: 1783088919401
+updatedAt: 1784475118434
 ---
 
 ## Description

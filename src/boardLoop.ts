@@ -19,7 +19,7 @@
  */
 
 import { cardNeedsDefinition } from './cardDefinition';
-import { isCardBlocked } from './utils';
+import { isCardBlocked, readyState } from './utils';
 import type { Assignee, BoardState, Card, Column } from './types';
 
 export type LoopTriageDecision = 'ai' | 'human';
@@ -159,11 +159,77 @@ function readDispatchOutcome(card: Card, record: DispatchRecord): DispatchOutcom
   if (/^\s*STATUS:\s*DONE\b/im.test(appended)) {
     return 'done';
   }
+  // Chat hand-offs are fire-and-forget: the agent's final chat response is not
+  // available to the loop. Accept a fully checked checklist as completion too,
+  // which also recovers cards handled by agents that followed the older prompt
+  // and recorded their work without copying the terminal status into Activity.
+  if (hasCompletedAcceptanceCriteria(card)) {
+    return 'done';
+  }
   return 'pending';
+}
+
+function hasCompletedAcceptanceCriteria(card: Card): boolean {
+  const criteria = card.acceptanceCriteria ?? '';
+  const checks = [...criteria.matchAll(/^\s*(?:[-*+]\s+|\d+[.)]\s+)?\[([ xX])\]/gm)];
+  return checks.length > 0 && checks.every((check) => check[1]?.toLowerCase() === 'x');
+}
+
+function isVerifyColumn(column: Column): boolean {
+  // Older boards persisted a title-based Verify column as `custom` before
+  // built-in role metadata was introduced. Keep those boards in the loop's
+  // human verification gate instead of advancing them toward Done.
+  return column.role === 'verify' || (column.role === 'custom' && /verify/i.test(column.title));
 }
 
 function isPreWorkColumn(column: Column): boolean {
   return column.role === 'backlog' || column.role === 'ready';
+}
+
+function hasWipCapacity(column: Column): boolean {
+  return column.wipLimit === undefined || column.wipLimit === null || column.cards.length < column.wipLimit;
+}
+
+/**
+ * A backlog card is available when the loop could still do something useful
+ * with it. Human-owned cards and cards blocked by unfinished dependencies do
+ * not count: the loop cannot implement either one.
+ */
+function hasAvailableBacklogCard(state: BoardState, session: LoopSession): boolean {
+  const backlog = state.columns.find((column) => column.role === 'backlog');
+  if (!backlog) {
+    return false;
+  }
+
+  return backlog.cards.some((card) => {
+    if (session.skipped.has(card.id) || isCardBlocked(state, card.id)) {
+      return false;
+    }
+    return card.assignee?.kind !== 'human';
+  });
+}
+
+/**
+ * Implementation admission is intentionally downstream of Ready's reverse
+ * WIP. This keeps the loop from starting work before the queue has enough
+ * defined cards, while still allowing the last available backlog card to run
+ * when there is nothing left to replenish Ready.
+ */
+function canStartImplementation(state: BoardState, session: LoopSession): boolean {
+  const ready = state.columns.find((column) => column.role === 'ready');
+  if (!ready || ready.reverseWip === undefined || ready.reverseWip === null) {
+    return true;
+  }
+
+  const readyWip = readyState(state, ready);
+  return !readyWip.under || !hasAvailableBacklogCard(state, session);
+}
+
+function canAdvanceIntoColumn(state: BoardState, session: LoopSession, target: Column): boolean {
+  if (!hasWipCapacity(target)) {
+    return false;
+  }
+  return target.role !== 'in-progress' || canStartImplementation(state, session);
 }
 
 /**
@@ -235,7 +301,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
         // of Ready so a human can review the fresh Description and Acceptance
         // criteria before implementation. Without a Ready column it stays put.
         const readyColumn = state.columns.find((candidate) => candidate.role === 'ready');
-        if (readyColumn) {
+        if (readyColumn && hasWipCapacity(readyColumn)) {
           return { kind: 'move-to-ready', card, toColumn: readyColumn };
         }
       }
@@ -252,7 +318,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
       if (card.assignee === undefined) {
         // Triage happens anywhere before Verify; blocked cards may still be
         // triaged (assignment is not advancement).
-        if (column.role === 'verify') {
+        if (isVerifyColumn(column)) {
           continue;
         }
         if (cardNeedsDefinition(card)) {
@@ -270,7 +336,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
         continue; // human cards are never picked up
       }
 
-      if (column.role === 'verify') {
+      if (isVerifyColumn(column)) {
         // Highest priority: hand finished work back to a person immediately.
         return { kind: 'park', card };
       }
@@ -284,7 +350,14 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
         const outcome = readDispatchOutcome(card, record);
         if (outcome === 'done') {
           if (nextColumn && nextColumn.role !== 'done') {
-            return { kind: 'advance', card, toColumn: nextColumn };
+            if (canAdvanceIntoColumn(state, session, nextColumn)) {
+              return { kind: 'advance', card, toColumn: nextColumn };
+            }
+            // Keep the completed card in its current column when the next
+            // column is full. A later loop run can retry once capacity opens;
+            // abandoning it here would incorrectly make a successful hand-off
+            // look like a failed one.
+            continue;
           }
           // No Verify gate before Done: never auto-complete a card.
           return { kind: 'abandon', card };
@@ -301,7 +374,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
         }
         // Nothing to run in Backlog/Ready; the card trivially "completes" and
         // moves toward the work columns.
-        if (nextColumn && nextColumn.role !== 'done') {
+        if (nextColumn && nextColumn.role !== 'done' && canAdvanceIntoColumn(state, session, nextColumn)) {
           firstPreWorkAdvance ??= { kind: 'advance', card, toColumn: nextColumn };
         }
         continue;
@@ -309,6 +382,9 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
 
       if (session.definedThisRun.has(card.id)) {
         continue; // freshly defined — never dispatched before a human review
+      }
+      if (column.role === 'in-progress' && !canStartImplementation(state, session)) {
+        continue;
       }
       firstDispatch ??= { kind: 'dispatch', card, column };
     }

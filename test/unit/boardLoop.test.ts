@@ -21,6 +21,7 @@ import {
   moveCard,
   setAcceptanceCriteria,
   setAssignee,
+  setColumnConfig,
   setDependencies,
   setDescription,
 } from '../../src/utils';
@@ -164,6 +165,69 @@ suite('board loop planning', () => {
     assert.equal(action?.card.id, cardId);
   });
 
+  test('does not advance a card into a full WIP column', () => {
+    let { state, cardId } = boardWithCard([...FULL_COLUMNS], 1, 'Ready task', { kind: 'ai' });
+    const inProgressColumnId = state.columns[2]!.id;
+    state = addCard(state, inProgressColumnId, 'Existing implementation');
+    const existingCardId = state.columns[2]!.cards[0]!.id;
+    state = setDescription(state, existingCardId, 'Already owned by a person');
+    state = setAcceptanceCriteria(state, existingCardId, '- [ ] Manual criterion');
+    state = setAssignee(state, existingCardId, { kind: 'human' });
+    state = setColumnConfig(state, inProgressColumnId, { wipLimit: 1 });
+
+    assert.equal(planLoopAction(state, createLoopSession()), undefined);
+    assert.equal(state.columns[1]!.cards[0]!.id, cardId);
+  });
+
+  test('replenishes Ready before starting implementation when reverse WIP is underfilled', () => {
+    let { state, cardId: readyCardId } = boardWithCard([...FULL_COLUMNS], 1, 'Ready task', { kind: 'ai' });
+    const backlogColumnId = state.columns[0]!.id;
+    state = addCard(state, backlogColumnId, 'Backlog task');
+    const backlogCardId = state.columns[0]!.cards[0]!.id;
+    state = setDescription(state, backlogCardId, 'Ready to implement');
+    state = setAcceptanceCriteria(state, backlogCardId, '- [ ] Backlog criterion');
+    state = setAssignee(state, backlogCardId, { kind: 'ai' });
+    state = setColumnConfig(state, state.columns[1]!.id, { reverseWip: 2 });
+
+    const action = planLoopAction(state, createLoopSession());
+
+    assert.equal(action?.kind, 'advance');
+    assert.equal(action?.card.id, backlogCardId);
+    assert.equal(action?.kind === 'advance' ? action.toColumn.role : undefined, 'ready');
+    assert.notEqual(action?.card.id, readyCardId);
+  });
+
+  test('allows implementation when Ready reverse WIP is met', () => {
+    let { state, cardId: firstReadyCardId } = boardWithCard([...FULL_COLUMNS], 1, 'First ready task', { kind: 'ai' });
+    state = addCard(state, state.columns[1]!.id, 'Second ready task');
+    const secondReadyCardId = state.columns[1]!.cards[1]!.id;
+    state = setDescription(state, secondReadyCardId, 'Defined too');
+    state = setAcceptanceCriteria(state, secondReadyCardId, '- [ ] Another criterion');
+    state = setAssignee(state, secondReadyCardId, { kind: 'ai' });
+    state = addCard(state, state.columns[0]!.id, 'Human backlog task');
+    const humanBacklogCardId = state.columns[0]!.cards[0]!.id;
+    state = setDescription(state, humanBacklogCardId, 'Needs a person');
+    state = setAssignee(state, humanBacklogCardId, { kind: 'human' });
+    state = setColumnConfig(state, state.columns[1]!.id, { reverseWip: 2 });
+
+    const action = planLoopAction(state, createLoopSession());
+
+    assert.equal(action?.kind, 'advance');
+    assert.equal(action?.card.id, firstReadyCardId);
+    assert.equal(action?.kind === 'advance' ? action.toColumn.role : undefined, 'in-progress');
+  });
+
+  test('allows implementation when the backlog has no available cards', () => {
+    let { state, cardId } = boardWithCard([...FULL_COLUMNS], 1, 'Last ready task', { kind: 'ai' });
+    state = setColumnConfig(state, state.columns[1]!.id, { reverseWip: 2 });
+
+    const action = planLoopAction(state, createLoopSession());
+
+    assert.equal(action?.kind, 'advance');
+    assert.equal(action?.card.id, cardId);
+    assert.equal(action?.kind === 'advance' ? action.toColumn.role : undefined, 'in-progress');
+  });
+
   test('skips cards with unfinished dependencies', () => {
     let { state, cardId } = boardWithCard([...FULL_COLUMNS], 1, 'Dependent task', { kind: 'ai' });
     const backlogId = state.columns[0]!.id;
@@ -187,6 +251,20 @@ suite('board loop planning', () => {
     assert.equal(action?.card.id, cardId);
   });
 
+  test('parks AI cards in a legacy custom column titled Verify', () => {
+    const { state: initialState, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Legacy verification', { kind: 'ai' });
+    const state: BoardState = {
+      ...initialState,
+      columns: initialState.columns.map((column) =>
+        column.title === 'Verify' ? { ...column, role: 'custom' as const } : column,
+      ),
+    };
+
+    const action = planLoopAction(state, createLoopSession());
+    assert.equal(action?.kind, 'park');
+    assert.equal(action?.card.id, cardId);
+  });
+
   test('never plans an advance into the done column', () => {
     // No verify column between In Progress and Done.
     const { state, cardId } = boardWithCard(['Backlog', 'In Progress', 'Done'], 1, 'Work item', { kind: 'ai' });
@@ -203,6 +281,27 @@ suite('board loop planning', () => {
     const withDone = appendActivity(state, cardId, 'STATUS: DONE — finished.');
     const next = planLoopAction(withDone, session);
     assert.equal(next?.kind, 'abandon');
+  });
+
+  test('leaves completed work in place when the next column is at its WIP limit', () => {
+    let { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Completed implementation', { kind: 'ai' });
+    const verifyColumnId = state.columns[3]!.id;
+    state = addCard(state, verifyColumnId, 'Existing verification');
+    const existingCardId = state.columns[3]!.cards[0]!.id;
+    state = setDescription(state, existingCardId, 'Already waiting for a human');
+    state = setAssignee(state, existingCardId, { kind: 'human' });
+    state = setColumnConfig(state, verifyColumnId, { wipLimit: 1 });
+    const session = createLoopSession();
+    session.dispatches.set(cardId, {
+      columnId: state.columns[2]!.id,
+      activityBaseline: 0,
+      dispatchedAt: 0,
+    });
+
+    const withDone = appendActivity(state, cardId, 'STATUS: DONE - finished.');
+
+    assert.equal(planLoopAction(withDone, session), undefined);
+    assert.equal(withDone.columns[2]!.cards[0]!.id, cardId);
   });
 });
 
@@ -222,6 +321,42 @@ suite('board loop run', () => {
     assert.equal(summary.cancelled, false);
     assert.match(board.findCard(cardId).activity ?? '', /AI loop parked in Verify/);
     assert.match(board.findCard(cardId).activity ?? '', /AI loop advanced this card/);
+  });
+
+  test('uses completed acceptance criteria and a legacy Verify title to finish a hand-off', async () => {
+    const { state: initialState, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Already implemented', { kind: 'ai' });
+    const state: BoardState = {
+      ...initialState,
+      columns: initialState.columns.map((column) =>
+        column.title === 'Verify' ? { ...column, role: 'custom' as const } : column,
+      ),
+    };
+    const board = fakeBoard({
+      ...state,
+      columns: state.columns.map((column) =>
+        column.cards.some((card) => card.id === cardId)
+          ? {
+              ...column,
+              cards: column.cards.map((card) =>
+                card.id === cardId ? { ...card, acceptanceCriteria: '- [x] The implementation is complete' } : card,
+              ),
+            }
+          : column,
+      ),
+    });
+    const gateways: LoopGateways = {
+      dispatchCard: async () => true,
+      requestDefinition: async () => true,
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    assert.equal(summary.parked.length, 1);
   });
 
   test('leaves human-assigned cards untouched and terminates', async () => {

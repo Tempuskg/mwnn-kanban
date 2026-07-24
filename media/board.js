@@ -33,8 +33,6 @@
   let draggedCardId = null;
   let openCardId = null;
   let openColumnId = null;
-  /** @type {{ cardId: string, title: string, description: string, acceptanceCriteria: string, dependencies: string[] } | null} */
-  let pendingCardFormValues = null;
 
   // Board zoom. Scales the rendered columns/cards visually (via the CSS `zoom`
   // property, which reflows so scrollbars and drag hit-testing stay correct)
@@ -85,8 +83,6 @@
 
   function render() {
     closeAssignPicker();
-    const pending = pendingCardFormValues;
-    pendingCardFormValues = null;
     const previousColumns = root.querySelector('.board-columns');
     const savedScrollLeft = previousColumns ? previousColumns.scrollLeft : 0;
     const savedScrollTop = previousColumns ? previousColumns.scrollTop : 0;
@@ -111,7 +107,7 @@
     if (openCardId) {
       const record = findCardRecord(openCardId);
       if (record) {
-        root.appendChild(renderCardDetails(record, pending?.cardId === openCardId ? pending : null));
+        root.appendChild(renderCardDetails(record));
         return;
       }
     }
@@ -406,10 +402,14 @@
     if (!isCardDefined(card)) {
       meta.appendChild(renderChip('Needs definition', 'card-chip-warning'));
     }
-    if (isCardBlocked(card)) {
+    const blockedByDependency = isCardBlocked(card);
+    const blockedByStatus = hasBlockedStatus(card.activity);
+    if (blockedByDependency || blockedByStatus) {
       const blockerCount = countBlockingDependencies(card);
       const chip = renderChip('Blocked', 'card-chip-blocked');
-      chip.title = `Blocked by ${blockerCount} unfinished ${blockerCount === 1 ? 'dependency' : 'dependencies'}`;
+      chip.title = blockedByDependency
+        ? `Blocked by ${blockerCount} unfinished ${blockerCount === 1 ? 'dependency' : 'dependencies'}`
+        : 'Latest card status is BLOCKED';
       meta.appendChild(chip);
     }
 
@@ -462,6 +462,22 @@
     });
 
     return el;
+  }
+
+  /**
+   * Reads terminal status markers from Activity in order and uses only the
+   * newest one. An older BLOCKED report stops affecting the card once a later
+   * status has been recorded.
+   * @param {string | undefined} activity
+   */
+  function hasBlockedStatus(activity) {
+    const matches = [...(activity ?? '').matchAll(/^\s*STATUS:\s*(.*)$/gim)];
+    if (matches.length === 0) {
+      return false;
+    }
+
+    const lastMatch = matches[matches.length - 1];
+    return /^BLOCKED\b/i.test(lastMatch?.[1]?.trim() ?? '');
   }
 
   /**
@@ -689,14 +705,9 @@
   /**
    * @param {{ column: Column, card: Card }} record
    */
-  function renderCardDetails(record, pendingValues) {
+  function renderCardDetails(record) {
     const backdrop = document.createElement('div');
     backdrop.className = 'card-modal-backdrop';
-    backdrop.addEventListener('click', (event) => {
-      if (event.target === backdrop) {
-        closeCardDetails();
-      }
-    });
 
     const dialog = document.createElement('section');
     dialog.className = 'card-modal';
@@ -724,19 +735,18 @@
     close.className = 'card-modal-close';
     close.type = 'button';
     close.textContent = 'Close';
-    close.addEventListener('click', closeCardDetails);
 
     header.append(titleBlock, close);
 
     const form = document.createElement('div');
     form.className = 'card-modal-form';
 
-    const titleInput = renderTextInput('Title', pendingValues?.title ?? record.card.title);
+    const titleInput = renderTextInput('Title', record.card.title);
     const columnSelector = renderColumnSelectorField(record.column.id);
-    const descriptionInput = renderTextArea('Description', pendingValues?.description ?? record.card.description ?? '', 6);
-    const acceptanceInput = renderTextArea('Acceptance criteria', pendingValues?.acceptanceCriteria ?? record.card.acceptanceCriteria ?? '', 5);
+    const descriptionInput = renderTextArea('Description', record.card.description ?? '', 6);
+    const acceptanceInput = renderTextArea('Acceptance criteria', record.card.acceptanceCriteria ?? '', 5);
     const assigneeControls = renderAssigneeControls(record.card.assignee);
-    const dependencyControls = renderDependencyControls(record.card, pendingValues?.dependencies);
+    const dependencyControls = renderDependencyControls(record.card);
     const activityView = renderActivity(record.card.activity);
 
     form.append(
@@ -790,17 +800,44 @@
     save.type = 'button';
     save.textContent = 'Save';
     save.addEventListener('click', () => {
-      saveCardDetails(record.card, {
-        title: titleInput.input,
-        description: descriptionInput.input,
-        acceptanceCriteria: acceptanceInput.input,
-        assigneeKind: assigneeControls.kind,
-        assigneeName: assigneeControls.name,
-        getDependencies: dependencyControls.getDependencies,
-        currentColumnId: record.column.id,
-        columnSelect: columnSelector.select,
-      });
+      saveCardDetails(record.card, getCardFormFields());
       closeCardDetails();
+    });
+
+    const getCardFormFields = () => ({
+      title: titleInput.input,
+      description: descriptionInput.input,
+      acceptanceCriteria: acceptanceInput.input,
+      assigneeKind: assigneeControls.kind,
+      assigneeName: assigneeControls.name,
+      getDependencies: dependencyControls.getDependencies,
+      currentColumnId: record.column.id,
+      columnSelect: columnSelector.select,
+    });
+
+    const requestClose = () => {
+      const fields = getCardFormFields();
+      if (!cardFormHasChanges(record.card, fields)) {
+        closeCardDetails();
+        return;
+      }
+
+      renderUnsavedChangesPrompt(
+        backdrop,
+        () => {
+          saveCardDetails(record.card, fields);
+          closeCardDetails();
+        },
+        closeCardDetails,
+        () => close.focus(),
+      );
+    };
+
+    close.addEventListener('click', requestClose);
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) {
+        requestClose();
+      }
     });
 
     const duplicateBtn = document.createElement('button');
@@ -833,23 +870,103 @@
 
     syncRunAiButton();
 
-    assigneeControls.kind.addEventListener('change', () => {
-      if (assigneeControls.kind.value === 'ai') {
-        pendingCardFormValues = {
-          cardId: record.card.id,
-          title: titleInput.input.value,
-          description: descriptionInput.input.value,
-          acceptanceCriteria: acceptanceInput.input.value,
-          dependencies: dependencyControls.getDependencies(),
-        };
-        post({ type: 'setAssignee', cardId: record.card.id, assignee: { kind: 'ai' } });
-      }
-      syncRunAiButton();
-    });
+    assigneeControls.kind.addEventListener('change', syncRunAiButton);
 
     dialog.append(header, form, footer);
     backdrop.appendChild(dialog);
     return backdrop;
+  }
+
+  function cardFormHasChanges(card, fields) {
+    const nextTitle = normalizeText(fields.title.value);
+    if (nextTitle !== normalizeText(card.title)) {
+      return true;
+    }
+
+    const nextDescription = normalizeText(fields.description.value);
+    if (nextDescription !== normalizeText(card.description)) {
+      return true;
+    }
+
+    const nextAcceptanceCriteria = normalizeText(fields.acceptanceCriteria.value);
+    if (nextAcceptanceCriteria !== normalizeText(card.acceptanceCriteria)) {
+      return true;
+    }
+
+    const nextAssignee = readAssignee(fields.assigneeKind, fields.assigneeName);
+    if (!assigneesEqual(card.assignee, nextAssignee)) {
+      return true;
+    }
+
+    const nextDependencies = fields.getDependencies();
+    if (!dependenciesEqual(Array.isArray(card.dependsOn) ? card.dependsOn : [], nextDependencies)) {
+      return true;
+    }
+
+    return fields.columnSelect.value !== fields.currentColumnId;
+  }
+
+  function renderUnsavedChangesPrompt(backdrop, onSave, onDiscard, onDismiss) {
+    const promptBackdrop = document.createElement('div');
+    promptBackdrop.className = 'card-unsaved-changes-backdrop';
+
+    const prompt = document.createElement('section');
+    prompt.className = 'card-unsaved-changes-prompt';
+    prompt.setAttribute('role', 'alertdialog');
+    prompt.setAttribute('aria-modal', 'true');
+    prompt.setAttribute('aria-label', 'Unsaved card changes');
+
+    const title = document.createElement('h3');
+    title.className = 'card-unsaved-changes-title';
+    title.textContent = 'Save changes?';
+
+    const message = document.createElement('p');
+    message.className = 'card-unsaved-changes-message';
+    message.textContent = 'This card has unsaved changes. What would you like to do?';
+
+    const actions = document.createElement('div');
+    actions.className = 'card-unsaved-changes-actions';
+
+    const save = document.createElement('button');
+    save.className = 'card-unsaved-changes-button card-unsaved-changes-save';
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.addEventListener('click', onSave);
+
+    const discard = document.createElement('button');
+    discard.className = 'card-unsaved-changes-button card-unsaved-changes-discard';
+    discard.type = 'button';
+    discard.textContent = 'Discard';
+    discard.addEventListener('click', onDiscard);
+
+    const cancel = document.createElement('button');
+    cancel.className = 'card-unsaved-changes-button';
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => {
+      promptBackdrop.remove();
+      onDismiss();
+    });
+
+    promptBackdrop.addEventListener('click', (event) => {
+      if (event.target === promptBackdrop) {
+        promptBackdrop.remove();
+        onDismiss();
+      }
+    });
+    promptBackdrop.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        promptBackdrop.remove();
+        onDismiss();
+      }
+    });
+
+    actions.append(save, discard, cancel);
+    prompt.append(title, message, actions);
+    promptBackdrop.appendChild(prompt);
+    backdrop.appendChild(promptBackdrop);
+    save.focus();
   }
 
   function renderTextInput(labelText, value) {
@@ -1036,9 +1153,10 @@
         list.appendChild(empty);
         return;
       }
+      const blockingDepIds = new Set(blockingDependencies({ ...card, dependsOn: deps }));
       for (const id of deps) {
         const chip = document.createElement('span');
-        chip.className = 'card-chip card-chip-dep';
+        chip.className = `card-chip card-chip-dep ${blockingDepIds.has(id) ? 'card-chip-dep-blocked' : 'card-chip-dep-unblocked'}`;
 
         const text = document.createElement('span');
         text.textContent = dependencyLabel(id);

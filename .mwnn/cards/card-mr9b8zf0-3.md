@@ -1,11 +1,11 @@
 ---
 id: card-mr9b8zf0-3
 title: import plan from supplied file path
-column: col-mqxta6ho-4
+column: col-mqwk2njn-4
 position: 0
 assignee: { kind: human }
 createdAt: 1783347823692
-updatedAt: 1784036858803
+updatedAt: 1784203926508
 ---
 
 ## Description
@@ -42,3 +42,6 @@ Dispatched this card to Codex (ChatGPT). The agent should append its completion 
 
 ### 2026-07-14 - Codex implementation
 Updated the existing Import Plan handoff to collect only a workspace-relative or absolute local path and pass it to the AI without extension-side reading or parsing. Added AI guidance for invalid-path reporting, Backlog card validity, stable idempotent matching, and import result counts, plus focused prompt coverage. Compile, focused tests, and lint pass; the full suite still has the pre-existing `test/unit/planImporter.test.ts` failure because `utils.importCards` is missing.
+
+### 2026-07-14 - Codex correction
+Restored clipboard and workspace markdown-file imports, and added local path entry as a third source option. File paths still reach the AI unchanged for direct reading; clipboard plans retain their existing text handoff.
