@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import type { BoardStore } from './boardStore';
 import type { BoardPanelStatus } from './boardButton';
+import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { canMoveCardToColumn } from './utils';
 import { isWebviewToHostMessage, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
@@ -88,14 +89,21 @@ export class BoardPanel {
   }
 
   static show(deps: BoardPanelDeps): BoardPanel {
-    const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
-    if (BoardPanel.current) {
+    const current = BoardPanel.current;
+    const placement = resolveBoardPanelPlacement(
+      current !== undefined,
+      vscode.window.tabGroups.activeTabGroup.viewColumn,
+    );
+    if (placement.kind === 'reveal') {
+      if (!current) {
+        throw new Error('Board panel placement lost its current panel state.');
+      }
       // Revealing an already-open panel fires onDidChangeViewState, which
       // notifies observers on its own.
-      BoardPanel.current.panel.reveal(column);
-      return BoardPanel.current;
+      current.panel.reveal();
+      return current;
     }
-    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'MWNN Kanban', column, {
+    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'MWNN Kanban', placement.column, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(deps.extensionUri, 'media')],
@@ -124,7 +132,7 @@ export class BoardPanel {
     if (BoardPanel.current) {
       // A board panel already exists; never run two. Reveal the live one and
       // discard the duplicate VS Code handed us.
-      BoardPanel.current.panel.reveal(BoardPanel.current.panel.viewColumn);
+      BoardPanel.current.panel.reveal();
       panel.dispose();
       return BoardPanel.current;
     }
