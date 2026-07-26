@@ -1,11 +1,11 @@
 ---
 id: card-ms1w43su-1
 title: add cli option to run with ai
-column: col-mqxta6ho-4
-position: -1000
+column: col-mqwk2njn-4
+position: -10000
 assignee: { kind: human }
 createdAt: 1785075920958
-updatedAt: 1785076899113
+updatedAt: 1785079157200
 ---
 
 ## Description
