@@ -11,7 +11,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - AI Loop provider selection again offers supported VS Code chat extensions alongside local agent CLIs, with regression coverage for both execution channels and the contributed setting values.
 
 ### Added
-- The per-card `Run Card with AI` provider picker now also offers the four local agent CLIs (GitHub Copilot CLI, OpenAI Codex CLI, Anthropic Claude Code CLI, Cursor Agent CLI) alongside the chat extensions, running the selected CLI headlessly in the workspace root with cancellable progress, the shared handoff Activity trail, and `mwnn-kanban.agentCliPaths` overrides.
+- The per-card `Run Card with AI` and `Fill in with AI` provider pickers now also offer the four local agent CLIs (GitHub Copilot CLI, OpenAI Codex CLI, Anthropic Claude Code CLI, Cursor Agent CLI) alongside the chat extensions, running the selected CLI headlessly in the workspace root with cancellable progress, the shared handoff Activity trail and evidence validation, and `mwnn-kanban.agentCliPaths` overrides.
 - Local AI-loop providers for GitHub Copilot CLI, OpenAI Codex CLI, Anthropic Claude Code CLI, and Cursor Agent CLI, with shared executable discovery, synchronous card evidence validation, failure reporting, and active-process cancellation.
 - Settings `mwnn-kanban.aiLoopProvider` and `mwnn-kanban.agentCliPaths` for provider selection and executable path overrides, including paths containing spaces.
 - Initial Kanban board webview with columns, cards, drag-and-drop, and per-workspace persistence.

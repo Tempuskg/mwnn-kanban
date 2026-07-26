@@ -5,6 +5,7 @@ import {
   runAgentCliCardHandoff,
   type AgentCliCardHandoff,
   type AgentCliCardHandoffResult,
+  type AgentCliHandoffKind,
   type AgentCliHandoffStore,
   type AgentCliPathOverrides,
   type AgentCliProviderId,
@@ -60,8 +61,12 @@ export function listRunWithAiProviderChoices(
   return [...chatChoices, ...cliChoices];
 }
 
+/** Per-card CLI actions: run the card's work, or fill in its definition. */
+export type RunWithAiHandoffKind = Extract<AgentCliHandoffKind, 'implementation' | 'definition'>;
+
 export interface RunCardWithAgentCliRequest {
   readonly provider: AgentCliProviderId;
+  readonly kind: RunWithAiHandoffKind;
   readonly card: { readonly id: string; readonly title: string };
   readonly prompt: string;
 }
@@ -89,11 +94,12 @@ export interface RunCardWithAgentCliDeps {
 }
 
 /**
- * Run one AI-assigned card with a locally installed agent CLI, reusing the
- * shared board-loop handoff contract: the same resolution and spawn logic, the
- * same start/failure/cancellation Activity entries, and the same card-file
- * completion evidence. A resolution failure records nothing on the card.
- * Returns whether the CLI run completed with valid evidence.
+ * Run one per-card handoff (implementation or definition fill) with a locally
+ * installed agent CLI, reusing the shared board-loop handoff contract: the same
+ * resolution and spawn logic, the same start/failure/cancellation Activity
+ * entries, and the same card-file completion evidence. A resolution failure
+ * records nothing on the card. Returns whether the CLI run completed with
+ * valid evidence.
  */
 export async function runCardWithAgentCli(
   request: RunCardWithAgentCliRequest,
@@ -108,11 +114,14 @@ export async function runCardWithAgentCli(
 
   const runHandoff = deps.runHandoff ?? runAgentCliCardHandoff;
   const target = resolution.target;
+  const progressTitle = request.kind === 'definition'
+    ? `Filling in "${request.card.title}" with ${target.label}`
+    : `Running "${request.card.title}" with ${target.label}`;
   const result = await deps.runWithProgress(
-    `Running "${request.card.title}" with ${target.label}`,
+    progressTitle,
     (signal) =>
       runHandoff({
-        kind: 'implementation',
+        kind: request.kind,
         target,
         cardId: request.card.id,
         prompt: request.prompt,
@@ -123,7 +132,7 @@ export async function runCardWithAgentCli(
   );
   deps.refreshBoard();
 
-  const outcome = describeAgentCliRunOutcome(target.label, request.card.title, result);
+  const outcome = describeAgentCliRunOutcome(target.label, request.card.title, request.kind, result);
   if (outcome.severity === 'warning') {
     deps.showWarning(outcome.message);
   } else {
@@ -141,6 +150,7 @@ export interface AgentCliRunOutcome {
 export function describeAgentCliRunOutcome(
   providerLabel: string,
   cardTitle: string,
+  kind: RunWithAiHandoffKind,
   result: AgentCliCardHandoffResult,
 ): AgentCliRunOutcome {
   if (result.cancelled) {
@@ -160,6 +170,12 @@ export function describeAgentCliRunOutcome(
     return {
       severity: 'warning',
       message: `${providerLabel} reported "${cardTitle}" as blocked: ${result.terminalStatus.reason}. Resolve the blocker, then rerun the card.`,
+    };
+  }
+  if (kind === 'definition') {
+    return {
+      severity: 'info',
+      message: `${providerLabel} filled in "${cardTitle}". Review the new Description and Acceptance criteria on the card.`,
     };
   }
   return {

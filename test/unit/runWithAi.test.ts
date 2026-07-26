@@ -76,13 +76,15 @@ function fakeStore(initial: BoardState): FakeHandoffStore {
   };
 }
 
-function boardWithCard(): { readonly state: BoardState; readonly cardId: string } {
+function boardWithCard(defined = true): { readonly state: BoardState; readonly cardId: string } {
   let state = defaultBoard(['Backlog', 'Ready', 'In Progress', 'Verify', 'Done']);
   state = addCard(state, state.columns[2]!.id, 'Run the card via CLI');
   const cardId = state.columns[2]!.cards[0]!.id;
   state = setAssignee(state, cardId, { kind: 'ai' });
-  state = setDescription(state, cardId, 'Make a CLI-backed change.');
-  state = setAcceptanceCriteria(state, cardId, '- [ ] The CLI completes the work');
+  if (defined) {
+    state = setDescription(state, cardId, 'Make a CLI-backed change.');
+    state = setAcceptanceCriteria(state, cardId, '- [ ] The CLI completes the work');
+  }
   return { state, cardId };
 }
 
@@ -140,8 +142,9 @@ function request(
   provider: AgentCliProviderId,
   cardId: string,
   prompt = 'Existing MWNN card handoff prompt',
+  kind: RunCardWithAgentCliRequest['kind'] = 'implementation',
 ): RunCardWithAgentCliRequest {
-  return { provider, card: { id: cardId, title: 'Run the card via CLI' }, prompt };
+  return { provider, kind, card: { id: cardId, title: 'Run the card via CLI' }, prompt };
 }
 
 /** Resolves against a fake filesystem where only `available` paths execute. */
@@ -374,6 +377,57 @@ suite('Run with AI agent CLI dispatch', () => {
     assert.match(board.card(cardId).activity ?? '', /handoff cancelled/);
   });
 
+  test('a definition run uses the definition handoff and reports the filled-in card', async () => {
+    const { state, cardId } = boardWithCard(false);
+    const board = fakeStore(state);
+    const prompt = 'Existing MWNN definition prompt';
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async (invocation) => {
+        assert.ok(invocation.args.includes(prompt), 'the CLI did not receive the definition prompt');
+        board.mutate((current) =>
+          setAcceptanceCriteria(
+            setDescription(current, cardId, 'The agent supplied a complete definition.'),
+            cardId,
+            '- [ ] The new behavior is verifiable',
+          ));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(
+      request('claude-code', cardId, prompt, 'definition'),
+      harness.deps,
+    );
+
+    assert.equal(completed, true);
+    const activity = board.card(cardId).activity ?? '';
+    assert.match(activity, /Anthropic Claude Code CLI definition handoff started/);
+    assert.match(board.card(cardId).description ?? '', /complete definition/);
+    assert.equal(harness.warnings.length, 0);
+    assert.match(harness.infos[0] ?? '', /filled in "Run the card via CLI"/);
+    assert.match(harness.progressTitles[0] ?? '', /^Filling in "Run the card via CLI"/);
+  });
+
+  test('a definition run that leaves the card undefined is surfaced as a failure', async () => {
+    const { state, cardId } = boardWithCard(false);
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => successfulProcess()),
+    });
+
+    const completed = await runCardWithAgentCli(
+      request('claude-code', cardId, 'define the card', 'definition'),
+      harness.deps,
+    );
+
+    assert.equal(completed, false);
+    assert.match(harness.warnings[0] ?? '', /still has no complete Description and Acceptance criteria/);
+    assert.equal(harness.infos.length, 0);
+    assert.match(board.card(cardId).activity ?? '', /definition handoff failed/);
+  });
+
   test('the in-flight guard rejects a second run on the same card while a CLI run is active', async () => {
     const { state, cardId } = boardWithCard();
     const board = fakeStore(state);
@@ -412,7 +466,7 @@ suite('Run with AI agent CLI dispatch', () => {
 suite('Run with AI CLI outcome messages', () => {
   test('names the provider and card in every outcome', () => {
     const base = { completed: false, cancelled: false, activityBaseline: 0 };
-    const done = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', {
+    const done = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', 'implementation', {
       ...base,
       completed: true,
       terminalStatus: { kind: 'done' },
@@ -421,15 +475,27 @@ suite('Run with AI CLI outcome messages', () => {
     assert.match(done.message, /GitHub Copilot CLI/);
     assert.match(done.message, /my card/);
 
-    const failed = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', {
+    const failed = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', 'implementation', {
       ...base,
       reason: 'exit code 2',
     });
     assert.equal(failed.severity, 'warning');
     assert.equal(failed.message, 'exit code 2');
 
-    const failedWithoutReason = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', base);
+    const failedWithoutReason = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', 'implementation', base);
     assert.equal(failedWithoutReason.severity, 'warning');
     assert.match(failedWithoutReason.message, /did not complete "my card"/);
+  });
+
+  test('a completed definition reports the filled-in definition instead of STATUS: DONE', () => {
+    const outcome = describeAgentCliRunOutcome('OpenAI Codex CLI', 'my card', 'definition', {
+      completed: true,
+      cancelled: false,
+      activityBaseline: 0,
+    });
+    assert.equal(outcome.severity, 'info');
+    assert.match(outcome.message, /filled in "my card"/);
+    assert.match(outcome.message, /Description and Acceptance criteria/);
+    assert.doesNotMatch(outcome.message, /STATUS: DONE/);
   });
 });

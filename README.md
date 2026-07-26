@@ -9,7 +9,7 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 - Card detail editing in the webview for title, description, acceptance criteria, assignee, and activity history.
 - Human and AI assignees with a `Run Card with AI` command and in-board action for AI-assigned work, targeting either a VS Code chat extension or a local agent CLI.
 - A cancellable AI board loop that runs definition and implementation handoffs through a supported VS Code chat extension or a locally installed Copilot, Codex, Claude Code, or Cursor Agent CLI.
-- AI definition fill for undefined cards: dragging a card without a Description into the Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel exposes a `Fill in with AI` button whenever both are empty.
+- AI definition fill for undefined cards: dragging a card without a Description into the Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel exposes a `Fill in with AI` button whenever both are empty. Definition fills can target a VS Code chat extension or a local agent CLI.
 - Drag-and-drop card movement plus direct column add, rename, delete, limit, and reorder flows from the board UI.
 
 ## Commands

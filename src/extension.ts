@@ -42,6 +42,7 @@ import {
 import {
   listRunWithAiProviderChoices,
   runCardWithAgentCli,
+  type RunCardWithAgentCliDeps,
   type RunWithAiProviderChoice,
 } from './runWithAi';
 import {
@@ -149,6 +150,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return attempt.value;
   };
 
+  const agentCliRunDeps = (): RunCardWithAgentCliDeps => ({
+    configuredPaths: readAgentCliPaths(),
+    cwd: workspaceRoot.fsPath,
+    store,
+    runWithProgress: runAgentCliWithCancellableProgress,
+    showInformation: (message) => void vscode.window.showInformationMessage(message),
+    showWarning: (message) => void vscode.window.showWarningMessage(message),
+    refreshBoard: () => BoardPanel.postStateIfOpen(),
+  });
+
   const runCardWithAISelection = async (cardId?: string): Promise<void> => {
     if (!readEnableRunWithAI()) {
       void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to use this command.');
@@ -176,16 +187,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       if (choice.kind === 'cli') {
         return runCardWithAgentCli(
-          { provider: choice.provider, card: selection.card, prompt },
-          {
-            configuredPaths: readAgentCliPaths(),
-            cwd: workspaceRoot.fsPath,
-            store,
-            runWithProgress: runAgentCliWithCancellableProgress,
-            showInformation: (message) => void vscode.window.showInformationMessage(message),
-            showWarning: (message) => void vscode.window.showWarningMessage(message),
-            refreshBoard: () => BoardPanel.postStateIfOpen(),
-          },
+          { provider: choice.provider, kind: 'implementation', card: selection.card, prompt },
+          agentCliRunDeps(),
         );
       }
 
@@ -214,20 +217,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     await runCardHandoff(card.id, async () => {
-      const target = await pickChatProvider();
-      if (!target) {
+      const choice = await pickRunWithAiProvider('Fill in this card with which AI provider?');
+      if (!choice) {
         return false;
       }
 
       const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
       const cardFilePath = `${boardFolder}/cards/${card.id}.md`;
       const prompt = buildCardDefinitionPrompt(card, cardFilePath);
-      const handedOff = await handOffPromptToChat(target, prompt, `"${card.title}"`);
+
+      if (choice.kind === 'cli') {
+        return runCardWithAgentCli(
+          { provider: choice.provider, kind: 'definition', card, prompt },
+          agentCliRunDeps(),
+        );
+      }
+
+      const handedOff = await handOffPromptToChat(choice.target, prompt, `"${card.title}"`);
       if (!handedOff) {
         return false;
       }
 
-      await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
+      await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[choice.target.provider]));
       BoardPanel.postStateIfOpen();
       return true;
     });
@@ -1103,7 +1114,9 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
  * picker is always shown because the CLI entries are always offered; a CLI's
  * executable is resolved only after it is selected.
  */
-async function pickRunWithAiProvider(): Promise<RunWithAiProviderChoice | undefined> {
+async function pickRunWithAiProvider(
+  placeHolder = 'Run this card with which AI provider?',
+): Promise<RunWithAiProviderChoice | undefined> {
   const { targets } = await discoverChatHandoffTargets();
   const choices = listRunWithAiProviderChoices(targets);
   const pick = await vscode.window.showQuickPick(
@@ -1113,7 +1126,7 @@ async function pickRunWithAiProvider(): Promise<RunWithAiProviderChoice | undefi
       detail: choice.detail,
       choice,
     })),
-    { placeHolder: 'Run this card with which AI provider?' },
+    { placeHolder },
   );
   return pick?.choice;
 }
