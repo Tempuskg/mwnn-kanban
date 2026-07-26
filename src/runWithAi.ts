@@ -4,10 +4,12 @@ import {
   resolveAgentCliTarget,
   runAgentCliCardHandoff,
   type AgentCliCardHandoff,
+  type AgentCliCardHandoffOptions,
   type AgentCliCardHandoffResult,
   type AgentCliHandoffKind,
   type AgentCliHandoffStore,
   type AgentCliPathOverrides,
+  type AgentCliProcessObserver,
   type AgentCliProviderId,
   type AgentCliResolution,
   type ExecutableDiscoveryOptions,
@@ -71,6 +73,13 @@ export interface RunCardWithAgentCliRequest {
   readonly prompt: string;
 }
 
+/** The card/provider context a process-observer factory receives. */
+export interface AgentCliRunContext {
+  readonly card: { readonly id: string; readonly title: string };
+  readonly kind: RunWithAiHandoffKind;
+  readonly providerLabel: string;
+}
+
 export interface RunCardWithAgentCliDeps {
   readonly configuredPaths: AgentCliPathOverrides;
   /** Workspace root the CLI runs in. */
@@ -78,19 +87,34 @@ export interface RunCardWithAgentCliDeps {
   readonly store: AgentCliHandoffStore;
   /**
    * Wraps the synchronous CLI run in cancellable progress UI; aborting the
-   * provided signal must stop the active CLI process.
+   * provided signal must stop the active CLI process. `reportProgress`
+   * updates the progress message with live CLI output.
    */
-  readonly runWithProgress: <T>(title: string, task: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+  readonly runWithProgress: <T>(
+    title: string,
+    task: (signal: AbortSignal, reportProgress: (message: string) => void) => Promise<T>,
+  ) => Promise<T>;
   readonly showInformation: (message: string) => void;
   readonly showWarning: (message: string) => void;
   readonly refreshBoard: () => void;
+  /**
+   * Builds the live-feedback observer (output channel, progress text, board
+   * status) for one CLI run. Omitting it runs the CLI without live feedback.
+   */
+  readonly createProcessObserver?: (
+    context: AgentCliRunContext,
+    reportProgress: (message: string) => void,
+  ) => AgentCliProcessObserver;
   /** Test seams; default to the shared agentCliHandoff implementations. */
   readonly resolveTarget?: (
     provider: AgentCliProviderId,
     configuredPaths: AgentCliPathOverrides,
     options: ExecutableDiscoveryOptions,
   ) => Promise<AgentCliResolution>;
-  readonly runHandoff?: (handoff: AgentCliCardHandoff) => Promise<AgentCliCardHandoffResult>;
+  readonly runHandoff?: (
+    handoff: AgentCliCardHandoff,
+    options?: AgentCliCardHandoffOptions,
+  ) => Promise<AgentCliCardHandoffResult>;
 }
 
 /**
@@ -119,16 +143,24 @@ export async function runCardWithAgentCli(
     : `Running "${request.card.title}" with ${target.label}`;
   const result = await deps.runWithProgress(
     progressTitle,
-    (signal) =>
-      runHandoff({
-        kind: request.kind,
-        target,
-        cardId: request.card.id,
-        prompt: request.prompt,
-        cwd: deps.cwd,
-        store: deps.store,
-        signal,
-      }),
+    (signal, reportProgress) => {
+      const observer = deps.createProcessObserver?.(
+        { card: request.card, kind: request.kind, providerLabel: target.label },
+        reportProgress,
+      );
+      return runHandoff(
+        {
+          kind: request.kind,
+          target,
+          cardId: request.card.id,
+          prompt: request.prompt,
+          cwd: deps.cwd,
+          store: deps.store,
+          signal,
+        },
+        observer ? { observer } : {},
+      );
+    },
   );
   deps.refreshBoard();
 

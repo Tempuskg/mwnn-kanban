@@ -33,6 +33,13 @@
   let draggedCardId = null;
   let openCardId = null;
   let openColumnId = null;
+  /**
+   * Live agent-CLI run status per card, pushed by the extension host while a
+   * provider CLI is working a card. Survives state re-renders; entries are
+   * removed when the host reports the run finished.
+   * @type {Map<string, { providerLabel: string, statusLine: string }>}
+   */
+  const cliRunStatuses = new Map();
 
   // Board zoom. Scales the rendered columns/cards visually (via the CSS `zoom`
   // property, which reflows so scrollbars and drag hit-testing stay correct)
@@ -78,8 +85,39 @@
       render();
     } else if (message && message.type === 'openCard') {
       openCardDetails(message.cardId);
+    } else if (message && message.type === 'cliRunStatus') {
+      applyCliRunStatus(message);
     }
   });
+
+  /**
+   * @param {{ cardId: string, providerLabel: string, running: boolean, statusLine?: string }} message
+   */
+  function applyCliRunStatus(message) {
+    const wasRunning = cliRunStatuses.has(message.cardId);
+    if (message.running) {
+      cliRunStatuses.set(message.cardId, {
+        providerLabel: message.providerLabel,
+        statusLine: message.statusLine || '',
+      });
+    } else {
+      cliRunStatuses.delete(message.cardId);
+    }
+
+    // Status-line updates arrive continuously while a CLI runs; patch the
+    // ticker in place and re-render only when the badge appears/disappears.
+    if (message.running && wasRunning) {
+      const ticker = root.querySelector(
+        `.card[data-card-id="${CSS.escape(message.cardId)}"] .card-cli-status`,
+      );
+      if (ticker) {
+        ticker.textContent = message.statusLine || '';
+        ticker.title = message.statusLine || '';
+        return;
+      }
+    }
+    render();
+  }
 
   function render() {
     closeAssignPicker();
@@ -413,7 +451,22 @@
       meta.appendChild(chip);
     }
 
+    const cliRun = cliRunStatuses.get(card.id);
+    if (cliRun) {
+      const chip = renderChip(`${cliRun.providerLabel} running`, 'card-chip-running');
+      chip.title = `${cliRun.providerLabel} is working on this card`;
+      meta.appendChild(chip);
+    }
+
     body.append(label, meta);
+
+    if (cliRun) {
+      const ticker = document.createElement('div');
+      ticker.className = 'card-cli-status';
+      ticker.textContent = cliRun.statusLine || 'Starting…';
+      ticker.title = cliRun.statusLine || '';
+      body.appendChild(ticker);
+    }
 
     const actions = document.createElement('div');
     actions.className = 'card-actions';

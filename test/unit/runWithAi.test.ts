@@ -104,6 +104,7 @@ interface DispatchHarness {
   readonly infos: string[];
   readonly warnings: string[];
   readonly progressTitles: string[];
+  readonly progressMessages: string[];
   refreshes: number;
 }
 
@@ -114,10 +115,12 @@ function dispatchHarness(
   const infos: string[] = [];
   const warnings: string[] = [];
   const progressTitles: string[] = [];
+  const progressMessages: string[] = [];
   const harness: DispatchHarness = {
     infos,
     warnings,
     progressTitles,
+    progressMessages,
     refreshes: 0,
     deps: {
       configuredPaths: {},
@@ -125,7 +128,7 @@ function dispatchHarness(
       store: board.store,
       runWithProgress: (title, task) => {
         progressTitles.push(title);
-        return task(new AbortController().signal);
+        return task(new AbortController().signal, (message) => progressMessages.push(message));
       },
       showInformation: (message) => infos.push(message),
       showWarning: (message) => warnings.push(message),
@@ -352,7 +355,7 @@ suite('Run with AI agent CLI dispatch', () => {
       resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
       runWithProgress: (_title, task) => {
         controller = new AbortController();
-        return task(controller.signal);
+        return task(controller.signal, () => undefined);
       },
       // Simulate the user cancelling the progress notification while the CLI
       // process is running: the abort lands mid-process, not before it starts.
@@ -426,6 +429,44 @@ suite('Run with AI agent CLI dispatch', () => {
     assert.match(harness.warnings[0] ?? '', /still has no complete Description and Acceptance criteria/);
     assert.equal(harness.infos.length, 0);
     assert.match(board.card(cardId).activity ?? '', /definition handoff failed/);
+  });
+
+  test('builds a live-feedback observer for the run and forwards it to the handoff', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const observer = { onOutput: () => undefined };
+    let observedContext: unknown;
+    let forwardedObserver: unknown;
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      createProcessObserver: (context, reportProgress) => {
+        observedContext = context;
+        reportProgress('CLI output line');
+        return observer;
+      },
+      runHandoff: async (handoff, options) => {
+        forwardedObserver = options?.observer;
+        return runAgentCliCardHandoff(handoff, {
+          ...(options ?? {}),
+          runProcess: async () => {
+            board.mutate((current) => appendActivity(current, handoff.cardId, 'STATUS: DONE'));
+            return successfulProcess();
+          },
+          now: () => new Date('2026-07-26T15:00:00.000Z'),
+        });
+      },
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.deepEqual(observedContext, {
+      card: { id: cardId, title: 'Run the card via CLI' },
+      kind: 'implementation',
+      providerLabel: AGENT_CLI_LABELS['claude-code'],
+    });
+    assert.equal(forwardedObserver, observer);
+    assert.deepEqual(harness.progressMessages, ['CLI output line']);
   });
 
   test('the in-flight guard rejects a second run on the same card while a CLI run is active', async () => {

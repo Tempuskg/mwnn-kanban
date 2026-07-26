@@ -379,6 +379,36 @@ body {
   color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
 }
 
+.card-chip-running {
+  background: color-mix(in srgb, var(--vscode-progressBar-background, #0e70c0) 18%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-progressBar-background, #0e70c0) 42%, transparent);
+  color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+
+.card-chip-running::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: card-chip-running-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes card-chip-running-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Latest line of live agent-CLI output while a run is in progress. */
+.card-cli-status {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.72rem;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .card-deps-list {
   display: flex;
   flex-wrap: wrap;

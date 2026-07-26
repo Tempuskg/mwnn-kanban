@@ -9,7 +9,7 @@ import type { BoardPanelStatus } from './boardButton';
 import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { canMoveCardToColumn } from './utils';
-import { isWebviewToHostMessage, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
+import { isWebviewToHostMessage, type CliRunStatus, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
 
 const VIEW_TYPE = 'mwnn-kanban.board';
 
@@ -144,6 +144,20 @@ export class BoardPanel {
 
   static postStateIfOpen(): void {
     BoardPanel.current?.postState();
+  }
+
+  /**
+   * Push a live agent-CLI run status into the webview so the board can badge
+   * the card and show the latest output line. A no-op when the board is
+   * closed; the webview keeps its own per-card status map between pushes.
+   */
+  static postCliRunStatusIfOpen(status: CliRunStatus): void {
+    const panel = BoardPanel.current;
+    if (!panel) {
+      return;
+    }
+    const message: HostToWebviewMessage = { type: 'cliRunStatus', ...status };
+    void panel.panel.webview.postMessage(message);
   }
 
   /** Push the current store state into the webview. */

@@ -71,10 +71,19 @@ export type WebviewToHostMessage =
   | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number }
   | { readonly type: 'setZoom'; readonly zoom: number };
 
+/** Live status of an agent CLI run so the board can badge the card. */
+export interface CliRunStatus {
+  readonly cardId: string;
+  readonly providerLabel: string;
+  readonly running: boolean;
+  readonly statusLine?: string;
+}
+
 /** Messages sent from the extension host to the webview. */
 export type HostToWebviewMessage =
   | { readonly type: 'state'; readonly board: BoardState; readonly enableRunWithAI: boolean; readonly zoom: number }
-  | { readonly type: 'openCard'; readonly cardId: string };
+  | { readonly type: 'openCard'; readonly cardId: string }
+  | ({ readonly type: 'cliRunStatus' } & CliRunStatus);
 
 /** Runtime type guard for persisted/posted board state. */
 export function isBoardState(value: unknown): value is BoardState {

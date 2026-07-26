@@ -415,6 +415,68 @@ suite('agent CLI card handoff evidence', () => {
   });
 });
 
+suite('agent CLI process observation', () => {
+  test('streams live output and lifecycle events to the observer', async () => {
+    const startInvocations: unknown[] = [];
+    const output: { chunk: string; stream: 'stdout' | 'stderr' }[] = [];
+    let exitResult: AgentCliProcessResult | undefined;
+    const invocation = {
+      provider: 'codex' as const,
+      label: 'test child',
+      command: process.execPath,
+      args: ['-e', "process.stdout.write('out-line\\n'); process.stderr.write('err-line\\n');"],
+      cwd: process.cwd(),
+    };
+
+    const result = await runAgentCliProcess(invocation, new AbortController().signal, {
+      onStart: (started) => startInvocations.push(started),
+      onOutput: (chunk, stream) => output.push({ chunk, stream }),
+      onExit: (ended) => {
+        exitResult = ended;
+      },
+    });
+
+    assert.deepEqual(startInvocations, [invocation]);
+    const stdout = output.filter((entry) => entry.stream === 'stdout').map((entry) => entry.chunk).join('');
+    const stderr = output.filter((entry) => entry.stream === 'stderr').map((entry) => entry.chunk).join('');
+    assert.match(stdout, /out-line/);
+    assert.match(stderr, /err-line/);
+    assert.deepEqual(exitResult, result);
+    assert.equal(result.exitCode, 0);
+  });
+
+  test('the card handoff forwards its observer to the process runner', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const observer = { onOutput: () => undefined };
+    let receivedObserver: unknown;
+
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('claude-code'),
+        cardId,
+        prompt: 'Existing MWNN card handoff prompt',
+        cwd: process.cwd(),
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      {
+        runProcess: async (_invocation, _signal, forwarded) => {
+          receivedObserver = forwarded;
+          board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+          return successfulProcess();
+        },
+        now: () => new Date('2026-07-26T15:00:00.000Z'),
+        observer,
+      },
+    );
+
+    assert.equal(result.completed, true);
+    assert.equal(receivedObserver, observer);
+  });
+});
+
 suite('agent CLI process cancellation', () => {
   test('aborting the signal terminates a live child process', async () => {
     const controller = new AbortController();

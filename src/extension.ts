@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import { createAiLoopProgressOptions } from './aiLoopProgress';
 import {
+  createCliOutputFeed,
+  formatCliRunExit,
+  formatCliRunStart,
+} from './agentCliFeedback';
+import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
   resolveAgentCliTarget,
@@ -8,6 +13,7 @@ import {
   runAgentCliCardHandoff,
   type AgentCliHandoffKind,
   type AgentCliPathOverrides,
+  type AgentCliProcessObserver,
   type AgentCliProviderId,
   type AgentCliTarget,
 } from './agentCliHandoff';
@@ -150,13 +156,80 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return attempt.value;
   };
 
+  // Every provider CLI run streams its full output here, so the user can
+  // follow along and read back what a CLI actually did.
+  const cliOutputChannel = vscode.window.createOutputChannel('MWNN Agent CLI', { log: true });
+  context.subscriptions.push(cliOutputChannel);
+
+  const SHOW_CLI_OUTPUT_ACTION = 'Show Output';
+  const showCliInformation = (message: string): void => {
+    void vscode.window.showInformationMessage(message, SHOW_CLI_OUTPUT_ACTION).then((choice) => {
+      if (choice === SHOW_CLI_OUTPUT_ACTION) {
+        cliOutputChannel.show(true);
+      }
+    });
+  };
+  const showCliWarning = (message: string): void => {
+    cliOutputChannel.warn(message);
+    void vscode.window.showWarningMessage(message, SHOW_CLI_OUTPUT_ACTION).then((choice) => {
+      if (choice === SHOW_CLI_OUTPUT_ACTION) {
+        cliOutputChannel.show(true);
+      }
+    });
+  };
+
+  /**
+   * Live feedback for one agent-CLI process: full output into the output
+   * channel, a throttled latest-line into the progress UI, and a running
+   * badge with that same line on the card in the board webview.
+   */
+  const createCliRunObserver = (
+    card: { readonly id: string; readonly title: string },
+    kind: AgentCliHandoffKind,
+    providerLabel: string,
+    reportProgress: (message: string) => void,
+  ): AgentCliProcessObserver => {
+    const postStatus = (running: boolean, statusLine?: string): void => {
+      BoardPanel.postCliRunStatusIfOpen({
+        cardId: card.id,
+        providerLabel,
+        running,
+        ...(statusLine !== undefined ? { statusLine } : {}),
+      });
+    };
+    const feed = createCliOutputFeed({
+      onLine: (line, stream) =>
+        cliOutputChannel.info(stream === 'stderr' ? `[stderr] ${line}` : line),
+      onStatus: (line) => {
+        reportProgress(line);
+        postStatus(true, line);
+      },
+    });
+    return {
+      onStart: (invocation) => {
+        for (const line of formatCliRunStart(invocation, kind, card.title)) {
+          cliOutputChannel.info(line);
+        }
+        postStatus(true, `Starting ${providerLabel}…`);
+      },
+      onOutput: (chunk, stream) => feed.write(chunk, stream),
+      onExit: (result) => {
+        feed.flush();
+        cliOutputChannel.info(formatCliRunExit(result));
+        postStatus(false);
+      },
+    };
+  };
+
   const agentCliRunDeps = (): RunCardWithAgentCliDeps => ({
     configuredPaths: readAgentCliPaths(),
     cwd: workspaceRoot.fsPath,
     store,
     runWithProgress: runAgentCliWithCancellableProgress,
-    showInformation: (message) => void vscode.window.showInformationMessage(message),
-    showWarning: (message) => void vscode.window.showWarningMessage(message),
+    createProcessObserver: (runContext, reportProgress) =>
+      createCliRunObserver(runContext.card, runContext.kind, runContext.providerLabel, reportProgress),
+    showInformation: showCliInformation,
+    showWarning: showCliWarning,
     refreshBoard: () => BoardPanel.postStateIfOpen(),
   });
 
@@ -322,6 +395,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const loop = { cancelled: false, abortController: new AbortController() };
     activeLoop = loop;
 
+    // Rebound to the live progress reporter once the loop's withProgress
+    // starts; CLI handoffs stream their latest output line through it.
+    let reportLoopProgress: (message: string) => void = () => {};
+
     let gateways: LoopGateways;
     if (selectedTarget.kind === 'chat') {
       const chatTarget = selectedTarget.target;
@@ -376,15 +453,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         prompt: string,
       ): Promise<{ readonly started: boolean; readonly activityBaseline?: number }> => {
         const attempt = await inFlightCardHandoffs.run(card.id, () =>
-          runAgentCliCardHandoff({
-            kind,
-            target: cliTarget,
-            cardId: card.id,
-            prompt,
-            cwd: workspaceRoot.fsPath,
-            store,
-            signal: loop.abortController.signal,
-          }));
+          runAgentCliCardHandoff(
+            {
+              kind,
+              target: cliTarget,
+              cardId: card.id,
+              prompt,
+              cwd: workspaceRoot.fsPath,
+              store,
+              signal: loop.abortController.signal,
+            },
+            {
+              observer: createCliRunObserver(
+                card,
+                kind,
+                cliTarget.label,
+                (message) => reportLoopProgress(message),
+              ),
+            },
+          ));
         if (!attempt.started) {
           void vscode.window.showInformationMessage(
             'A handoff for this card is already in progress. Stop it or wait for it to finish.',
@@ -395,7 +482,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         BoardPanel.postStateIfOpen();
         const result = attempt.value;
         if (!result.completed && !result.cancelled && result.reason) {
-          void vscode.window.showWarningMessage(result.reason);
+          showCliWarning(result.reason);
         }
         return {
           started: result.completed,
@@ -418,6 +505,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const summary = await vscode.window.withProgress(
         createAiLoopProgressOptions(vscode.ProgressLocation),
         (progress, token) => {
+          reportLoopProgress = (message) => progress.report({ message });
           token.onCancellationRequested(() => {
             loop.cancelled = true;
             loop.abortController.abort();
@@ -1137,14 +1225,14 @@ async function pickRunWithAiProvider(
  */
 function runAgentCliWithCancellableProgress<T>(
   title: string,
-  task: (signal: AbortSignal) => Promise<T>,
+  task: (signal: AbortSignal, reportProgress: (message: string) => void) => Promise<T>,
 ): Promise<T> {
   return Promise.resolve(vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title, cancellable: true },
-    (_progress, token) => {
+    (progress, token) => {
       const abortController = new AbortController();
       token.onCancellationRequested(() => abortController.abort());
-      return task(abortController.signal);
+      return task(abortController.signal, (message) => progress.report({ message }));
     },
   ));
 }

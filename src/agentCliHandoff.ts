@@ -267,9 +267,21 @@ export interface AgentCliProcessResult {
   readonly error?: string;
 }
 
+/**
+ * Live view of one CLI process for user-facing feedback surfaces (output
+ * channel, progress text, board UI). Purely observational: callbacks must not
+ * influence the run, and omitting the observer changes nothing.
+ */
+export interface AgentCliProcessObserver {
+  readonly onStart?: (invocation: AgentCliInvocation) => void;
+  readonly onOutput?: (chunk: string, stream: 'stdout' | 'stderr') => void;
+  readonly onExit?: (result: AgentCliProcessResult) => void;
+}
+
 export type AgentCliProcessRunner = (
   invocation: AgentCliInvocation,
   signal: AbortSignal,
+  observer?: AgentCliProcessObserver,
 ) => Promise<AgentCliProcessResult>;
 
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
@@ -278,6 +290,7 @@ const MAX_CAPTURED_OUTPUT = 64 * 1024;
 export async function runAgentCliProcess(
   invocation: AgentCliInvocation,
   signal: AbortSignal,
+  observer: AgentCliProcessObserver = {},
 ): Promise<AgentCliProcessResult> {
   if (signal.aborted) {
     return emptyProcessResult(false, true);
@@ -308,6 +321,7 @@ export async function runAgentCliProcess(
         clearTimeout(forceCancellationTimer);
       }
       signal.removeEventListener('abort', cancel);
+      observer.onExit?.(result);
       resolve(result);
     };
 
@@ -335,6 +349,7 @@ export async function runAgentCliProcess(
       }, 1_000);
     };
 
+    observer.onStart?.(invocation);
     try {
       child = spawn(launch.command, launch.args, {
         cwd: invocation.cwd,
@@ -360,9 +375,11 @@ export async function runAgentCliProcess(
     });
     child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout = captureTail(stdout, chunk);
+      observer.onOutput?.(chunk.toString(), 'stdout');
     });
     child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr = captureTail(stderr, chunk);
+      observer.onOutput?.(chunk.toString(), 'stderr');
     });
     child.once('error', (error: Error) => {
       if (signal.aborted) {
@@ -509,6 +526,8 @@ export interface AgentCliCardHandoffResult {
 export interface AgentCliCardHandoffOptions {
   readonly runProcess?: AgentCliProcessRunner;
   readonly now?: () => Date;
+  /** Forwarded to the process runner so callers can surface live CLI output. */
+  readonly observer?: AgentCliProcessObserver;
 }
 
 /**
@@ -542,7 +561,7 @@ export async function runAgentCliCardHandoff(
   const afterStart = findCard(await handoff.store.reload(), handoff.cardId);
   const activityBaseline = (afterStart?.activity ?? before.activity ?? '').length;
   const invocation = buildAgentCliInvocation(handoff.target, handoff.prompt, handoff.cwd);
-  const processResult = await runProcess(invocation, handoff.signal);
+  const processResult = await runProcess(invocation, handoff.signal, options.observer);
 
   if (processResult.cancelled || handoff.signal.aborted) {
     await appendIfCardExists(
