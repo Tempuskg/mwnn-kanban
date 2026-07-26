@@ -7,7 +7,8 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 - Git-trackable board storage in `.mwnn/` by default, with one markdown file per card and live reload when those files change.
 - Default MWNN board shape of `Backlog`, `Ready`, `In Progress`, and `Done`, with editable columns, WIP limits, and Ready reverse-WIP support.
 - Card detail editing in the webview for title, description, acceptance criteria, assignee, and activity history.
-- Human and AI assignees with a `Run Card with AI` command and in-board action for AI-assigned work.
+- Human and AI assignees with a `Run Card with AI` command and in-board action for AI-assigned work, targeting either a VS Code chat extension or a local agent CLI.
+- A cancellable AI board loop that runs definition and implementation handoffs through a supported VS Code chat extension or a locally installed Copilot, Codex, Claude Code, or Cursor Agent CLI.
 - AI definition fill for undefined cards: dragging a card without a Description into the Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel exposes a `Fill in with AI` button whenever both are empty.
 - Drag-and-drop card movement plus direct column add, rename, delete, limit, and reorder flows from the board UI.
 
@@ -20,7 +21,10 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 | `MWNN Kanban: Rename Column` | Rename an existing column. |
 | `MWNN Kanban: Delete Column` | Delete a column, optionally moving its cards into another column first. |
 | `MWNN Kanban: Set Column Limits` | Set a WIP limit and Ready reverse-WIP minimum for a column. |
-| `MWNN Kanban: Run Card with AI` | Pick an AI-assigned card, run it with an available VS Code chat model, and append the response to card activity. |
+| `MWNN Kanban: Run Card with AI` | Pick an AI-assigned card and hand it to a VS Code chat extension or run it with a locally installed agent CLI, recording the dispatch in card activity. |
+| `MWNN Kanban: Run Board with AI Loop` | Process eligible board cards through a selected VS Code chat extension or local non-interactive agent CLI. |
+| `MWNN Kanban: Stop AI Loop` | Stop the loop and cancel an active CLI process without advancing its card. |
+| `MWNN Kanban: Import Plan` | Hand a local plan path or clipboard text to an available VS Code AI chat provider for card import. |
 | `MWNN Kanban: Reset Board` | Clear all cards and recreate the default board. |
 
 ## Settings
@@ -32,6 +36,26 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 | `mwnn-kanban.boardFolder` | `.mwnn` | Workspace-relative folder that stores the board files. |
 | `mwnn-kanban.defaultReadyReverseWip` | `3` | Default minimum number of defined cards the Ready column should keep available. |
 | `mwnn-kanban.enableRunWithAI` | `true` | Enable AI-assisted board actions when supported language models are available. |
+| `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, or `cursor`; `prompt` asks whether to use a VS Code chat extension or local CLI. |
+| `mwnn-kanban.agentCliPaths` | `{}` | Optional executable-path overrides for each agent CLI provider, used by both `Run Card with AI` and the AI loop. Full paths containing spaces are supported. |
+| `mwnn-kanban.chatProviderCommands` | `{}` | Optional VS Code command overrides for interactive chat handoffs, including AI Loop chat mode. |
+
+## AI Loop Providers
+
+With the default `prompt` setting, the loop first offers both execution channels: `VS Code chat extension` for interactive handoffs to GitHub Copilot, Codex (ChatGPT), or Claude Code, and `Local agent CLI` for synchronous non-interactive execution. Set `mwnn-kanban.aiLoopProvider` to `chat` to always use the chat-extension picker.
+
+In CLI mode, the loop invokes each provider with the existing MWNN definition, triage, or implementation prompt and the active workspace as its working directory. Executables are discovered on `PATH`, or can be configured as full paths in `mwnn-kanban.agentCliPaths`. The path is never split into a shell command, so paths containing spaces are safe.
+
+| Provider | Default executable | Official non-interactive capability |
+| --- | --- | --- |
+| GitHub Copilot CLI | `copilot` | [`-p` programmatic mode](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference) |
+| OpenAI Codex CLI | `codex` | [`codex exec` non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode) |
+| Anthropic Claude Code CLI | `claude` | [`claude -p` print mode](https://code.claude.com/docs/en/cli-usage) |
+| Cursor Agent CLI | `cursor-agent` | [Headless `--print` mode with `--force` file edits](https://docs.cursor.com/en/cli/headless) |
+
+Cursor was verified against its official headless CLI documentation on 2026-07-24 and supports equivalent non-interactive file-modifying agent execution, so it is a full loop provider rather than an unsupported placeholder.
+
+In CLI mode, the loop waits for the process to exit and then reloads the card file. Implementation succeeds only when the process exits successfully and newly appended Activity contains `STATUS: DONE` or `STATUS: BLOCKED: <reason>`; definition and triage handoffs require their corresponding card-file edits. Missing executables, start failures, nonzero exits, and missing or invalid evidence leave the card in place and add a recoverable failure entry. Stopping the loop terminates the active child process and records a cancellation without marking the card complete.
 
 ## Board Files
 
@@ -59,6 +83,7 @@ npm run compile          # bundle the extension host (dist/extension.js)
 npm run compile-tests    # compile unit tests to dist-test/
 npm test                 # run unit tests (node:test)
 npm run lint             # ESLint
+npm run smoke:agent-cli -- codex # isolated live smoke for one installed provider
 ```
 
 Press `F5` to launch an Extension Development Host, then run `MWNN Kanban: Open Board` from the Command Palette.

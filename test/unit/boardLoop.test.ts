@@ -53,6 +53,9 @@ function fakeBoard(initial: BoardState): FakeBoard {
       setAssignee: async (cardId, assignee: Assignee | undefined) => {
         state = setAssignee(state, cardId, assignee);
       },
+      setAcceptanceCriteria: async (cardId, acceptanceCriteria) => {
+        state = setAcceptanceCriteria(state, cardId, acceptanceCriteria);
+      },
       appendActivity: async (cardId, entry) => {
         state = appendActivity(state, cardId, entry);
       },
@@ -321,6 +324,7 @@ suite('board loop run', () => {
     assert.equal(summary.cancelled, false);
     assert.match(board.findCard(cardId).activity ?? '', /AI loop parked in Verify/);
     assert.match(board.findCard(cardId).activity ?? '', /AI loop advanced this card/);
+    assert.equal(board.findCard(cardId).acceptanceCriteria, '- [x] A criterion');
   });
 
   test('uses completed acceptance criteria and a legacy Verify title to finish a hand-off', async () => {
@@ -622,6 +626,7 @@ suite('board loop run', () => {
     assert.deepEqual(log, [cardId]);
     assert.equal(board.columnTitleOf(cardId), 'In Progress');
     assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
+    assert.equal(board.findCard(cardId).acceptanceCriteria, '- [ ] A criterion');
     assert.equal(summary.skipped.length, 1);
   });
 
@@ -644,6 +649,56 @@ suite('board loop run', () => {
     assert.equal(attempts, 1);
     assert.equal(board.columnTitleOf(cardId), 'In Progress');
     assert.equal(summary.skipped.length, 1);
+  });
+
+  test('uses a synchronous CLI hand-off baseline and applies the normal board transition', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'CLI-completed work', { kind: 'ai' });
+    const board = fakeBoard(state);
+    const gateways: LoopGateways = {
+      dispatchCard: async (card) => {
+        await board.store.appendActivity(card.id, 'CLI handoff started.');
+        const activityBaseline = (board.findCard(card.id).activity ?? '').length;
+        await board.store.appendActivity(card.id, 'CLI finished the work.\nSTATUS: DONE');
+        return { started: true, activityBaseline };
+      },
+      requestDefinition: async () => true,
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(summary.advanced.length, 1);
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    assert.equal(board.findCard(cardId).acceptanceCriteria, '- [x] A criterion');
+  });
+
+  test('cancelling while a synchronous gateway is active leaves the card recoverable', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Cancelled CLI work', { kind: 'ai' });
+    const board = fakeBoard(state);
+    let cancelled = false;
+    const gateways: LoopGateways = {
+      dispatchCard: async () => {
+        cancelled = true;
+        return { started: false };
+      },
+      requestDefinition: async () => true,
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
+    };
+    const control: LoopControl = {
+      isCancelled: () => cancelled,
+      delay: async () => undefined,
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, control, { pollIntervalMs: 0 });
+
+    assert.equal(summary.cancelled, true);
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(board.columnTitleOf(cardId), 'In Progress');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
   });
 
   test('stops when cancelled and reports it', async () => {

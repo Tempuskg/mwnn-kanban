@@ -1,6 +1,22 @@
 import * as vscode from 'vscode';
 import { createAiLoopProgressOptions } from './aiLoopProgress';
 import {
+  AGENT_CLI_LABELS,
+  AGENT_CLI_PROVIDER_IDS,
+  resolveAgentCliTarget,
+  resolveAllAgentCliTargets,
+  runAgentCliCardHandoff,
+  type AgentCliHandoffKind,
+  type AgentCliPathOverrides,
+  type AgentCliProviderId,
+  type AgentCliTarget,
+} from './agentCliHandoff';
+import {
+  isAgentCliPreference,
+  listAiLoopExecutionModeChoices,
+  type AiLoopProviderPreference,
+} from './aiLoopProvider';
+import {
   buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
   buildPlanImportPrompt,
@@ -23,6 +39,11 @@ import {
   type ChatProviderCommands,
   type ChatProviderId,
 } from './chatHandoff';
+import {
+  listRunWithAiProviderChoices,
+  runCardWithAgentCli,
+  type RunWithAiProviderChoice,
+} from './runWithAi';
 import {
   buildDoabilityPrompt,
   buildTriagePrompt,
@@ -58,6 +79,9 @@ const PROVIDER_ENVIRONMENTS: Record<ChatProviderId, AiEnvironment> = {
 type BoardStore = Awaited<ReturnType<typeof createBoardStore>>;
 type BoardColumn = BoardState['columns'][number];
 type BoardCard = BoardColumn['cards'][number];
+type AiLoopTarget =
+  | { readonly kind: 'chat'; readonly target: ChatHandoffTarget }
+  | { readonly kind: 'cli'; readonly target: AgentCliTarget };
 
 function readDefaultColumns(): string[] {
   const config = vscode.workspace.getConfiguration('mwnn-kanban');
@@ -84,6 +108,18 @@ function readChatProviderCommands(): ChatProviderCommands {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
     .get<ChatProviderCommands>('chatProviderCommands', {});
+}
+
+function readAiLoopProvider(): AiLoopProviderPreference {
+  return vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<AiLoopProviderPreference>('aiLoopProvider', 'prompt');
+}
+
+function readAgentCliPaths(): AgentCliPathOverrides {
+  return vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<AgentCliPathOverrides>('agentCliPaths', {});
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -129,22 +165,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     await runCardHandoff(selection.card.id, async () => {
-      const target = await pickChatProvider();
-      if (!target) {
+      const choice = await pickRunWithAiProvider();
+      if (!choice) {
         return false;
       }
 
       const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
       const cardFilePath = `${boardFolder}/cards/${selection.card.id}.md`;
       const prompt = buildCardHandoffPrompt(selection.card, cardFilePath);
-      const handedOff = await handOffPromptToChat(target, prompt, `"${selection.card.title}"`);
+
+      if (choice.kind === 'cli') {
+        return runCardWithAgentCli(
+          { provider: choice.provider, card: selection.card, prompt },
+          {
+            configuredPaths: readAgentCliPaths(),
+            cwd: workspaceRoot.fsPath,
+            store,
+            runWithProgress: runAgentCliWithCancellableProgress,
+            showInformation: (message) => void vscode.window.showInformationMessage(message),
+            showWarning: (message) => void vscode.window.showWarningMessage(message),
+            refreshBoard: () => BoardPanel.postStateIfOpen(),
+          },
+        );
+      }
+
+      const handedOff = await handOffPromptToChat(choice.target, prompt, `"${selection.card.title}"`);
       if (!handedOff) {
         return false;
       }
 
       // Record the dispatch ourselves: the hand-off is fire-and-forget, so we
       // cannot rely on the external agent to leave any trace in the activity log.
-      await store.appendActivity(selection.card.id, formatHandoffEntry(CHAT_PROVIDER_LABELS[target.provider]));
+      await store.appendActivity(selection.card.id, formatHandoffEntry(CHAT_PROVIDER_LABELS[choice.target.provider]));
       BoardPanel.postStateIfOpen();
       return true;
     });
@@ -235,8 +287,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   };
 
-  // At most one AI loop runs at a time; the flag doubles as its cancel switch.
-  let activeLoop: { cancelled: boolean } | undefined;
+  // At most one AI loop runs at a time. The flag stops either execution mode;
+  // for CLI mode, the AbortController also terminates the active child process.
+  let activeLoop: { cancelled: boolean; abortController: AbortController } | undefined;
 
   const runBoardLoopCommand = async (): Promise<void> => {
     if (!readEnableRunWithAI()) {
@@ -248,57 +301,115 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    const target = await pickChatProvider();
-    if (!target) {
+    const selectedTarget = await pickAiLoopTarget(workspaceRoot.fsPath);
+    if (!selectedTarget) {
       return;
     }
 
-    const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
     const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
     const cardFilePath = (card: BoardCard): string => `${boardFolder}/cards/${card.id}.md`;
-
-    const gateways: LoopGateways = {
-      dispatchCard: async (card) => {
-        return runCardHandoff(card.id, async () => {
-          const handedOff = await handOffPromptToChat(target, buildCardHandoffPrompt(card, cardFilePath(card)), `"${card.title}"`);
-          if (handedOff) {
-            await store.appendActivity(card.id, formatHandoffEntry(providerLabel));
-            BoardPanel.postStateIfOpen();
-          }
-          return handedOff;
-        });
-      },
-      requestDefinition: async (card) => {
-        return runCardHandoff(card.id, async () => {
-          const handedOff = await handOffPromptToChat(target, buildCardDefinitionPrompt(card, cardFilePath(card)), `"${card.title}"`);
-          if (handedOff) {
-            await store.appendActivity(card.id, formatDefinitionHandoffEntry(providerLabel));
-            BoardPanel.postStateIfOpen();
-          }
-          return handedOff;
-        });
-      },
-      decideDoability: decideCardDoability,
-      requestTriage: async (card) => {
-        return runCardHandoff(card.id, async () => {
-          const handedOff = await handOffPromptToChat(target, buildTriagePrompt(card, cardFilePath(card)), `"${card.title}"`);
-          if (handedOff) {
-            await store.appendActivity(card.id, formatTriageHandoffEntry(providerLabel));
-            BoardPanel.postStateIfOpen();
-          }
-          return handedOff;
-        });
-      },
-    };
-
-    const loop = { cancelled: false };
+    const loop = { cancelled: false, abortController: new AbortController() };
     activeLoop = loop;
+
+    let gateways: LoopGateways;
+    if (selectedTarget.kind === 'chat') {
+      const chatTarget = selectedTarget.target;
+      const providerLabel = CHAT_PROVIDER_LABELS[chatTarget.provider];
+      gateways = {
+        dispatchCard: async (card) =>
+          runCardHandoff(card.id, async () => {
+            const handedOff = await handOffPromptToChat(
+              chatTarget,
+              buildCardHandoffPrompt(card, cardFilePath(card)),
+              `"${card.title}"`,
+            );
+            if (handedOff) {
+              await store.appendActivity(card.id, formatHandoffEntry(providerLabel));
+              BoardPanel.postStateIfOpen();
+            }
+            return handedOff;
+          }),
+        requestDefinition: async (card) =>
+          runCardHandoff(card.id, async () => {
+            const handedOff = await handOffPromptToChat(
+              chatTarget,
+              buildCardDefinitionPrompt(card, cardFilePath(card)),
+              `"${card.title}"`,
+            );
+            if (handedOff) {
+              await store.appendActivity(card.id, formatDefinitionHandoffEntry(providerLabel));
+              BoardPanel.postStateIfOpen();
+            }
+            return handedOff;
+          }),
+        decideDoability: decideCardDoability,
+        requestTriage: async (card) =>
+          runCardHandoff(card.id, async () => {
+            const handedOff = await handOffPromptToChat(
+              chatTarget,
+              buildTriagePrompt(card, cardFilePath(card)),
+              `"${card.title}"`,
+            );
+            if (handedOff) {
+              await store.appendActivity(card.id, formatTriageHandoffEntry(providerLabel));
+              BoardPanel.postStateIfOpen();
+            }
+            return handedOff;
+          }),
+      };
+    } else {
+      const cliTarget = selectedTarget.target;
+      const runCliHandoff = async (
+        kind: AgentCliHandoffKind,
+        card: BoardCard,
+        prompt: string,
+      ): Promise<{ readonly started: boolean; readonly activityBaseline?: number }> => {
+        const attempt = await inFlightCardHandoffs.run(card.id, () =>
+          runAgentCliCardHandoff({
+            kind,
+            target: cliTarget,
+            cardId: card.id,
+            prompt,
+            cwd: workspaceRoot.fsPath,
+            store,
+            signal: loop.abortController.signal,
+          }));
+        if (!attempt.started) {
+          void vscode.window.showInformationMessage(
+            'A handoff for this card is already in progress. Stop it or wait for it to finish.',
+          );
+          return { started: false };
+        }
+
+        BoardPanel.postStateIfOpen();
+        const result = attempt.value;
+        if (!result.completed && !result.cancelled && result.reason) {
+          void vscode.window.showWarningMessage(result.reason);
+        }
+        return {
+          started: result.completed,
+          activityBaseline: result.activityBaseline,
+        };
+      };
+
+      gateways = {
+        dispatchCard: (card) =>
+          runCliHandoff('implementation', card, buildCardHandoffPrompt(card, cardFilePath(card))),
+        requestDefinition: (card) =>
+          runCliHandoff('definition', card, buildCardDefinitionPrompt(card, cardFilePath(card))),
+        decideDoability: decideCardDoability,
+        requestTriage: (card) =>
+          runCliHandoff('triage', card, buildTriagePrompt(card, cardFilePath(card))),
+      };
+    }
+
     try {
       const summary = await vscode.window.withProgress(
         createAiLoopProgressOptions(vscode.ProgressLocation),
         (progress, token) => {
           token.onCancellationRequested(() => {
             loop.cancelled = true;
+            loop.abortController.abort();
           });
           return runBoardLoop(
             store,
@@ -321,6 +432,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     activeLoop.cancelled = true;
+    activeLoop.abortController.abort();
   };
 
   const boardPanelDeps = {
@@ -847,7 +959,94 @@ function summarizeLoopRun(summary: LoopSummary): string {
   return summary.cancelled ? `MWNN AI loop stopped: ${activity}.` : `MWNN AI loop finished: ${activity}.`;
 }
 
-async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
+async function pickAiLoopTarget(workspaceCwd: string): Promise<AiLoopTarget | undefined> {
+  const preference = readAiLoopProvider();
+
+  if (preference === 'chat') {
+    const target = await pickChatProvider();
+    return target ? { kind: 'chat', target } : undefined;
+  }
+  if (isAgentCliPreference(preference)) {
+    const target = await pickAgentCliTarget(workspaceCwd, preference);
+    return target ? { kind: 'cli', target } : undefined;
+  }
+
+  const mode = await vscode.window.showQuickPick(
+    listAiLoopExecutionModeChoices(),
+    { placeHolder: 'Run the AI loop using which execution channel?' },
+  );
+  if (!mode) {
+    return undefined;
+  }
+  if (mode.mode === 'chat') {
+    const target = await pickChatProvider();
+    return target ? { kind: 'chat', target } : undefined;
+  }
+
+  const target = await pickAgentCliTarget(workspaceCwd, 'prompt');
+  return target ? { kind: 'cli', target } : undefined;
+}
+
+/**
+ * Resolve a configured local CLI (or let the user choose among discovered
+ * CLIs). Missing configured executables are reported before any card moves.
+ */
+async function pickAgentCliTarget(
+  workspaceCwd: string,
+  preference: 'prompt' | AgentCliProviderId,
+): Promise<AgentCliTarget | undefined> {
+  const configuredPaths = readAgentCliPaths();
+
+  if (preference !== 'prompt') {
+    const resolution = await resolveAgentCliTarget(
+      preference,
+      configuredPaths,
+      { cwd: workspaceCwd },
+    );
+    if (!resolution.available) {
+      void vscode.window.showWarningMessage(resolution.reason);
+      return undefined;
+    }
+    return resolution.target;
+  }
+
+  const resolutions = await resolveAllAgentCliTargets(
+    configuredPaths,
+    { cwd: workspaceCwd },
+  );
+  const targets = resolutions.flatMap((resolution) =>
+    resolution.available ? [resolution.target] : []);
+  if (targets.length === 0) {
+    const commands = AGENT_CLI_PROVIDER_IDS
+      .map((provider) => `${AGENT_CLI_LABELS[provider]} (${provider})`)
+      .join(', ');
+    void vscode.window.showWarningMessage(
+      `No supported local AI CLI was found for the MWNN loop. Install one of: ${commands}. You can also set a full executable path under mwnn-kanban.agentCliPaths.`,
+    );
+    return undefined;
+  }
+  if (targets.length === 1) {
+    return targets[0];
+  }
+
+  const choice = await vscode.window.showQuickPick(
+    targets.map((target) => ({
+      label: target.label,
+      description: target.provider,
+      detail: target.executable,
+      target,
+    })),
+    { placeHolder: 'Run the AI loop with which local CLI?' },
+  );
+  return choice?.target;
+}
+
+interface ChatProviderDiscovery {
+  readonly targets: readonly ChatHandoffTarget[];
+  readonly codexActivationFailure?: string;
+}
+
+async function discoverChatHandoffTargets(): Promise<ChatProviderDiscovery> {
   let availableCommands = await vscode.commands.getCommands(true);
   let codexActivationFailure: string | undefined;
   // Contributed commands can be absent until a closed provider has activated.
@@ -865,6 +1064,11 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
     }
   }
   const targets = listAvailableChatProviders(availableCommands, readChatProviderCommands());
+  return codexActivationFailure !== undefined ? { targets, codexActivationFailure } : { targets };
+}
+
+async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
+  const { targets, codexActivationFailure } = await discoverChatHandoffTargets();
 
   if (targets.length === 0) {
     if (codexActivationFailure) {
@@ -891,6 +1095,45 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
     { placeHolder: 'Hand this card off to which AI chat?' },
   );
   return choice?.target;
+}
+
+/**
+ * Provider picker for the per-card Run with AI action: every installed chat
+ * extension plus all four agent CLI providers. Unlike `pickChatProvider`, the
+ * picker is always shown because the CLI entries are always offered; a CLI's
+ * executable is resolved only after it is selected.
+ */
+async function pickRunWithAiProvider(): Promise<RunWithAiProviderChoice | undefined> {
+  const { targets } = await discoverChatHandoffTargets();
+  const choices = listRunWithAiProviderChoices(targets);
+  const pick = await vscode.window.showQuickPick(
+    choices.map((choice) => ({
+      label: choice.label,
+      description: choice.description,
+      detail: choice.detail,
+      choice,
+    })),
+    { placeHolder: 'Run this card with which AI provider?' },
+  );
+  return pick?.choice;
+}
+
+/**
+ * Runs a synchronous agent CLI task behind a cancellable progress notification;
+ * cancelling aborts the signal, which terminates the active CLI process.
+ */
+function runAgentCliWithCancellableProgress<T>(
+  title: string,
+  task: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return Promise.resolve(vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+    (_progress, token) => {
+      const abortController = new AbortController();
+      token.onCancellationRequested(() => abortController.abort());
+      return task(abortController.signal);
+    },
+  ));
 }
 
 /**

@@ -95,6 +95,8 @@ suite('ai card helpers', () => {
     assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
     assert.match(prompt, /exact terminal marker.*Activity entry/i);
     assert.match(prompt, /cannot read your chat response/i);
+    assert.match(prompt, /change each verified `- \[ \]` item to `- \[x\]`/i);
+    assert.match(prompt, /every acceptance criterion is met and checked/i);
     assert.match(prompt, /STATUS: DONE/);
     assert.match(prompt, /STATUS: BLOCKED/);
   });

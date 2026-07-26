@@ -41,15 +41,28 @@ export interface LoopStore {
   reload(): Promise<BoardState>;
   moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<unknown>;
   setAssignee(cardId: string, assignee: Assignee | undefined): Promise<unknown>;
+  setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<unknown>;
   appendActivity(cardId: string, entry: string): Promise<unknown>;
 }
+
+/**
+ * Gateways may return a plain boolean (legacy fire-and-forget handoffs) or the
+ * richer synchronous CLI result. The optional baseline tells the loop exactly
+ * where agent-written Activity begins.
+ */
+export type LoopHandoffResult =
+  | boolean
+  | {
+      readonly started: boolean;
+      readonly activityBaseline?: number;
+    };
 
 /** The AI channels the loop drives; all fire-and-forget except the decision. */
 export interface LoopGateways {
   /** Hand the card's implementation work to the chat agent. False = hand-off failed. */
-  dispatchCard(card: Card): Promise<boolean>;
+  dispatchCard(card: Card): Promise<LoopHandoffResult>;
   /** Hand the card to the fill-with-AI definition flow. False = hand-off failed. */
-  requestDefinition(card: Card): Promise<boolean>;
+  requestDefinition(card: Card): Promise<LoopHandoffResult>;
   /**
    * Ask the AI directly whether an agent can do this card; undefined = no
    * answer channel (e.g. no language model available) or no verdict.
@@ -60,7 +73,7 @@ export interface LoopGateways {
    * record its AI-vs-Human decision in the card file's `assignee` frontmatter.
    * The loop then waits for the assignee to appear. False = hand-off failed.
    */
-  requestTriage(card: Card): Promise<boolean>;
+  requestTriage(card: Card): Promise<LoopHandoffResult>;
 }
 
 export interface LoopControl {
@@ -173,6 +186,13 @@ function hasCompletedAcceptanceCriteria(card: Card): boolean {
   const criteria = card.acceptanceCriteria ?? '';
   const checks = [...criteria.matchAll(/^\s*(?:[-*+]\s+|\d+[.)]\s+)?\[([ xX])\]/gm)];
   return checks.length > 0 && checks.every((check) => check[1]?.toLowerCase() === 'x');
+}
+
+function checkAllAcceptanceCriteria(acceptanceCriteria: string | undefined): string | undefined {
+  return acceptanceCriteria?.replace(
+    /^([ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?)\[[ \t]\]/gm,
+    '$1[x]',
+  );
 }
 
 function isVerifyColumn(column: Column): boolean {
@@ -527,6 +547,18 @@ export async function runBoardLoop(
       }
       case 'advance': {
         report(`Advancing "${card.title}" to ${action.toColumn.title}`);
+        if (session.dispatches.has(card.id)) {
+          // STATUS: DONE is the agent's explicit claim that every criterion is
+          // met. Keep the card checklist consistent even if the agent omitted
+          // the mechanical checkbox edits requested by the hand-off prompt.
+          const completedCriteria = checkAllAcceptanceCriteria(card.acceptanceCriteria);
+          if (
+            completedCriteria !== undefined
+            && completedCriteria !== card.acceptanceCriteria
+          ) {
+            await store.setAcceptanceCriteria(card.id, completedCriteria);
+          }
+        }
         await store.moveCard(card.id, action.toColumn.id, action.toColumn.cards.length);
         await store.appendActivity(card.id, formatLoopAdvanceEntry(action.toColumn.title));
         session.dispatches.delete(card.id);
@@ -550,6 +582,9 @@ export async function runBoardLoop(
         report(`Triaging "${card.title}"`);
         session.definitionRequests.delete(card.id);
         const verdict = await gateways.decideDoability(card);
+        if (control.isCancelled()) {
+          return;
+        }
         if (verdict !== undefined) {
           await store.setAssignee(card.id, { kind: verdict.decision });
           await store.appendActivity(card.id, formatLoopTriageEntry(verdict.decision, verdict.reason));
@@ -558,14 +593,21 @@ export async function runBoardLoop(
         }
         // No direct answer channel — fall back to the chat agent, which
         // records its decision in the card file's assignee frontmatter.
-        if (await gateways.requestTriage(card)) {
+        const result = await gateways.requestTriage(card);
+        if (control.isCancelled()) {
+          return;
+        }
+        if (handoffStarted(result)) {
           // Re-read the card so the baseline sits after anything the hand-off
           // itself appended (e.g. the "Triage requested" entry): only text the
           // agent adds later counts as its decision note.
           const fresh = findCard(await store.reload(), card.id);
           session.triageRequests.set(card.id, {
             requestedAt: now(),
-            activityBaseline: (fresh?.activity ?? card.activity ?? '').length,
+            activityBaseline: handoffActivityBaseline(
+              result,
+              (fresh?.activity ?? card.activity ?? '').length,
+            ),
           });
           return;
         }
@@ -590,7 +632,11 @@ export async function runBoardLoop(
       }
       case 'request-definition': {
         report(`Requesting a definition for "${card.title}"`);
-        if (await gateways.requestDefinition(card)) {
+        const result = await gateways.requestDefinition(card);
+        if (control.isCancelled()) {
+          return;
+        }
+        if (handoffStarted(result)) {
           session.definitionRequests.set(card.id, { requestedAt: now() });
           summary.definitionsRequested.push(card.title);
         } else {
@@ -600,10 +646,14 @@ export async function runBoardLoop(
       }
       case 'dispatch': {
         report(`Dispatching "${card.title}"`);
-        if (await gateways.dispatchCard(card)) {
+        const result = await gateways.dispatchCard(card);
+        if (control.isCancelled()) {
+          return;
+        }
+        if (handoffStarted(result)) {
           session.dispatches.set(card.id, {
             columnId: action.column.id,
-            activityBaseline: (card.activity ?? '').length,
+            activityBaseline: handoffActivityBaseline(result, (card.activity ?? '').length),
             dispatchedAt: now(),
           });
           summary.dispatched.push(card.title);
@@ -614,6 +664,14 @@ export async function runBoardLoop(
       }
     }
   }
+}
+
+function handoffStarted(result: LoopHandoffResult): boolean {
+  return typeof result === 'boolean' ? result : result.started;
+}
+
+function handoffActivityBaseline(result: LoopHandoffResult, fallback: number): number {
+  return typeof result === 'boolean' ? fallback : result.activityBaseline ?? fallback;
 }
 
 function findCard(state: BoardState, cardId: string): Card | undefined {

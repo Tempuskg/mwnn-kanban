@@ -1,11 +1,11 @@
 ---
 id: card-mrynxcfe-1
 title: fix window splitting when a new window is opened when the kanban board is open the window open in a new tab group or something.
-column: col-mqxta6ho-4
-position: 1000
+column: col-mqwk2njn-4
+position: -9000
 assignee: { kind: human }
 createdAt: 1784880770090
-updatedAt: 1784881770987
+updatedAt: 1785076908297
 ---
 
 ## Description

@@ -143,6 +143,52 @@
           },
           "scope": "resource"
         },
+        "mwnn-kanban.aiLoopProvider": {
+          "type": "string",
+          "enum": [
+            "prompt",
+            "chat",
+            "copilot",
+            "codex",
+            "claude-code",
+            "cursor"
+          ],
+          "enumDescriptions": [
+            "Ask whether to use a VS Code chat extension or a local agent CLI.",
+            "Run the loop through an installed VS Code AI chat extension.",
+            "Run the loop with GitHub Copilot CLI.",
+            "Run the loop with OpenAI Codex CLI.",
+            "Run the loop with Anthropic Claude Code CLI.",
+            "Run the loop with Cursor Agent CLI."
+          ],
+          "default": "prompt",
+          "description": "AI execution channel or provider used by the AI board loop.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.agentCliPaths": {
+          "type": "object",
+          "default": {},
+          "description": "Optional executable path overrides for the agent CLIs used by 'Run Card with AI' and the AI board loop. Values are executable paths only (not shell command lines), and paths containing spaces are supported.",
+          "properties": {
+            "copilot": {
+              "type": "string",
+              "description": "Path to the GitHub Copilot CLI executable."
+            },
+            "codex": {
+              "type": "string",
+              "description": "Path to the OpenAI Codex CLI executable."
+            },
+            "claude-code": {
+              "type": "string",
+              "description": "Path to the Anthropic Claude Code CLI executable."
+            },
+            "cursor": {
+              "type": "string",
+              "description": "Path to the Cursor Agent CLI executable."
+            }
+          },
+          "scope": "resource"
+        },
         "mwnn-kanban.defaultColumns": {
           "type": "array",
           "items": {
@@ -209,6 +255,8 @@
     "watch-tests": "tsc -p tsconfig.test.json --watch",
     "pretest": "npm run compile-tests",
     "test": "node --test \"dist-test/test/unit/*.test.js\"",
+    "presmoke:agent-cli": "npm run compile-tests",
+    "smoke:agent-cli": "node ./scripts/smoke-agent-cli.cjs",
     "version:build": "node ./scripts/bump-package-version.cjs",
     "lint": "eslint src --ext ts"
   },

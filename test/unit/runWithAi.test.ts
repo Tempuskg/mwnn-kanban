@@ -1,0 +1,435 @@
+import * as assert from 'node:assert/strict';
+import { suite, test } from 'node:test';
+import {
+  AGENT_CLI_LABELS,
+  AGENT_CLI_PROVIDER_IDS,
+  resolveAgentCliTarget,
+  runAgentCliCardHandoff,
+  type AgentCliCardHandoff,
+  type AgentCliCardHandoffResult,
+  type AgentCliProcessResult,
+  type AgentCliProviderId,
+} from '../../src/agentCliHandoff';
+import {
+  CHAT_PROVIDER_LABELS,
+  createChatHandoffInFlight,
+  type ChatHandoffTarget,
+} from '../../src/chatHandoff';
+import {
+  describeAgentCliRunOutcome,
+  listRunWithAiProviderChoices,
+  runCardWithAgentCli,
+  type RunCardWithAgentCliDeps,
+  type RunCardWithAgentCliRequest,
+} from '../../src/runWithAi';
+import {
+  addCard,
+  appendActivity,
+  cloneBoard,
+  defaultBoard,
+  setAcceptanceCriteria,
+  setAssignee,
+  setDescription,
+} from '../../src/utils';
+import type { BoardState, Card } from '../../src/types';
+
+const CHAT_TARGETS: readonly ChatHandoffTarget[] = [
+  { provider: 'copilot', commandId: 'workbench.action.chat.open', promptDelivery: 'query' },
+  { provider: 'claude-code', commandId: 'claude-vscode.editor.open', promptDelivery: 'positional' },
+];
+
+interface FakeHandoffStore {
+  store: {
+    reload(): Promise<BoardState>;
+    appendActivity(cardId: string, entry: string): Promise<void>;
+  };
+  mutate(apply: (state: BoardState) => BoardState): void;
+  card(cardId: string): Card;
+  appendedEntries(): readonly string[];
+}
+
+function fakeStore(initial: BoardState): FakeHandoffStore {
+  let state = cloneBoard(initial);
+  const appended: string[] = [];
+  const card = (cardId: string): Card => {
+    for (const column of state.columns) {
+      const found = column.cards.find((candidate) => candidate.id === cardId);
+      if (found) {
+        return found;
+      }
+    }
+    throw new Error(`Card ${cardId} not found`);
+  };
+  return {
+    store: {
+      reload: async () => cloneBoard(state),
+      appendActivity: async (cardId, entry) => {
+        appended.push(entry);
+        state = appendActivity(state, cardId, entry);
+      },
+    },
+    mutate(apply) {
+      state = apply(state);
+    },
+    card,
+    appendedEntries: () => appended,
+  };
+}
+
+function boardWithCard(): { readonly state: BoardState; readonly cardId: string } {
+  let state = defaultBoard(['Backlog', 'Ready', 'In Progress', 'Verify', 'Done']);
+  state = addCard(state, state.columns[2]!.id, 'Run the card via CLI');
+  const cardId = state.columns[2]!.cards[0]!.id;
+  state = setAssignee(state, cardId, { kind: 'ai' });
+  state = setDescription(state, cardId, 'Make a CLI-backed change.');
+  state = setAcceptanceCriteria(state, cardId, '- [ ] The CLI completes the work');
+  return { state, cardId };
+}
+
+function successfulProcess(): AgentCliProcessResult {
+  return {
+    started: true,
+    cancelled: false,
+    exitCode: 0,
+    signal: null,
+    stdout: 'finished',
+    stderr: '',
+  };
+}
+
+interface DispatchHarness {
+  readonly deps: RunCardWithAgentCliDeps;
+  readonly infos: string[];
+  readonly warnings: string[];
+  readonly progressTitles: string[];
+  refreshes: number;
+}
+
+function dispatchHarness(
+  board: FakeHandoffStore,
+  overrides: Partial<RunCardWithAgentCliDeps> = {},
+): DispatchHarness {
+  const infos: string[] = [];
+  const warnings: string[] = [];
+  const progressTitles: string[] = [];
+  const harness: DispatchHarness = {
+    infos,
+    warnings,
+    progressTitles,
+    refreshes: 0,
+    deps: {
+      configuredPaths: {},
+      cwd: 'E:\\workspace',
+      store: board.store,
+      runWithProgress: (title, task) => {
+        progressTitles.push(title);
+        return task(new AbortController().signal);
+      },
+      showInformation: (message) => infos.push(message),
+      showWarning: (message) => warnings.push(message),
+      refreshBoard: () => {
+        harness.refreshes += 1;
+      },
+      ...overrides,
+    },
+  };
+  return harness;
+}
+
+function request(
+  provider: AgentCliProviderId,
+  cardId: string,
+  prompt = 'Existing MWNN card handoff prompt',
+): RunCardWithAgentCliRequest {
+  return { provider, card: { id: cardId, title: 'Run the card via CLI' }, prompt };
+}
+
+/** Resolves against a fake filesystem where only `available` paths execute. */
+function fakeResolver(
+  available: readonly string[],
+): NonNullable<RunCardWithAgentCliDeps['resolveTarget']> {
+  return (provider, configuredPaths, options) =>
+    resolveAgentCliTarget(provider, configuredPaths, {
+      ...options,
+      platform: 'win32',
+      env: { PATH: 'C:\\Tools' },
+      canExecute: async (candidate) =>
+        available.some((path) => path.toLowerCase() === candidate.toLowerCase()),
+    });
+}
+
+/** Real shared handoff logic with only the process spawn stubbed out. */
+function realHandoffWith(
+  runProcess: (invocation: { readonly args: readonly string[]; readonly command: string; readonly cwd: string }) => Promise<AgentCliProcessResult>,
+): (handoff: AgentCliCardHandoff) => Promise<AgentCliCardHandoffResult> {
+  return (handoff) =>
+    runAgentCliCardHandoff(handoff, {
+      runProcess: (invocation) => runProcess(invocation),
+      now: () => new Date('2026-07-26T15:00:00.000Z'),
+    });
+}
+
+suite('Run with AI provider selection', () => {
+  test('offers installed chat extensions followed by all four agent CLI providers', () => {
+    const choices = listRunWithAiProviderChoices(CHAT_TARGETS);
+
+    assert.deepEqual(
+      choices.map((choice) => choice.kind),
+      ['chat', 'chat', 'cli', 'cli', 'cli', 'cli'],
+    );
+    assert.deepEqual(
+      choices.slice(0, 2).map((choice) => choice.label),
+      [CHAT_PROVIDER_LABELS.copilot, CHAT_PROVIDER_LABELS['claude-code']],
+    );
+    assert.deepEqual(
+      choices.slice(2).map((choice) => (choice.kind === 'cli' ? choice.provider : undefined)),
+      [...AGENT_CLI_PROVIDER_IDS],
+    );
+  });
+
+  test('labels make clear which entries are CLIs and which are chat extensions', () => {
+    for (const choice of listRunWithAiProviderChoices(CHAT_TARGETS)) {
+      if (choice.kind === 'cli') {
+        assert.match(choice.label, /CLI/);
+        assert.equal(choice.description, 'Local agent CLI');
+        assert.match(choice.detail, /headlessly in the workspace root/);
+      } else {
+        assert.equal(choice.description, 'VS Code chat extension');
+        assert.doesNotMatch(choice.label, /CLI/);
+      }
+    }
+  });
+
+  test('passes chat handoff targets through unchanged', () => {
+    const choices = listRunWithAiProviderChoices(CHAT_TARGETS);
+    const chatChoices = choices.filter((choice) => choice.kind === 'chat');
+    assert.deepEqual(chatChoices.map((choice) => choice.target), [...CHAT_TARGETS]);
+  });
+
+  test('still offers every CLI provider when no chat extension is installed', () => {
+    const choices = listRunWithAiProviderChoices([]);
+    assert.equal(choices.length, AGENT_CLI_PROVIDER_IDS.length);
+    assert.ok(choices.every((choice) => choice.kind === 'cli'));
+  });
+});
+
+suite('Run with AI agent CLI dispatch', () => {
+  test('a successful run sends the card prompt, appends the handoff Activity entry, and refreshes the board', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const prompt = 'Existing MWNN card handoff prompt\nwith details';
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async (invocation) => {
+        assert.equal(invocation.cwd, 'E:\\workspace');
+        assert.ok(invocation.args.includes(prompt), 'the CLI did not receive the exact prompt');
+        board.mutate((current) =>
+          appendActivity(current, cardId, 'Implemented and tested.\nSTATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId, prompt), harness.deps);
+
+    assert.equal(completed, true);
+    const activity = board.card(cardId).activity ?? '';
+    assert.match(activity, /Anthropic Claude Code CLI implementation handoff started/);
+    assert.equal(harness.refreshes, 1);
+    assert.equal(harness.warnings.length, 0);
+    assert.match(harness.infos[0] ?? '', /Anthropic Claude Code CLI finished "Run the card via CLI"/);
+    assert.match(harness.progressTitles[0] ?? '', /Anthropic Claude Code CLI/);
+  });
+
+  test('honours an agentCliPaths override containing spaces', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const configuredPath = 'C:\\Program Files\\GitHub Copilot\\copilot.exe';
+    let launchedExecutable: string | undefined;
+    const harness = dispatchHarness(board, {
+      configuredPaths: { copilot: `"${configuredPath}"` },
+      resolveTarget: fakeResolver([configuredPath]),
+      runHandoff: realHandoffWith(async (invocation) => {
+        launchedExecutable = invocation.command;
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('copilot', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(launchedExecutable, configuredPath);
+  });
+
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    test(`a missing ${provider} executable warns with the attempted command and records no Activity`, async () => {
+      const { state, cardId } = boardWithCard();
+      const board = fakeStore(state);
+      const activityBefore = board.card(cardId).activity ?? '';
+      const harness = dispatchHarness(board, { resolveTarget: fakeResolver([]) });
+
+      const completed = await runCardWithAgentCli(request(provider, cardId), harness.deps);
+
+      assert.equal(completed, false);
+      assert.equal(harness.progressTitles.length, 0, 'no CLI process may be launched');
+      assert.equal(board.appendedEntries().length, 0, 'no Activity entry may be recorded');
+      assert.equal(board.card(cardId).activity ?? '', activityBefore);
+      const warning = harness.warnings[0] ?? '';
+      assert.match(warning, new RegExp(AGENT_CLI_LABELS[provider]));
+      assert.match(warning, /command "[^"]+" on PATH/);
+      assert.match(warning, /was not found or is not executable/);
+      assert.ok(warning.includes(`agentCliPaths["${provider}"]`));
+    });
+  }
+
+  test('an unsuccessful exit surfaces the failure and leaves the card recoverable', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\codex.EXE']),
+      runHandoff: realHandoffWith(async () => ({
+        ...successfulProcess(),
+        exitCode: 41,
+        stderr: 'authentication expired',
+      })),
+    });
+
+    const completed = await runCardWithAgentCli(request('codex', cardId), harness.deps);
+
+    assert.equal(completed, false);
+    const warning = harness.warnings[0] ?? '';
+    assert.match(warning, /exit code 41/);
+    assert.match(warning, /authentication expired/);
+    assert.equal(harness.infos.length, 0, 'a failed run must not report success');
+    const activity = board.card(cardId).activity ?? '';
+    assert.match(activity, /handoff failed/);
+    assert.match(activity, /card was not advanced/i);
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
+  });
+
+  test('an exit without terminal card evidence is reported as a failure, not success', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\cursor-agent.EXE']),
+      runHandoff: realHandoffWith(async () => successfulProcess()),
+    });
+
+    const completed = await runCardWithAgentCli(request('cursor', cardId), harness.deps);
+
+    assert.equal(completed, false);
+    assert.match(harness.warnings[0] ?? '', /no terminal `STATUS: DONE`/);
+    assert.equal(harness.infos.length, 0);
+  });
+
+  test('a blocked terminal status is surfaced as a warning with the agent reason', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        board.mutate((current) =>
+          appendActivity(current, cardId, 'STATUS: BLOCKED: credentials are missing'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.match(harness.warnings[0] ?? '', /blocked: credentials are missing/);
+    assert.equal(harness.infos.length, 0);
+  });
+
+  test('cancellation reports an informational stop instead of a failure', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    let controller: AbortController | undefined;
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runWithProgress: (_title, task) => {
+        controller = new AbortController();
+        return task(controller.signal);
+      },
+      // Simulate the user cancelling the progress notification while the CLI
+      // process is running: the abort lands mid-process, not before it starts.
+      runHandoff: realHandoffWith(async () => {
+        controller?.abort();
+        return {
+          started: true,
+          cancelled: true,
+          exitCode: null,
+          signal: 'SIGTERM',
+          stdout: '',
+          stderr: '',
+        };
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, false);
+    assert.equal(harness.warnings.length, 0);
+    assert.match(harness.infos[0] ?? '', /Stopped Anthropic Claude Code CLI/);
+    assert.match(board.card(cardId).activity ?? '', /handoff cancelled/);
+  });
+
+  test('the in-flight guard rejects a second run on the same card while a CLI run is active', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const inFlight = createChatHandoffInFlight();
+    let releaseProcess: (() => void) | undefined;
+    let processLaunches = 0;
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        processLaunches += 1;
+        await new Promise<void>((resolve) => {
+          releaseProcess = resolve;
+        });
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+    const dispatch = (): Promise<boolean> =>
+      runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    const first = inFlight.run(cardId, dispatch);
+    while (releaseProcess === undefined) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const second = await inFlight.run(cardId, dispatch);
+    assert.deepEqual(second, { started: false });
+    assert.equal(processLaunches, 1, 'the guard must prevent a second CLI process');
+
+    releaseProcess?.();
+    const firstAttempt = await first;
+    assert.equal(firstAttempt.started, true);
+    assert.equal(firstAttempt.started ? firstAttempt.value : undefined, true);
+  });
+});
+
+suite('Run with AI CLI outcome messages', () => {
+  test('names the provider and card in every outcome', () => {
+    const base = { completed: false, cancelled: false, activityBaseline: 0 };
+    const done = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', {
+      ...base,
+      completed: true,
+      terminalStatus: { kind: 'done' },
+    });
+    assert.equal(done.severity, 'info');
+    assert.match(done.message, /GitHub Copilot CLI/);
+    assert.match(done.message, /my card/);
+
+    const failed = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', {
+      ...base,
+      reason: 'exit code 2',
+    });
+    assert.equal(failed.severity, 'warning');
+    assert.equal(failed.message, 'exit code 2');
+
+    const failedWithoutReason = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', base);
+    assert.equal(failedWithoutReason.severity, 'warning');
+    assert.match(failedWithoutReason.message, /did not complete "my card"/);
+  });
+});
