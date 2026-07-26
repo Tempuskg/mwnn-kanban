@@ -106,8 +106,8 @@ export function truncateStatusLine(line: string, max = MAX_STATUS_LINE_LENGTH): 
 
 /**
  * Heading lines written to the output channel when a handoff process starts.
- * The prompt argument is elided: it is already recorded on the card, and
- * echoing it verbatim would drown the live output.
+ * The prompt (piped via stdin) is reported by size only: it is already
+ * recorded on the card, and echoing it verbatim would drown the live output.
  */
 export function formatCliRunStart(
   invocation: AgentCliInvocation,
@@ -117,6 +117,7 @@ export function formatCliRunStart(
   return [
     `▶ ${invocation.label} — ${kind} — "${cardTitle}"`,
     `  ${formatCliCommandLine(invocation)}`,
+    `  prompt: ${invocation.stdin.length} chars via stdin`,
     `  cwd: ${invocation.cwd}`,
   ];
 }

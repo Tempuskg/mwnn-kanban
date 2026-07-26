@@ -1,4 +1,7 @@
 import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
   AGENT_CLI_LABELS,
@@ -99,20 +102,19 @@ function handoffOptions(
 }
 
 suite('agent CLI provider registry and discovery', () => {
-  test('builds the documented non-interactive command and passes the exact prompt for every provider', () => {
+  test('builds the documented non-interactive command and pipes the exact prompt via stdin for every provider', () => {
     const prompt = 'Existing MWNN implementation handoff\nwith multiple lines & symbols';
     const expected: Record<AgentCliProviderId, readonly string[]> = {
-      copilot: ['-p', prompt, '--allow-all-tools', '--no-ask-user', '--silent'],
-      codex: ['exec', '--sandbox', 'workspace-write', prompt],
-      'claude-code': [
+      copilot: ['--allow-all-tools', '--no-ask-user', '--silent'],
+      codex: ['exec', '--sandbox', 'workspace-write', '-'],
+      'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
+      cursor: [
         '-p',
-        '--permission-mode',
-        'bypassPermissions',
+        '--force',
         '--output-format',
         'text',
-        prompt,
+        'Carry out the complete hand-off instructions piped to you on stdin.',
       ],
-      cursor: ['-p', '--force', '--output-format', 'text', prompt],
     };
 
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
@@ -125,7 +127,13 @@ suite('agent CLI provider registry and discovery', () => {
       assert.equal(invocation.command, `C:\\Program Files\\Agents\\${provider}.exe`);
       assert.equal(invocation.cwd, 'E:\\workspaces\\project with spaces');
       assert.deepEqual(invocation.args, expected[provider]);
-      assert.ok(invocation.args.includes(prompt), `${provider} did not receive the exact prompt`);
+      assert.equal(invocation.stdin, prompt, `${provider} did not receive the exact prompt on stdin`);
+      // cmd.exe truncates its command line at the first newline, so a .cmd
+      // shim launch is only safe while every argument stays single-line.
+      assert.ok(
+        invocation.args.every((arg) => !/[\r\n]/.test(arg)),
+        `${provider} argv must never contain newlines`,
+      );
     }
   });
 
@@ -220,7 +228,7 @@ suite('agent CLI card handoff evidence', () => {
         },
         handoffOptions(async (invocation) => {
           assert.equal(invocation.cwd, 'E:\\workspace');
-          assert.ok(invocation.args.includes(prompt));
+          assert.equal(invocation.stdin, prompt);
           board.mutate((current) =>
             appendActivity(current, cardId, 'Implemented and tested.\nSTATUS: DONE'));
           return successfulProcess();
@@ -248,7 +256,7 @@ suite('agent CLI card handoff evidence', () => {
           signal: new AbortController().signal,
         },
         handoffOptions(async (invocation) => {
-          assert.ok(invocation.args.includes(prompt));
+          assert.equal(invocation.stdin, prompt);
           board.mutate((current) =>
             setAcceptanceCriteria(
               setDescription(current, cardId, 'The agent supplied a complete definition.'),
@@ -425,6 +433,7 @@ suite('agent CLI process observation', () => {
       label: 'test child',
       command: process.execPath,
       args: ['-e', "process.stdout.write('out-line\\n'); process.stderr.write('err-line\\n');"],
+      stdin: '',
       cwd: process.cwd(),
     };
 
@@ -477,6 +486,79 @@ suite('agent CLI process observation', () => {
   });
 });
 
+suite('agent CLI prompt delivery over stdin', () => {
+  const echoStdinScript =
+    "let data = ''; process.stdin.on('data', (chunk) => { data += chunk; }); process.stdin.on('end', () => process.stdout.write(data));";
+
+  test('the child receives the exact multi-line prompt on stdin', async () => {
+    const prompt = 'Define the card.\nSecond line with "quotes", %PATH%, & symbols.\nThird line.';
+    const result = await runAgentCliProcess(
+      {
+        provider: 'codex',
+        label: 'test child',
+        command: process.execPath,
+        args: ['-e', echoStdinScript],
+        stdin: prompt,
+        cwd: process.cwd(),
+      },
+      new AbortController().signal,
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, prompt);
+  });
+
+  test(
+    'the multi-line prompt survives a Windows .cmd shim launch intact',
+    { skip: process.platform !== 'win32' },
+    async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mwnn-agent-cli-'));
+      const shim = path.join(dir, 'echo-agent.cmd');
+      // Mirrors an npm shim: a .cmd wrapper that forwards to node.
+      await fs.writeFile(shim, `@"${process.execPath}" -e "${echoStdinScript.replace(/"/g, '""')}"\r\n`);
+      try {
+        const prompt = 'Define the card.\nSecond line with symbols & spaces.\nThird line.';
+        const result = await runAgentCliProcess(
+          {
+            provider: 'codex',
+            label: 'shim child',
+            command: shim,
+            args: [],
+            stdin: prompt,
+            cwd: dir,
+          },
+          new AbortController().signal,
+        );
+
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.stdout, prompt);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('a newline smuggled into a .cmd shim argument fails instead of truncating', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const result = await runAgentCliProcess(
+      {
+        provider: 'codex',
+        label: 'shim child',
+        command: 'C:\\fake\\agent.cmd',
+        args: ['first line\nsecond line'],
+        stdin: '',
+        cwd: process.cwd(),
+      },
+      new AbortController().signal,
+    );
+
+    assert.equal(result.started, false);
+    assert.match(result.error ?? '', /newline/);
+    assert.match(result.error ?? '', /stdin/);
+  });
+});
+
 suite('agent CLI process cancellation', () => {
   test('aborting the signal terminates a live child process', async () => {
     const controller = new AbortController();
@@ -486,6 +568,7 @@ suite('agent CLI process cancellation', () => {
         label: 'test child',
         command: process.execPath,
         args: ['-e', 'setInterval(() => undefined, 1000)'],
+        stdin: '',
         cwd: process.cwd(),
       },
       controller.signal,

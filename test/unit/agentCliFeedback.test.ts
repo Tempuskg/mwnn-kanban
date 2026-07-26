@@ -20,7 +20,8 @@ function invocation(overrides: Partial<AgentCliInvocation> = {}): AgentCliInvoca
     provider: 'claude-code',
     label: 'Anthropic Claude Code CLI',
     command: 'C:\\Tools\\claude.EXE',
-    args: ['-p', '--output-format', 'text', 'the prompt'],
+    args: ['-p', '--output-format', 'text'],
+    stdin: 'the multi-line prompt\npiped to the CLI',
     cwd: 'E:\\workspace',
     ...overrides,
   };
@@ -142,18 +143,21 @@ suite('CLI feedback formatting', () => {
     assert.ok(truncated.endsWith('…'));
   });
 
-  test('run-start heading names the provider, kind, card, and working directory', () => {
-    const lines = formatCliRunStart(invocation(), 'implementation', 'My card');
+  test('run-start heading names the provider, kind, card, prompt size, and working directory', () => {
+    const stdin = 'the multi-line prompt\npiped to the CLI';
+    const lines = formatCliRunStart(invocation({ stdin }), 'implementation', 'My card');
     assert.match(lines[0] ?? '', /Anthropic Claude Code CLI/);
     assert.match(lines[0] ?? '', /implementation/);
     assert.match(lines[0] ?? '', /"My card"/);
-    assert.match(lines[2] ?? '', /E:\\workspace/);
+    assert.match(lines[2] ?? '', new RegExp(`prompt: ${stdin.length} chars via stdin`));
+    assert.match(lines[3] ?? '', /E:\\workspace/);
+    assert.ok(!lines.some((line) => line.includes(stdin)), 'the prompt must not be echoed verbatim');
   });
 
-  test('the echoed command line elides a long prompt argument', () => {
-    const prompt = `Work the card.\n${'details '.repeat(200)}`;
-    const commandLine = formatCliCommandLine(invocation({ args: ['-p', prompt] }));
-    assert.ok(commandLine.length < 200, 'the prompt must not be echoed verbatim');
+  test('the echoed command line elides a long argument', () => {
+    const argument = `Work the card. ${'details '.repeat(200)}`;
+    const commandLine = formatCliCommandLine(invocation({ args: ['-p', argument] }));
+    assert.ok(commandLine.length < 200, 'a long argument must not be echoed verbatim');
     assert.match(commandLine, /\[\d+ chars\]/);
     assert.match(commandLine, /^C:\\Tools\\claude\.EXE -p /);
     assert.doesNotMatch(commandLine, /\n/);

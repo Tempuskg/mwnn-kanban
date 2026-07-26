@@ -20,43 +20,52 @@ export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
 
 interface AgentCliProviderSpec {
   readonly defaultCommands: readonly string[];
-  readonly buildArgs: (prompt: string) => string[];
+  /** Fixed, single-line argv. The prompt itself always travels over stdin. */
+  readonly args: readonly string[];
 }
 
 /**
- * Every provider receives the same existing MWNN hand-off prompt. Only this
- * registry knows the small CLI-specific argument differences; board-loop
- * orchestration remains provider-agnostic.
+ * Every provider receives the same existing MWNN hand-off prompt, delivered on
+ * stdin rather than argv: npm installs these CLIs as .cmd shims on Windows,
+ * which must be launched through cmd.exe, and cmd.exe ends its command line at
+ * the first newline no matter how an argument is quoted — a multi-line prompt
+ * argument is silently cut to its first line. Only this registry knows the
+ * small CLI-specific differences; board-loop orchestration remains
+ * provider-agnostic.
  *
- * Official non-interactive modes:
- * - Copilot: `-p`, with tools pre-approved and user questions disabled.
- * - Codex: `exec`, with the workspace-write sandbox needed for card/code edits.
- * - Claude Code: print mode with non-interactive permission bypass.
- * - Cursor: print mode plus `--force`, which enables file edits in headless mode.
+ * Official non-interactive modes, each reading the piped prompt:
+ * - Copilot: piped stdin runs programmatic mode; tools pre-approved and user
+ *   questions disabled. No `-p` — Copilot ignores stdin when `-p` is passed.
+ * - Codex: `exec -` reads instructions from stdin, with the workspace-write
+ *   sandbox needed for card/code edits.
+ * - Claude Code: print mode reads the piped prompt; non-interactive
+ *   permission bypass.
+ * - Cursor: print mode plus `--force` (file edits in headless mode). Cursor
+ *   documents piped stdin as data alongside an argument prompt, so a
+ *   single-line pointer argument defers to the piped hand-off.
  */
 const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   copilot: {
     defaultCommands: ['copilot'],
-    buildArgs: (prompt) => ['-p', prompt, '--allow-all-tools', '--no-ask-user', '--silent'],
+    args: ['--allow-all-tools', '--no-ask-user', '--silent'],
   },
   codex: {
     defaultCommands: ['codex'],
-    buildArgs: (prompt) => ['exec', '--sandbox', 'workspace-write', prompt],
+    args: ['exec', '--sandbox', 'workspace-write', '-'],
   },
   'claude-code': {
     defaultCommands: ['claude'],
-    buildArgs: (prompt) => [
-      '-p',
-      '--permission-mode',
-      'bypassPermissions',
-      '--output-format',
-      'text',
-      prompt,
-    ],
+    args: ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
   },
   cursor: {
     defaultCommands: ['cursor-agent'],
-    buildArgs: (prompt) => ['-p', '--force', '--output-format', 'text', prompt],
+    args: [
+      '-p',
+      '--force',
+      '--output-format',
+      'text',
+      'Carry out the complete hand-off instructions piped to you on stdin.',
+    ],
   },
 };
 
@@ -240,6 +249,8 @@ export interface AgentCliInvocation {
   readonly label: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** Hand-off prompt, written to the process's stdin; argv stays single-line. */
+  readonly stdin: string;
   readonly cwd: string;
 }
 
@@ -252,7 +263,8 @@ export function buildAgentCliInvocation(
     provider: target.provider,
     label: target.label,
     command: target.executable,
-    args: PROVIDER_SPECS[target.provider].buildArgs(prompt),
+    args: [...PROVIDER_SPECS[target.provider].args],
+    stdin: prompt,
     cwd,
   };
 }
@@ -286,7 +298,10 @@ export type AgentCliProcessRunner = (
 
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
 
-/** Launch a provider without a shell, except for Windows .cmd/.bat shims. */
+/**
+ * Launch a provider without a shell, except for Windows .cmd/.bat shims. The
+ * prompt is piped to the child's stdin so it survives cmd.exe verbatim.
+ */
 export async function runAgentCliProcess(
   invocation: AgentCliInvocation,
   signal: AbortSignal,
@@ -295,14 +310,6 @@ export async function runAgentCliProcess(
   if (signal.aborted) {
     return emptyProcessResult(false, true);
   }
-
-  const launch = process.platform === 'win32'
-    ? windowsLaunchCommand(invocation.command, invocation.args)
-    : {
-        command: invocation.command,
-        args: [...invocation.args],
-        windowsVerbatimArguments: false,
-      };
 
   return new Promise((resolve) => {
     let settled = false;
@@ -351,13 +358,20 @@ export async function runAgentCliProcess(
 
     observer.onStart?.(invocation);
     try {
+      const launch = process.platform === 'win32'
+        ? windowsLaunchCommand(invocation.command, invocation.args)
+        : {
+            command: invocation.command,
+            args: [...invocation.args],
+            windowsVerbatimArguments: false,
+          };
       child = spawn(launch.command, launch.args, {
         cwd: invocation.cwd,
         windowsHide: true,
         detached: process.platform !== 'win32',
         shell: false,
         windowsVerbatimArguments: launch.windowsVerbatimArguments,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -413,6 +427,11 @@ export async function runAgentCliProcess(
         stderr,
       });
     });
+    child.stdin?.on('error', () => {
+      // A CLI that exits before draining its stdin raises EPIPE here; the
+      // exit handler reports the real outcome.
+    });
+    child.stdin?.end(invocation.stdin);
   });
 }
 
@@ -446,6 +465,16 @@ function windowsLaunchCommand(
     return { command, args: [...args], windowsVerbatimArguments: false };
   }
 
+  // cmd.exe ends its command line at the first newline regardless of quoting;
+  // everything after it would be silently dropped. Multi-line text (the
+  // hand-off prompt) must travel over stdin instead of argv.
+  const unsafe = [command, ...args].find((part) => /[\r\n]/.test(part));
+  if (unsafe !== undefined) {
+    throw new Error(
+      'A cmd.exe shim argument contains a newline, which cmd.exe would silently truncate; pass multi-line text via stdin instead.',
+    );
+  }
+
   const commandLine = [command, ...args].map(quoteWindowsCommandArgument).join(' ');
   return {
     command: process.env.ComSpec ?? 'cmd.exe',
@@ -459,8 +488,9 @@ function windowsLaunchCommand(
 
 /**
  * Quote one argument for cmd.exe. Percent expansion is neutralized as well as
- * cmd metacharacters; prompt text remains data even when an npm .cmd shim is
- * the discovered executable.
+ * cmd metacharacters; paths and flags remain data even when an npm .cmd shim
+ * is the discovered executable. Newlines cannot be quoted for cmd.exe at all —
+ * windowsLaunchCommand rejects them before this runs.
  */
 function quoteWindowsCommandArgument(value: string): string {
   const escaped = value

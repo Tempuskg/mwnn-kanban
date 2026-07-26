@@ -166,7 +166,7 @@ function fakeResolver(
 
 /** Real shared handoff logic with only the process spawn stubbed out. */
 function realHandoffWith(
-  runProcess: (invocation: { readonly args: readonly string[]; readonly command: string; readonly cwd: string }) => Promise<AgentCliProcessResult>,
+  runProcess: (invocation: { readonly args: readonly string[]; readonly command: string; readonly stdin: string; readonly cwd: string }) => Promise<AgentCliProcessResult>,
 ): (handoff: AgentCliCardHandoff) => Promise<AgentCliCardHandoffResult> {
   return (handoff) =>
     runAgentCliCardHandoff(handoff, {
@@ -228,7 +228,7 @@ suite('Run with AI agent CLI dispatch', () => {
       resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
       runHandoff: realHandoffWith(async (invocation) => {
         assert.equal(invocation.cwd, 'E:\\workspace');
-        assert.ok(invocation.args.includes(prompt), 'the CLI did not receive the exact prompt');
+        assert.equal(invocation.stdin, prompt, 'the CLI did not receive the exact prompt on stdin');
         board.mutate((current) =>
           appendActivity(current, cardId, 'Implemented and tested.\nSTATUS: DONE'));
         return successfulProcess();
@@ -387,7 +387,7 @@ suite('Run with AI agent CLI dispatch', () => {
     const harness = dispatchHarness(board, {
       resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
       runHandoff: realHandoffWith(async (invocation) => {
-        assert.ok(invocation.args.includes(prompt), 'the CLI did not receive the definition prompt');
+        assert.equal(invocation.stdin, prompt, 'the CLI did not receive the definition prompt on stdin');
         board.mutate((current) =>
           setAcceptanceCriteria(
             setDescription(current, cardId, 'The agent supplied a complete definition.'),
