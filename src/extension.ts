@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { createAiLoopProgressOptions } from './aiLoopProgress';
+import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
 import {
   createCliOutputFeed,
   formatCliRunExit,
@@ -231,7 +231,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configuredPaths: readAgentCliPaths(),
     cwd: workspaceRoot.fsPath,
     store,
-    runWithProgress: runAgentCliWithCancellableProgress,
+    runWithProgress: runAgentCliWithStatusBarProgress,
     createProcessObserver: (runContext, reportProgress) =>
       createCliRunObserver(runContext.card, runContext.kind, runContext.providerLabel, reportProgress),
     showInformation: showCliInformation,
@@ -677,6 +677,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', () => {
       stopBoardLoopCommand();
     }),
+    vscode.commands.registerCommand('mwnn-kanban.stopCardRun', () => {
+      stopCardCliRuns();
+    }),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', async () => {
       await importPlan();
     }),
@@ -846,6 +849,7 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mwnn-kanban.runCardWithAI', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.runBoardLoop', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', showWorkspaceMessage),
+    vscode.commands.registerCommand('mwnn-kanban.stopCardRun', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', showWorkspaceMessage),
   );
@@ -1229,21 +1233,43 @@ async function pickRunWithAiProvider(
 }
 
 /**
- * Runs a synchronous agent CLI task behind a cancellable progress notification;
- * cancelling aborts the signal, which terminates the active CLI process.
+ * Single-card agent-CLI runs currently in flight, so the Stop Card AI Run
+ * command can terminate their child processes. Status-bar progress has no
+ * cancel control, so stopping routes through the command instead.
  */
-function runAgentCliWithCancellableProgress<T>(
+const activeCardCliRuns = new Set<AbortController>();
+
+/**
+ * Runs a synchronous agent CLI task behind status-bar progress — the same
+ * unobtrusive surface as the AI loop; the Stop Card AI Run command aborts the
+ * signal, which terminates the active CLI process.
+ */
+function runAgentCliWithStatusBarProgress<T>(
   title: string,
   task: (signal: AbortSignal, reportProgress: (message: string) => void) => Promise<T>,
 ): Promise<T> {
   return Promise.resolve(vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
-    (progress, token) => {
+    createStatusBarProgressOptions(vscode.ProgressLocation, title),
+    async (progress) => {
       const abortController = new AbortController();
-      token.onCancellationRequested(() => abortController.abort());
-      return task(abortController.signal, (message) => progress.report({ message }));
+      activeCardCliRuns.add(abortController);
+      try {
+        return await task(abortController.signal, (message) => progress.report({ message }));
+      } finally {
+        activeCardCliRuns.delete(abortController);
+      }
     },
   ));
+}
+
+function stopCardCliRuns(): void {
+  if (activeCardCliRuns.size === 0) {
+    void vscode.window.showInformationMessage('No card AI run is in progress.');
+    return;
+  }
+  for (const run of activeCardCliRuns) {
+    run.abort();
+  }
 }
 
 /**

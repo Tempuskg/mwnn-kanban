@@ -8,14 +8,22 @@ export interface AiLoopProgressOptions<TLocation> {
 }
 
 /**
- * Keep AI-loop progress in VS Code's status bar. Notification progress appears
- * above the bottom-right workbench area and can cover the built-in chat composer.
+ * Keep agent-run progress in VS Code's status bar. Notification progress
+ * appears above the bottom-right workbench area, can cover the built-in chat
+ * composer, and cannot be collapsed while the run streams status updates.
  */
-export function createAiLoopProgressOptions<TLocation>(
+export function createStatusBarProgressOptions<TLocation>(
   locations: AiLoopProgressLocations<TLocation>,
+  title: string,
 ): AiLoopProgressOptions<TLocation> {
   return {
     location: locations.Window,
-    title: 'MWNN AI loop',
+    title,
   };
+}
+
+export function createAiLoopProgressOptions<TLocation>(
+  locations: AiLoopProgressLocations<TLocation>,
+): AiLoopProgressOptions<TLocation> {
+  return createStatusBarProgressOptions(locations, 'MWNN AI loop');
 }

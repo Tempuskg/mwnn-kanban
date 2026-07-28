@@ -198,14 +198,14 @@ function hasCompletedAcceptanceCriteria(card: Card): boolean {
   return checks.length > 0 && checks.every((check) => check[1]?.toLowerCase() === 'x');
 }
 
-function checkAllAcceptanceCriteria(acceptanceCriteria: string | undefined): string | undefined {
+export function checkAllAcceptanceCriteria(acceptanceCriteria: string | undefined): string | undefined {
   return acceptanceCriteria?.replace(
     /^([ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?)\[[ \t]\]/gm,
     '$1[x]',
   );
 }
 
-function isVerifyColumn(column: Column): boolean {
+export function isVerifyColumn(column: Column): boolean {
   // Older boards persisted a title-based Verify column as `custom` before
   // built-in role metadata was introduced. Keep those boards in the loop's
   // human verification gate instead of advancing them toward Done.
@@ -216,7 +216,7 @@ function isPreWorkColumn(column: Column): boolean {
   return column.role === 'backlog' || column.role === 'ready';
 }
 
-function hasWipCapacity(column: Column): boolean {
+export function hasWipCapacity(column: Column): boolean {
   return column.wipLimit === undefined || column.wipLimit === null || column.cards.length < column.wipLimit;
 }
 

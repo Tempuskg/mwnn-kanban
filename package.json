@@ -89,6 +89,11 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.stopCardRun",
+        "title": "Stop Card AI Run",
+        "category": "MWNN Kanban"
+      },
+      {
         "command": "mwnn-kanban.importPlan",
         "title": "Import Plan",
         "category": "MWNN Kanban"
@@ -239,6 +244,10 @@
         },
         {
           "command": "mwnn-kanban.stopBoardLoop",
+          "when": "config.mwnn-kanban.enableRunWithAI"
+        },
+        {
+          "command": "mwnn-kanban.stopCardRun",
           "when": "config.mwnn-kanban.enableRunWithAI"
         },
         {

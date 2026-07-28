@@ -27,11 +27,13 @@ import {
   appendActivity,
   cloneBoard,
   defaultBoard,
+  moveCard,
   setAcceptanceCriteria,
   setAssignee,
+  setColumnConfig,
   setDescription,
 } from '../../src/utils';
-import type { BoardState, Card } from '../../src/types';
+import type { Assignee, BoardState, Card, Column } from '../../src/types';
 
 const CHAT_TARGETS: readonly ChatHandoffTarget[] = [
   { provider: 'copilot', commandId: 'workbench.action.chat.open', promptDelivery: 'query' },
@@ -42,9 +44,13 @@ interface FakeHandoffStore {
   store: {
     reload(): Promise<BoardState>;
     appendActivity(cardId: string, entry: string): Promise<void>;
+    moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<void>;
+    setAssignee(cardId: string, assignee: Assignee | undefined): Promise<void>;
+    setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<void>;
   };
   mutate(apply: (state: BoardState) => BoardState): void;
   card(cardId: string): Card;
+  columnOf(cardId: string): Column;
   appendedEntries(): readonly string[];
 }
 
@@ -60,6 +66,14 @@ function fakeStore(initial: BoardState): FakeHandoffStore {
     }
     throw new Error(`Card ${cardId} not found`);
   };
+  const columnOf = (cardId: string): Column => {
+    const column = state.columns.find((candidate) =>
+      candidate.cards.some((candidateCard) => candidateCard.id === cardId));
+    if (!column) {
+      throw new Error(`Card ${cardId} not found`);
+    }
+    return column;
+  };
   return {
     store: {
       reload: async () => cloneBoard(state),
@@ -67,11 +81,21 @@ function fakeStore(initial: BoardState): FakeHandoffStore {
         appended.push(entry);
         state = appendActivity(state, cardId, entry);
       },
+      moveCard: async (cardId, toColumnId, toIndex) => {
+        state = moveCard(state, cardId, toColumnId, toIndex);
+      },
+      setAssignee: async (cardId, assignee) => {
+        state = setAssignee(state, cardId, assignee);
+      },
+      setAcceptanceCriteria: async (cardId, acceptanceCriteria) => {
+        state = setAcceptanceCriteria(state, cardId, acceptanceCriteria);
+      },
     },
     mutate(apply) {
       state = apply(state);
     },
     card,
+    columnOf,
     appendedEntries: () => appended,
   };
 }
@@ -345,6 +369,103 @@ suite('Run with AI agent CLI dispatch', () => {
     assert.equal(completed, true);
     assert.match(harness.warnings[0] ?? '', /blocked: credentials are missing/);
     assert.equal(harness.infos.length, 0);
+    assert.equal(board.columnOf(cardId).title, 'In Progress', 'a blocked card must not be moved');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
+  });
+
+  test('a finished implementation is parked in Verify and reassigned to Human, like the AI loop', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        board.mutate((current) =>
+          appendActivity(current, cardId, 'Implemented and tested.\nSTATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(board.columnOf(cardId).title, 'Verify');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'human' });
+    assert.equal(
+      board.card(cardId).acceptanceCriteria,
+      '- [x] The CLI completes the work',
+      'STATUS: DONE claims every criterion is met, so the checklist is completed',
+    );
+    const activity = board.card(cardId).activity ?? '';
+    assert.match(activity, /Run with AI parked in Verify/);
+    assert.match(activity, /reassigned to Human for verification and sign-off/);
+    assert.match(harness.infos[0] ?? '', /now in Verify and assigned to Human/);
+  });
+
+  test('a finished card already sitting in Verify is reassigned to Human without moving', async () => {
+    const { state, cardId } = boardWithCard();
+    const verifyColumnId = state.columns[3]!.id;
+    const board = fakeStore(moveCard(state, cardId, verifyColumnId, 0));
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(board.columnOf(cardId).title, 'Verify');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'human' });
+    assert.match(board.card(cardId).activity ?? '', /Run with AI parked in Verify/);
+  });
+
+  test('a finished card stays put when the board has no Verify column', async () => {
+    let state = defaultBoard(['Backlog', 'Ready', 'In Progress', 'Done']);
+    state = addCard(state, state.columns[2]!.id, 'Run the card via CLI');
+    const cardId = state.columns[2]!.cards[0]!.id;
+    state = setAssignee(state, cardId, { kind: 'ai' });
+    state = setDescription(state, cardId, 'Make a CLI-backed change.');
+    state = setAcceptanceCriteria(state, cardId, '- [ ] The CLI completes the work');
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(board.columnOf(cardId).title, 'In Progress');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
+    assert.doesNotMatch(board.card(cardId).activity ?? '', /parked in/);
+    assert.match(harness.infos[0] ?? '', /reported STATUS: DONE in the card Activity/);
+  });
+
+  test('a finished card stays put when Verify is at its WIP limit', async () => {
+    let { state, cardId } = boardWithCard();
+    const verifyColumnId = state.columns[3]!.id;
+    state = setColumnConfig(state, verifyColumnId, { wipLimit: 1 });
+    state = addCard(state, verifyColumnId, 'Occupies the only Verify slot');
+    const board = fakeStore(state);
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(board.columnOf(cardId).title, 'In Progress');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
+    assert.doesNotMatch(board.card(cardId).activity ?? '', /parked in/);
   });
 
   test('cancellation reports an informational stop instead of a failure', async () => {
@@ -410,6 +531,8 @@ suite('Run with AI agent CLI dispatch', () => {
     assert.equal(harness.warnings.length, 0);
     assert.match(harness.infos[0] ?? '', /filled in "Run the card via CLI"/);
     assert.match(harness.progressTitles[0] ?? '', /^Filling in "Run the card via CLI"/);
+    assert.equal(board.columnOf(cardId).title, 'In Progress', 'a definition run never parks the card');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
   });
 
   test('a definition run that leaves the card undefined is surfaced as a failure', async () => {
@@ -526,6 +649,19 @@ suite('Run with AI CLI outcome messages', () => {
     const failedWithoutReason = describeAgentCliRunOutcome('GitHub Copilot CLI', 'my card', 'implementation', base);
     assert.equal(failedWithoutReason.severity, 'warning');
     assert.match(failedWithoutReason.message, /did not complete "my card"/);
+  });
+
+  test('a parked implementation names the Verify column and the Human reassignment', () => {
+    const outcome = describeAgentCliRunOutcome(
+      'GitHub Copilot CLI',
+      'my card',
+      'implementation',
+      { completed: true, cancelled: false, activityBaseline: 0, terminalStatus: { kind: 'done' } },
+      'Verify',
+    );
+    assert.equal(outcome.severity, 'info');
+    assert.match(outcome.message, /now in Verify/);
+    assert.match(outcome.message, /assigned to Human/);
   });
 
   test('a completed definition reports the filled-in definition instead of STATUS: DONE', () => {
