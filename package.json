@@ -165,6 +165,12 @@
           "description": "AI execution channel or provider used by the AI board loop.",
           "scope": "resource"
         },
+        "mwnn-kanban.aiLoopReviewFreshDefinitions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pause cards the AI board loop has just defined in the Ready column until the next run, so a human can review the fresh Description and Acceptance criteria first. When off, the loop continues and implements freshly defined cards in the same run.",
+          "scope": "resource"
+        },
         "mwnn-kanban.agentCliPaths": {
           "type": "object",
           "default": {},

@@ -123,6 +123,12 @@ function readAiLoopProvider(): AiLoopProviderPreference {
     .get<AiLoopProviderPreference>('aiLoopProvider', 'prompt');
 }
 
+function readAiLoopReviewFreshDefinitions(): boolean {
+  return vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<boolean>('aiLoopReviewFreshDefinitions', false);
+}
+
 function readAgentCliPaths(): AgentCliPathOverrides {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
@@ -514,7 +520,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             store,
             gateways,
             { isCancelled: () => loop.cancelled, delay: waitForMilliseconds },
-            { onEvent: (message) => progress.report({ message }) },
+            {
+              onEvent: (message) => progress.report({ message }),
+              reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(),
+            },
           );
         },
       );
@@ -1040,7 +1049,7 @@ function summarizeLoopRun(summary: LoopSummary): string {
     parts.push(`advanced ${summary.advanced.length}`);
   }
   if (summary.movedToReady.length > 0) {
-    parts.push(`placed ${summary.movedToReady.length} freshly defined in Ready for review`);
+    parts.push(`placed ${summary.movedToReady.length} freshly defined in Ready`);
   }
   if (summary.parked.length > 0) {
     parts.push(`parked ${summary.parked.length} in Verify for human sign-off`);

@@ -5,9 +5,11 @@
  *     human, so a person owns sign-off (the loop never moves cards into Done),
  *   - triages unassigned cards by asking the AI whether the card is doable by
  *     an agent (filling in the definition first when the card is title-only);
- *     a card the loop defines this way is parked at the end of the Ready
- *     column and rests there for the remainder of the run, so a human can
- *     review the fresh definition before implementation starts,
+ *     a card the loop defines this way is placed at the end of the Ready
+ *     column and then continues through the normal flow. With the
+ *     `reviewFreshDefinitions` option it instead rests in Ready for the
+ *     remainder of the run, so a human can review the fresh definition before
+ *     implementation starts,
  *   - advances unblocked AI cards through the ordered columns, handing the card
  *     off to the chat agent in each work column and waiting for its
  *     `STATUS: DONE` report before moving on.
@@ -88,6 +90,13 @@ export interface LoopOptions {
   readonly now?: () => number;
   /** Progress callback, e.g. for a notification's message line. */
   readonly onEvent?: (message: string) => void;
+  /**
+   * When true, a card whose definition the loop filled in rests in Ready for
+   * the remainder of the run so a human can review the fresh Description and
+   * Acceptance criteria first. Off by default: the loop carries straight on
+   * and implements the card it just defined.
+   */
+  readonly reviewFreshDefinitions?: boolean;
 }
 
 export interface LoopSummary {
@@ -132,9 +141,10 @@ export interface LoopSession {
   /** Fallback triage hand-offs waiting for the agent to record an assignee. */
   readonly triageRequests: Map<string, TriageRequestRecord>;
   /**
-   * Cards whose definition the loop filled in during this run. They rest in
-   * Ready (never advanced past it, never dispatched) until the next run, so a
-   * human gets a chance to review the fresh definition first.
+   * Cards whose definition the loop filled in during this run. A Backlog card
+   * in this set is placed at the end of Ready; with `reviewFreshDefinitions`
+   * it also rests there (never advanced past Ready, never dispatched) until
+   * the next run, so a human gets a chance to review the definition first.
    */
   readonly definedThisRun: Set<string>;
 }
@@ -292,13 +302,23 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
   }
 }
 
+export interface PlanLoopOptions {
+  /** See LoopOptions.reviewFreshDefinitions. */
+  readonly reviewFreshDefinitions?: boolean;
+}
+
 /**
  * Pick the next thing the loop should do, or undefined when nothing is
  * actionable right now. Actions that would open another chat hand-off
  * (dispatch, request-definition) are withheld while one is already pending, so
  * the loop drives at most one agent conversation at a time.
  */
-export function planLoopAction(state: BoardState, session: LoopSession): LoopAction | undefined {
+export function planLoopAction(
+  state: BoardState,
+  session: LoopSession,
+  options: PlanLoopOptions = {},
+): LoopAction | undefined {
+  const reviewFreshDefinitions = options.reviewFreshDefinitions === true;
   const handoffPending = hasPendingHandoff(state, session);
   let firstTriage: LoopAction | undefined;
   let firstDefinition: LoopAction | undefined;
@@ -317,9 +337,9 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
       }
 
       if (session.definedThisRun.has(card.id) && column.role === 'backlog') {
-        // The loop just filled this card's definition in: park it at the end
-        // of Ready so a human can review the fresh Description and Acceptance
-        // criteria before implementation. Without a Ready column it stays put.
+        // The loop just filled this card's definition in: place it at the end
+        // of Ready, the column where defined cards wait to be pulled into
+        // work. Without a Ready column it stays put.
         const readyColumn = state.columns.find((candidate) => candidate.role === 'ready');
         if (readyColumn && hasWipCapacity(readyColumn)) {
           return { kind: 'move-to-ready', card, toColumn: readyColumn };
@@ -389,7 +409,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
       }
 
       if (isPreWorkColumn(column)) {
-        if (session.definedThisRun.has(card.id)) {
+        if (reviewFreshDefinitions && session.definedThisRun.has(card.id)) {
           continue; // freshly defined — rests here until a human reviews it
         }
         // Nothing to run in Backlog/Ready; the card trivially "completes" and
@@ -400,7 +420,7 @@ export function planLoopAction(state: BoardState, session: LoopSession): LoopAct
         continue;
       }
 
-      if (session.definedThisRun.has(card.id)) {
+      if (reviewFreshDefinitions && session.definedThisRun.has(card.id)) {
         continue; // freshly defined — never dispatched before a human review
       }
       if (column.role === 'in-progress' && !canStartImplementation(state, session)) {
@@ -481,6 +501,10 @@ export async function runBoardLoop(
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const now = options.now ?? Date.now;
   const report = options.onEvent ?? ((): void => undefined);
+  const planOptions: PlanLoopOptions =
+    options.reviewFreshDefinitions === undefined
+      ? {}
+      : { reviewFreshDefinitions: options.reviewFreshDefinitions };
 
   const session = createLoopSession();
   const summary: LoopSummary = {
@@ -507,7 +531,7 @@ export async function runBoardLoop(
     const state = await store.reload();
     pruneLoopSession(state, session);
 
-    const action = planLoopAction(state, session);
+    const action = planLoopAction(state, session, planOptions);
     if (action) {
       await executeAction(action);
       continue;
@@ -568,7 +592,10 @@ export async function runBoardLoop(
       case 'move-to-ready': {
         report(`Placing freshly defined "${card.title}" in ${action.toColumn.title}`);
         await store.moveCard(card.id, action.toColumn.id, action.toColumn.cards.length);
-        await store.appendActivity(card.id, formatLoopDefinedReadyEntry(action.toColumn.title));
+        await store.appendActivity(
+          card.id,
+          formatLoopDefinedReadyEntry(action.toColumn.title, planOptions.reviewFreshDefinitions === true),
+        );
         summary.movedToReady.push(card.title);
         return;
       }
@@ -768,10 +795,16 @@ export function formatLoopAdvanceEntry(columnTitle: string, timestamp: Date = ne
   ].join('\n');
 }
 
-export function formatLoopDefinedReadyEntry(columnTitle: string, timestamp: Date = new Date()): string {
+export function formatLoopDefinedReadyEntry(
+  columnTitle: string,
+  forReview: boolean,
+  timestamp: Date = new Date(),
+): string {
   return [
     `### ${timestamp.toISOString()} - AI loop placed this card in ${columnTitle}`,
-    `The definition was just filled in; moved to "${columnTitle}" to wait for a human to review the Description and Acceptance criteria before implementation starts.`,
+    forReview
+      ? `The definition was just filled in; moved to "${columnTitle}" to wait for a human to review the Description and Acceptance criteria before implementation starts.`
+      : `The definition was just filled in; moved to "${columnTitle}" to continue through the board flow.`,
   ].join('\n');
 }
 

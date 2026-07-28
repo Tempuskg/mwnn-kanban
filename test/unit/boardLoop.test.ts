@@ -514,7 +514,28 @@ suite('board loop run', () => {
     assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
   });
 
-  test('a card defined from the Backlog lands in Ready and is not dispatched that run', async () => {
+  test('by default a card defined from the Backlog continues on to implementation in the same run', async () => {
+    let state = defaultBoard([...FULL_COLUMNS]);
+    state = addCard(state, state.columns[0]!.id, 'Title-only idea');
+    const cardId = state.columns[0]!.cards[0]!.id;
+
+    const board = fakeBoard(state);
+    const { gateways, log } = instantGateways(board, () => 'ai');
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    // Defined in Backlog, placed in Ready, then implemented and parked in
+    // Verify for human sign-off — all within this run.
+    assert.deepEqual(log.calls, [`define:${cardId}`, `triage:${cardId}`, `dispatch:${cardId}`]);
+    assert.equal(summary.movedToReady.length, 1);
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    const activity = board.findCard(cardId).activity ?? '';
+    assert.match(activity, /AI loop placed this card in Ready/);
+    assert.match(activity, /continue through the board flow/);
+  });
+
+  test('with reviewFreshDefinitions, a card defined from the Backlog lands in Ready and is not dispatched that run', async () => {
     let state = defaultBoard([...FULL_COLUMNS]);
     state = addCard(state, state.columns[1]!.id, 'Already waiting in Ready');
     const existingReadyCardId = state.columns[1]!.cards[0]!.id;
@@ -528,7 +549,10 @@ suite('board loop run', () => {
     // Triage says AI — the freshly defined card must still stop in Ready.
     const { gateways, log } = instantGateways(board, () => 'ai');
 
-    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), {
+      pollIntervalMs: 0,
+      reviewFreshDefinitions: true,
+    });
 
     assert.deepEqual(log.calls, [`define:${cardId}`, `triage:${cardId}`]);
     assert.deepEqual(log.dispatched, []);
@@ -543,7 +567,7 @@ suite('board loop run', () => {
     assert.match(board.findCard(cardId).activity ?? '', /AI loop placed this card in Ready/);
   });
 
-  test('a card defined while sitting in Ready stays in Ready without a move', async () => {
+  test('with reviewFreshDefinitions, a card defined while sitting in Ready stays in Ready without a move', async () => {
     let state = defaultBoard([...FULL_COLUMNS]);
     state = addCard(state, state.columns[1]!.id, 'Undefined in Ready');
     const cardId = state.columns[1]!.cards[0]!.id;
@@ -551,7 +575,10 @@ suite('board loop run', () => {
     const board = fakeBoard(state);
     const { gateways, log } = instantGateways(board, () => 'ai');
 
-    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), {
+      pollIntervalMs: 0,
+      reviewFreshDefinitions: true,
+    });
 
     assert.deepEqual(log.calls, [`define:${cardId}`, `triage:${cardId}`]);
     assert.deepEqual(log.dispatched, []);
@@ -560,7 +587,7 @@ suite('board loop run', () => {
     assert.doesNotMatch(board.findCard(cardId).activity ?? '', /AI loop advanced this card/);
   });
 
-  test('a freshly defined card stays put when the board has no Ready column', async () => {
+  test('with reviewFreshDefinitions, a freshly defined card stays put when the board has no Ready column', async () => {
     let state = defaultBoard(['Backlog', 'In Progress', 'Verify', 'Done']);
     state = addCard(state, state.columns[0]!.id, 'No Ready column here');
     const cardId = state.columns[0]!.cards[0]!.id;
@@ -568,7 +595,10 @@ suite('board loop run', () => {
     const board = fakeBoard(state);
     const { gateways, log } = instantGateways(board, () => 'ai');
 
-    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), {
+      pollIntervalMs: 0,
+      reviewFreshDefinitions: true,
+    });
 
     assert.equal(board.columnTitleOf(cardId), 'Backlog');
     assert.deepEqual(log.dispatched, []);
