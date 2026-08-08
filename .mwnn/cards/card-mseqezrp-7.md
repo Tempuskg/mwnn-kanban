@@ -4,9 +4,9 @@ title: Document the AI Verify loop option
 column: col-mqwk2njn-1
 position: 7000
 assignee: { kind: ai }
-dependsOn: [card-mseqezrp-5]
 createdAt: 1785852411541
 updatedAt: 1785852411541
+dependsOn: [card-mseqezrp-5]
 ---
 
 ## Description

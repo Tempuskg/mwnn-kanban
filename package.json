@@ -176,6 +176,12 @@
           "description": "Pause cards the AI board loop has just defined in the Ready column until the next run, so a human can review the fresh Description and Acceptance criteria first. When off, the loop continues and implements freshly defined cards in the same run.",
           "scope": "resource"
         },
+        "mwnn-kanban.aiLoopVerifyCards": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let the AI board loop verify cards in the Verify column and move them to Done when every acceptance criterion is confirmed, handing anything it cannot confirm back to a human. When off, every card reaching Verify is assigned to a human for verification.",
+          "scope": "resource"
+        },
         "mwnn-kanban.agentCliPaths": {
           "type": "object",
           "default": {},

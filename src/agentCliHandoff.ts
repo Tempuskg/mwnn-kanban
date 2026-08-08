@@ -3,13 +3,14 @@ import { constants as fsConstants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { cardNeedsDefinition } from './cardDefinition';
+import { parseVerificationVerdict } from './cardVerification';
 import type { BoardState, Card } from './types';
 
 export const AGENT_CLI_PROVIDER_IDS = ['copilot', 'codex', 'claude-code', 'cursor'] as const;
 
 export type AgentCliProviderId = (typeof AGENT_CLI_PROVIDER_IDS)[number];
 export type AgentCliPathOverrides = Partial<Record<AgentCliProviderId, string>>;
-export type AgentCliHandoffKind = 'implementation' | 'definition' | 'triage';
+export type AgentCliHandoffKind = 'implementation' | 'definition' | 'triage' | 'verification';
 
 export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
   copilot: 'GitHub Copilot CLI',
@@ -702,6 +703,14 @@ function validateCompletionEvidence(
       : {
           valid: false,
           reason: 'the card file still has no valid assignee decision. The card was left unassigned; fix the CLI and rerun the loop.',
+        };
+  }
+  if (kind === 'verification') {
+    return parseVerificationVerdict(card.activity ?? '', activityBaseline)
+      ? { valid: true }
+      : {
+          valid: false,
+          reason: 'no valid `VERIFY: PASS`, `VERIFY: FAIL: <reason>`, or `VERIFY: HUMAN: <reason>` line was appended to the card Activity. The verification result was not accepted; fix the agent instructions or CLI and rerun the verification handoff.',
         };
   }
 

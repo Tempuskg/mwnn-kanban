@@ -25,6 +25,7 @@ import {
 import {
   buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
+  buildCardVerificationPrompt,
   buildPlanImportPrompt,
   findAiCardSelection,
   formatDefinitionHandoffEntry,
@@ -127,6 +128,12 @@ function readAiLoopReviewFreshDefinitions(): boolean {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
     .get<boolean>('aiLoopReviewFreshDefinitions', false);
+}
+
+function readAiLoopVerifyCards(): boolean {
+  return vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<boolean>('aiLoopVerifyCards', false);
 }
 
 function readAgentCliPaths(): AgentCliPathOverrides {
@@ -450,6 +457,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
             return handedOff;
           }),
+        verifyCard: async (card) =>
+          runCardHandoff(card.id, async () => {
+            const handedOff = await handOffPromptToChat(
+              chatTarget,
+              buildCardVerificationPrompt(card, cardFilePath(card)),
+              `"${card.title}"`,
+            );
+            if (handedOff) {
+              await store.appendActivity(card.id, formatVerificationHandoffEntry(providerLabel));
+              BoardPanel.postStateIfOpen();
+            }
+            return handedOff;
+          }),
       };
     } else {
       const cliTarget = selectedTarget.target;
@@ -504,6 +524,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         decideDoability: decideCardDoability,
         requestTriage: (card) =>
           runCliHandoff('triage', card, buildTriagePrompt(card, cardFilePath(card))),
+        verifyCard: (card) =>
+          runCliHandoff('verification', card, buildCardVerificationPrompt(card, cardFilePath(card))),
       };
     }
 
@@ -523,6 +545,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             {
               onEvent: (message) => progress.report({ message }),
               reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(),
+              verifyWithAi: readAiLoopVerifyCards(),
             },
           );
         },
@@ -1056,7 +1079,10 @@ function summarizeLoopRun(summary: LoopSummary): string {
     parts.push(`placed ${summary.movedToReady.length} freshly defined in Ready`);
   }
   if (summary.parked.length > 0) {
-    parts.push(`parked ${summary.parked.length} in Verify for human sign-off`);
+    parts.push(`handed ${summary.parked.length} back for human verification`);
+  }
+  if (summary.verified.length > 0) {
+    parts.push(`verified ${summary.verified.length} into Done`);
   }
   if (summary.triagedToAi.length > 0 || summary.triagedToHuman.length > 0) {
     parts.push(`triaged ${summary.triagedToAi.length} to AI and ${summary.triagedToHuman.length} to Human`);
@@ -1069,6 +1095,16 @@ function summarizeLoopRun(summary: LoopSummary): string {
   }
   const activity = parts.length > 0 ? parts.join(', ') : 'no eligible cards found';
   return summary.cancelled ? `MWNN AI loop stopped: ${activity}.` : `MWNN AI loop finished: ${activity}.`;
+}
+
+function formatVerificationHandoffEntry(
+  providerLabel: string,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - Verification requested from ${providerLabel}`,
+    `Asked ${providerLabel} to verify every acceptance criterion and record the verdict.`,
+  ].join('\n');
 }
 
 async function pickAiLoopTarget(workspaceCwd: string): Promise<AiLoopTarget | undefined> {

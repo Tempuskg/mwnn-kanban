@@ -4,6 +4,7 @@ import {
   buildCardDefinitionPrompt,
   buildCardHandoffPrompt,
   buildCardPrompt,
+  buildCardVerificationPrompt,
   buildPlanImportPrompt,
   findAiCardSelection,
   formatActivityEntry,
@@ -118,6 +119,29 @@ suite('ai card helpers', () => {
     assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
     assert.match(prompt, /No description provided\./);
     assert.match(prompt, /No acceptance criteria provided\./);
+  });
+
+  test('buildCardVerificationPrompt requires evidence without implementing and one terminal marker', () => {
+    let board = defaultBoard(['Verify']);
+    const verifyId = board.columns[0]!.id;
+
+    board = addCard(board, verifyId, 'Verify extension icon');
+    const cardId = board.columns[0]!.cards[0]!.id;
+    board = setDescription(board, cardId, 'Confirm the icon is ready to ship.');
+    board = setAcceptanceCriteria(board, cardId, '- [x] icon.png exists');
+
+    const card = board.columns[0]!.cards[0]!;
+    const prompt = buildCardVerificationPrompt(card, `.mwnn/cards/${cardId}.md`);
+
+    assert.match(prompt, new RegExp(`\\.mwnn/cards/${cardId}\\.md`));
+    assert.match(prompt, /read the relevant files and run the build and tests/i);
+    assert.match(prompt, /Do not implement, change, or fix the work/i);
+    assert.match(prompt, /uncheck any acceptance criterion that is not actually met/i);
+    assert.match(prompt, /exactly one terminal marker on its own line/i);
+    assert.match(prompt, /VERIFY: PASS/);
+    assert.match(prompt, /VERIFY: FAIL: <reason>/);
+    assert.match(prompt, /VERIFY: HUMAN: <reason>/);
+    assert.match(prompt, /visual or UX checks, external services, credentials, and ambiguous or subjective criteria/i);
   });
 
   test('buildPlanImportPrompt references the skills, target column, and status convention (file source)', () => {

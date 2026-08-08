@@ -71,6 +71,32 @@ export function buildCardHandoffPrompt(card: BoardCard, cardFilePath: string): s
   ].join('\n');
 }
 
+export function buildCardVerificationPrompt(card: BoardCard, cardFilePath: string): string {
+  return [
+    'You are an AI coding agent verifying a finished Methodology With No Name (MWNN) Kanban card.',
+    'Verify every acceptance criterion against the actual current workspace state: read the relevant files and run the build and tests needed to confirm the work.',
+    'Do not implement, change, or fix the work. Do not edit source or test files; only update the card file as instructed below.',
+    '',
+    `This card is stored as a markdown file at: ${cardFilePath}`,
+    'Keep the card\'s "## Acceptance criteria" checklist honest: uncheck any acceptance criterion that is not actually met by changing its `- [x]` to `- [ ]`. Leave criteria checked only when the workspace evidence verifies them.',
+    'Append a concise summary of the evidence and findings under the card\'s "## Activity" section.',
+    'End the Activity entry with exactly one terminal marker on its own line, chosen from:',
+    '  VERIFY: PASS — every acceptance criterion is objectively verified.',
+    '  VERIFY: FAIL: <reason> — one or more criteria are objectively not met.',
+    '  VERIFY: HUMAN: <reason> — one or more criteria cannot be confirmed without a human.',
+    'Use `VERIFY: HUMAN` for anything you cannot confirm yourself, including visual or UX checks, external services, credentials, and ambiguous or subjective criteria. Do not guess or substitute an automated result for human judgment.',
+    'Do not emit a terminal marker anywhere else or emit more than one terminal marker.',
+    '',
+    `Title: ${card.title}`,
+    '',
+    'Description:',
+    card.description?.trim() || 'No description provided.',
+    '',
+    'Acceptance criteria:',
+    card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
+  ].join('\n');
+}
+
 export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string): string {
   return [
     'You are an AI assistant defining a Methodology With No Name (MWNN) Kanban card so it is ready to start.',

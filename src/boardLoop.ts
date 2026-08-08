@@ -2,7 +2,8 @@
  * AI board loop: orchestrates AI-assigned cards across the whole board instead
  * of one hand-off at a time. Each pass over the board the loop
  *   - parks AI cards that reached the `verify` column and reassigns them to a
- *     human, so a person owns sign-off (the loop never moves cards into Done),
+ *     human by default; with `verifyWithAi`, it instead asks an agent to verify
+ *     the finished work and moves only an explicit pass into Done,
  *   - triages unassigned cards by asking the AI whether the card is doable by
  *     an agent (filling in the definition first when the card is title-only);
  *     a card the loop defines this way is placed at the end of the Ready
@@ -21,6 +22,7 @@
  */
 
 import { cardNeedsDefinition } from './cardDefinition';
+import { parseVerificationVerdict } from './cardVerification';
 import { isCardBlocked, readyState } from './utils';
 import type { Assignee, BoardState, Card, Column } from './types';
 
@@ -76,6 +78,8 @@ export interface LoopGateways {
    * The loop then waits for the assignee to appear. False = hand-off failed.
    */
   requestTriage(card: Card): Promise<LoopHandoffResult>;
+  /** Hand a finished card to the AI verification flow. False = hand-off failed. */
+  verifyCard?(card: Card): Promise<LoopHandoffResult>;
 }
 
 export interface LoopControl {
@@ -97,6 +101,12 @@ export interface LoopOptions {
    * and implements the card it just defined.
    */
   readonly reviewFreshDefinitions?: boolean;
+  /**
+   * When true, AI-assigned cards in Verify are handed to an agent and move to
+   * Done only after an explicit passing verdict. Off by default: they are
+   * reassigned to Human exactly as before.
+   */
+  readonly verifyWithAi?: boolean;
 }
 
 export interface LoopSummary {
@@ -108,6 +118,10 @@ export interface LoopSummary {
   triagedToAi: string[];
   triagedToHuman: string[];
   definitionsRequested: string[];
+  /** Cards whose AI verification passed and which moved into Done. */
+  verified: string[];
+  /** Cards handed to an agent for independent verification. */
+  verificationsRequested: string[];
   skipped: string[];
   cancelled: boolean;
 }
@@ -133,6 +147,14 @@ interface TriageRequestRecord extends WaitRecord {
   activityBaseline: number;
 }
 
+/** An AI verification hand-off the loop made and is waiting on. */
+interface VerificationRecord extends WaitRecord {
+  /** Verify column the card was in when requested; a move resets the record. */
+  columnId: string;
+  /** Length of Activity at hand-off, so stale verdicts never resolve this run. */
+  activityBaseline: number;
+}
+
 export interface LoopSession {
   /** Cards the loop gave up on this run (failed hand-off, BLOCKED report, undecidable triage). */
   readonly skipped: Set<string>;
@@ -140,6 +162,7 @@ export interface LoopSession {
   readonly definitionRequests: Map<string, WaitRecord>;
   /** Fallback triage hand-offs waiting for the agent to record an assignee. */
   readonly triageRequests: Map<string, TriageRequestRecord>;
+  readonly verifications: Map<string, VerificationRecord>;
   /**
    * Cards whose definition the loop filled in during this run. A Backlog card
    * in this set is placed at the end of Ready; with `reviewFreshDefinitions`
@@ -155,12 +178,16 @@ export function createLoopSession(): LoopSession {
     dispatches: new Map(),
     definitionRequests: new Map(),
     triageRequests: new Map(),
+    verifications: new Map(),
     definedThisRun: new Set(),
   };
 }
 
 export type LoopAction =
   | { readonly kind: 'park'; readonly card: Card }
+  | { readonly kind: 'park-unverified'; readonly card: Card; readonly reason: string }
+  | { readonly kind: 'verify'; readonly card: Card; readonly column: Column }
+  | { readonly kind: 'complete'; readonly card: Card; readonly toColumn: Column }
   | { readonly kind: 'advance'; readonly card: Card; readonly toColumn: Column }
   | { readonly kind: 'abandon'; readonly card: Card }
   | { readonly kind: 'triage'; readonly card: Card }
@@ -264,10 +291,10 @@ function canAdvanceIntoColumn(state: BoardState, session: LoopSession, target: C
 
 /**
  * Drop session records the board has since resolved or invalidated: a dispatch
- * whose card was moved out of the recorded column (or deleted), a definition
- * request whose card vanished, got assigned, or is now defined (the wait's
- * success case, recorded in `definedThisRun`), and a triage request whose card
- * vanished.
+ * or verification whose card was moved out of the recorded column (or deleted),
+ * a definition request whose card vanished, got assigned, or is now defined
+ * (the wait's success case, recorded in `definedThisRun`), and a triage request
+ * whose card vanished.
  */
 export function pruneLoopSession(state: BoardState, session: LoopSession): void {
   const columnByCardId = new Map<string, Column>();
@@ -282,6 +309,11 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
   for (const [cardId, record] of [...session.dispatches]) {
     if (columnByCardId.get(cardId)?.id !== record.columnId) {
       session.dispatches.delete(cardId);
+    }
+  }
+  for (const [cardId, record] of [...session.verifications]) {
+    if (columnByCardId.get(cardId)?.id !== record.columnId) {
+      session.verifications.delete(cardId);
     }
   }
   for (const cardId of [...session.definitionRequests.keys()]) {
@@ -305,13 +337,15 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
 export interface PlanLoopOptions {
   /** See LoopOptions.reviewFreshDefinitions. */
   readonly reviewFreshDefinitions?: boolean;
+  /** See LoopOptions.verifyWithAi. */
+  readonly verifyWithAi?: boolean;
 }
 
 /**
  * Pick the next thing the loop should do, or undefined when nothing is
  * actionable right now. Actions that would open another chat hand-off
- * (dispatch, request-definition) are withheld while one is already pending, so
- * the loop drives at most one agent conversation at a time.
+ * (verify, triage, request-definition, dispatch) are withheld while one is
+ * already pending, so the loop drives at most one agent conversation at a time.
  */
 export function planLoopAction(
   state: BoardState,
@@ -319,7 +353,9 @@ export function planLoopAction(
   options: PlanLoopOptions = {},
 ): LoopAction | undefined {
   const reviewFreshDefinitions = options.reviewFreshDefinitions === true;
+  const verifyWithAi = options.verifyWithAi === true;
   const handoffPending = hasPendingHandoff(state, session);
+  let firstVerification: LoopAction | undefined;
   let firstTriage: LoopAction | undefined;
   let firstDefinition: LoopAction | undefined;
   let firstDispatch: LoopAction | undefined;
@@ -377,8 +413,41 @@ export function planLoopAction(
       }
 
       if (isVerifyColumn(column)) {
-        // Highest priority: hand finished work back to a person immediately.
-        return { kind: 'park', card };
+        if (!verifyWithAi) {
+          // The opt-in is off: preserve the original human sign-off behaviour.
+          return { kind: 'park', card };
+        }
+
+        const verification = session.verifications.get(card.id);
+        if (verification) {
+          const verdict = parseVerificationVerdict(card.activity ?? '', verification.activityBaseline);
+          if (!verdict) {
+            continue; // the verifier has not recorded a usable verdict yet
+          }
+          if (verdict.kind === 'fail' || verdict.kind === 'human') {
+            return { kind: 'park-unverified', card, reason: verdict.reason };
+          }
+
+          const doneColumn = state.columns.find((candidate) => candidate.role === 'done');
+          if (!doneColumn) {
+            return {
+              kind: 'park-unverified',
+              card,
+              reason: 'AI verification passed, but this board has no Done column.',
+            };
+          }
+          if (!hasWipCapacity(doneColumn)) {
+            return {
+              kind: 'park-unverified',
+              card,
+              reason: `AI verification passed, but "${doneColumn.title}" is at its WIP limit.`,
+            };
+          }
+          return { kind: 'complete', card, toColumn: doneColumn };
+        }
+
+        firstVerification ??= { kind: 'verify', card, column };
+        continue;
       }
 
       if (isCardBlocked(state, card.id)) {
@@ -430,6 +499,10 @@ export function planLoopAction(
     }
   }
 
+  // Drain finished work before starting or preparing more implementation.
+  if (!handoffPending && firstVerification) {
+    return firstVerification;
+  }
   if (firstPreWorkAdvance) {
     return firstPreWorkAdvance;
   }
@@ -450,7 +523,7 @@ export function planLoopAction(
 interface PendingWait {
   readonly cardId: string;
   readonly startedAt: number;
-  readonly kind: 'dispatch' | 'definition' | 'triage';
+  readonly kind: 'dispatch' | 'definition' | 'triage' | 'verification';
 }
 
 function listPendingWaits(state: BoardState, session: LoopSession): PendingWait[] {
@@ -480,6 +553,16 @@ function listPendingWaits(state: BoardState, session: LoopSession): PendingWait[
       waits.push({ cardId, startedAt: record.requestedAt, kind: 'triage' });
     }
   }
+  for (const [cardId, record] of session.verifications) {
+    const card = cards.get(cardId);
+    if (
+      card
+      && !session.skipped.has(cardId)
+      && parseVerificationVerdict(card.activity ?? '', record.activityBaseline) === undefined
+    ) {
+      waits.push({ cardId, startedAt: record.requestedAt, kind: 'verification' });
+    }
+  }
   return waits;
 }
 
@@ -501,10 +584,14 @@ export async function runBoardLoop(
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const now = options.now ?? Date.now;
   const report = options.onEvent ?? ((): void => undefined);
-  const planOptions: PlanLoopOptions =
-    options.reviewFreshDefinitions === undefined
+  const planOptions: PlanLoopOptions = {
+    ...(options.reviewFreshDefinitions === undefined
       ? {}
-      : { reviewFreshDefinitions: options.reviewFreshDefinitions };
+      : { reviewFreshDefinitions: options.reviewFreshDefinitions }),
+    ...(options.verifyWithAi === undefined
+      ? {}
+      : { verifyWithAi: options.verifyWithAi }),
+  };
 
   const session = createLoopSession();
   const summary: LoopSummary = {
@@ -515,6 +602,8 @@ export async function runBoardLoop(
     triagedToAi: [],
     triagedToHuman: [],
     definitionsRequested: [],
+    verified: [],
+    verificationsRequested: [],
     skipped: [],
     cancelled: false,
   };
@@ -524,6 +613,7 @@ export async function runBoardLoop(
     session.dispatches.delete(card.id);
     session.definitionRequests.delete(card.id);
     session.triageRequests.delete(card.id);
+    session.verifications.delete(card.id);
     summary.skipped.push(card.title);
   };
 
@@ -567,6 +657,40 @@ export async function runBoardLoop(
         await store.appendActivity(card.id, formatLoopParkEntry());
         session.dispatches.delete(card.id);
         summary.parked.push(card.title);
+        return;
+      }
+      case 'park-unverified': {
+        await handVerificationToHuman(card, action.reason);
+        return;
+      }
+      case 'verify': {
+        report(`Verifying "${card.title}" with AI`);
+        if (!gateways.verifyCard) {
+          await handVerificationToHuman(card, 'No AI verification gateway is available.');
+          return;
+        }
+        const result = await gateways.verifyCard(card);
+        if (control.isCancelled()) {
+          return;
+        }
+        if (handoffStarted(result)) {
+          session.verifications.set(card.id, {
+            columnId: action.column.id,
+            activityBaseline: handoffActivityBaseline(result, (card.activity ?? '').length),
+            requestedAt: now(),
+          });
+          summary.verificationsRequested.push(card.title);
+        } else {
+          await handVerificationToHuman(card, 'The AI verification hand-off could not be started.');
+        }
+        return;
+      }
+      case 'complete': {
+        report(`Completing verified card "${card.title}" in ${action.toColumn.title}`);
+        await store.moveCard(card.id, action.toColumn.id, action.toColumn.cards.length);
+        await store.appendActivity(card.id, formatLoopVerificationPassedEntry(action.toColumn.title));
+        session.verifications.delete(card.id);
+        summary.verified.push(card.title);
         return;
       }
       case 'advance': {
@@ -691,6 +815,14 @@ export async function runBoardLoop(
       }
     }
   }
+
+  async function handVerificationToHuman(card: Card, reason: string): Promise<void> {
+    report(`Handing "${card.title}" to a human for verification`);
+    await store.setAssignee(card.id, { kind: 'human' });
+    await store.appendActivity(card.id, formatLoopVerificationHandbackEntry(reason));
+    session.verifications.delete(card.id);
+    summary.parked.push(card.title);
+  }
 }
 
 function handoffStarted(result: LoopHandoffResult): boolean {
@@ -716,7 +848,7 @@ export function buildDoabilityPrompt(card: Card): string {
   return [
     'You are triaging a Methodology With No Name (MWNN) Kanban card.',
     'Decide whether an AI coding agent working inside this repository could IMPLEMENT the card autonomously (writing code, files, tests, running commands).',
-    'Judge the implementation only. Every card is verified by a human in the Verify column after implementation, so a need for manual verification, testing sign-off, or review is NOT a reason to route the card to a person.',
+    'Judge the implementation only. Every card is verified in the Verify column before Done, so a need for manual verification, testing sign-off, or review is NOT a reason to route the card to a person.',
     `Answer ${NEEDS_HUMAN_TOKEN} only when the implementation itself needs a person: product or design decisions the card leaves open, or manual/external steps an agent cannot perform (accounts, credentials, hardware, third-party approvals, physical actions).`,
     `When genuinely unsure, prefer ${DOABLE_TOKEN}.`,
     '',
@@ -741,7 +873,7 @@ export function buildTriagePrompt(card: Card, cardFilePath: string): string {
   return [
     'You are triaging a Methodology With No Name (MWNN) Kanban card.',
     'Decide whether an AI coding agent working inside this repository could IMPLEMENT the card autonomously (writing code, files, tests, running commands).',
-    'Judge the implementation only. Every card is verified by a human in the Verify column after implementation, so a need for manual verification, testing sign-off, or review is NOT a reason to assign the card to a human — the board loop hands every finished card to a human at Verify anyway.',
+    'Judge the implementation only. Every card is verified in the Verify column before Done, so a need for manual verification, testing sign-off, or review is NOT a reason to assign the card to a human.',
     'Assign to human only when the implementation itself needs a person: product or design decisions the card leaves open, or manual/external steps an agent cannot perform (accounts, credentials, hardware, third-party approvals, physical actions). When genuinely unsure, prefer AI.',
     '',
     `This card is stored as a markdown file at: ${cardFilePath}`,
@@ -788,6 +920,27 @@ export function formatLoopParkEntry(timestamp: Date = new Date()): string {
   ].join('\n');
 }
 
+export function formatLoopVerificationPassedEntry(
+  columnTitle: string,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - AI loop verified this card`,
+    `AI verification passed; moved to "${columnTitle}".`,
+  ].join('\n');
+}
+
+export function formatLoopVerificationHandbackEntry(
+  reason: string,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - AI loop handed verification to Human`,
+    'The card remains in Verify and was reassigned to Human.',
+    `Why: ${reason}`,
+  ].join('\n');
+}
+
 export function formatLoopAdvanceEntry(columnTitle: string, timestamp: Date = new Date()): string {
   return [
     `### ${timestamp.toISOString()} - AI loop advanced this card`,
@@ -827,6 +980,7 @@ const WAIT_DESCRIPTIONS: Record<PendingWait['kind'], string> = {
   dispatch: 'the agent working on',
   definition: 'the definition of',
   triage: 'the triage decision on',
+  verification: 'the AI verification of',
 };
 
 /** Compact elapsed-time label for the wait progress line, e.g. "45s", "17m", "2h 5m". */

@@ -1,11 +1,11 @@
 ---
 id: card-mseqezrp-1
 title: Add a verification verdict parser for AI-verified cards
-column: col-mqwk2njn-1
-position: 1000
-assignee: { kind: ai }
+column: col-mqwk2njn-4
+position: -12000
+assignee: { kind: human }
 createdAt: 1785852411541
-updatedAt: 1785852411541
+updatedAt: 1785863627254
 ---
 
 ## Description
@@ -21,14 +21,33 @@ Only text appended after the recorded activity baseline is scanned, the same dis
 Deliberately no "all acceptance criteria checked" fallback, unlike `readDispatchOutcome` in `src/boardLoop.ts`: the implementation handoff ticks every checkbox before a card reaches Verify, so that fallback would make every card pass without the agent verifying anything.
 
 ## Acceptance criteria
-- [ ] `src/cardVerification.ts` exports a `VerificationVerdict` discriminated union (`pass`, `fail`, `human`, with a reason on `fail` and `human`) and `parseVerificationVerdict(activity, activityBaseline)`
-- [ ] Only activity appended after `activityBaseline` is scanned, and the last `VERIFY:` line wins
-- [ ] `VERIFY: FAIL:` or `VERIFY: HUMAN:` without a non-empty reason is rejected rather than accepted
-- [ ] A fully checked acceptance-criteria list on its own never produces a pass verdict
-- [ ] An out-of-range baseline returns no verdict instead of throwing
-- [ ] The module imports neither `vscode` nor `boardLoop`/`agentCliHandoff`
-- [ ] `test/unit/cardVerification.test.ts` covers the above and `npm test` passes
+- [x] `src/cardVerification.ts` exports a `VerificationVerdict` discriminated union (`pass`, `fail`, `human`, with a reason on `fail` and `human`) and `parseVerificationVerdict(activity, activityBaseline)`
+- [x] Only activity appended after `activityBaseline` is scanned, and the last `VERIFY:` line wins
+- [x] `VERIFY: FAIL:` or `VERIFY: HUMAN:` without a non-empty reason is rejected rather than accepted
+- [x] A fully checked acceptance-criteria list on its own never produces a pass verdict
+- [x] An out-of-range baseline returns no verdict instead of throwing
+- [x] The module imports neither `vscode` nor `boardLoop`/`agentCliHandoff`
+- [x] `test/unit/cardVerification.test.ts` covers the above and `npm test` passes
 
 ## Activity
 ### 2026-08-04T14:06:51.541Z - Imported from plan
 Import key: `ai-verify-loop-plan#verification-verdict-parser` (source: AI Verify option plan, 2026-08-04 chat).
+
+### 2026-08-04T14:34:18.597Z - AI loop advanced this card
+Moved to "Ready".
+
+### 2026-08-04T14:34:19.392Z - AI loop advanced this card
+Moved to "Implement".
+
+### 2026-08-04T14:34:19.587Z - OpenAI Codex CLI implementation handoff started
+Started OpenAI Codex CLI in the active workspace and waiting for card-file completion evidence.
+
+### 2026-08-04T14:38:03.319Z - Codex completed the verification verdict parser
+Added the cycle-free shared verdict union and appended-Activity parser, with focused coverage for marker precedence, reason validation, stale baselines, and the absence of checkbox-based fallback behavior. `npm run compile-tests`, `npm run compile`, the focused parser tests, `npm test` (249 passing), and `npm run lint` all passed.
+STATUS: DONE
+
+### 2026-08-04T14:38:59.905Z - AI loop advanced this card
+Moved to "Verify".
+
+### 2026-08-04T14:39:00.119Z - AI loop parked in Verify
+Implementation finished; reassigned to Human for verification and sign-off.

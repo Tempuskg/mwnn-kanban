@@ -6,6 +6,7 @@ import {
   createLoopSession,
   parseDoabilityDecision,
   planLoopAction,
+  pruneLoopSession,
   runBoardLoop,
   type LoopControl,
   type LoopGateways,
@@ -133,6 +134,18 @@ function instantGateways(
     },
   };
   return { gateways, log };
+}
+
+function verificationGateways(
+  verifyCard?: NonNullable<LoopGateways['verifyCard']>,
+): LoopGateways {
+  const gateways: LoopGateways = {
+    dispatchCard: async () => false,
+    requestDefinition: async () => false,
+    decideDoability: async () => ({ decision: 'ai' }),
+    requestTriage: async () => false,
+  };
+  return verifyCard ? { ...gateways, verifyCard } : gateways;
 }
 
 function boardWithCard(
@@ -266,6 +279,102 @@ suite('board loop planning', () => {
     const action = planLoopAction(state, createLoopSession());
     assert.equal(action?.kind, 'park');
     assert.equal(action?.card.id, cardId);
+  });
+
+  test('prioritizes an opt-in verification hand-off over triage, definition, and dispatch', () => {
+    let state = defaultBoard([...FULL_COLUMNS]);
+
+    state = addCard(state, state.columns[0]!.id, 'Needs triage');
+    const triageId = state.columns[0]!.cards[0]!.id;
+    state = setDescription(state, triageId, 'Defined but unassigned');
+    state = setAcceptanceCriteria(state, triageId, '- [ ] Decide ownership');
+
+    state = addCard(state, state.columns[0]!.id, 'Needs definition');
+
+    state = addCard(state, state.columns[2]!.id, 'Needs implementation');
+    const implementationId = state.columns[2]!.cards[0]!.id;
+    state = setDescription(state, implementationId, 'Implementation work');
+    state = setAcceptanceCriteria(state, implementationId, '- [ ] Implemented');
+    state = setAssignee(state, implementationId, { kind: 'ai' });
+
+    state = addCard(state, state.columns[3]!.id, 'Needs verification');
+    const verificationId = state.columns[3]!.cards[0]!.id;
+    state = setDescription(state, verificationId, 'Finished implementation');
+    state = setAcceptanceCriteria(state, verificationId, '- [x] Implemented');
+    state = setAssignee(state, verificationId, { kind: 'ai' });
+
+    const action = planLoopAction(state, createLoopSession(), { verifyWithAi: true });
+
+    assert.equal(action?.kind, 'verify');
+    assert.equal(action?.card.id, verificationId);
+  });
+
+  test('does not plan verification while another hand-off is pending or repeat one in flight', () => {
+    let { state, cardId: implementationId } = boardWithCard(
+      [...FULL_COLUMNS],
+      2,
+      'Agent still implementing',
+      { kind: 'ai' },
+    );
+    state = addCard(state, state.columns[3]!.id, 'Awaiting AI verification');
+    const verificationId = state.columns[3]!.cards[0]!.id;
+    state = setDescription(state, verificationId, 'Finished implementation');
+    state = setAcceptanceCriteria(state, verificationId, '- [x] Complete');
+    state = setAssignee(state, verificationId, { kind: 'ai' });
+
+    const busySession = createLoopSession();
+    busySession.dispatches.set(implementationId, {
+      columnId: state.columns[2]!.id,
+      activityBaseline: 0,
+      dispatchedAt: 0,
+    });
+    assert.equal(
+      planLoopAction(state, busySession, { verifyWithAi: true }),
+      undefined,
+      'an implementation hand-off blocks a new verification hand-off',
+    );
+
+    const verifyingSession = createLoopSession();
+    verifyingSession.verifications.set(verificationId, {
+      columnId: state.columns[3]!.id,
+      activityBaseline: 0,
+      requestedAt: 0,
+    });
+    assert.equal(
+      planLoopAction(state, verifyingSession, { verifyWithAi: true }),
+      undefined,
+      'a pending verification is not requested a second time',
+    );
+  });
+
+  test('prunes verification records when their card moves or is deleted', () => {
+    let { state, cardId: movedId } = boardWithCard([...FULL_COLUMNS], 3, 'Moved verification', { kind: 'ai' });
+    state = addCard(state, state.columns[3]!.id, 'Deleted verification');
+    const deletedId = state.columns[3]!.cards[1]!.id;
+    const verifyColumnId = state.columns[3]!.id;
+    const session = createLoopSession();
+    session.verifications.set(movedId, {
+      columnId: verifyColumnId,
+      activityBaseline: 0,
+      requestedAt: 0,
+    });
+    session.verifications.set(deletedId, {
+      columnId: verifyColumnId,
+      activityBaseline: 0,
+      requestedAt: 0,
+    });
+
+    state = moveCard(state, movedId, state.columns[4]!.id, 0);
+    state = {
+      ...state,
+      columns: state.columns.map((column) => ({
+        ...column,
+        cards: column.cards.filter((card) => card.id !== deletedId),
+      })),
+    };
+    pruneLoopSession(state, session);
+
+    assert.equal(session.verifications.size, 0);
   });
 
   test('never plans an advance into the done column', () => {
@@ -636,6 +745,144 @@ suite('board loop run', () => {
     assert.deepEqual(summary.parked.length, 1);
   });
 
+  test('with AI verification enabled, VERIFY: PASS moves the card to the end of Done', async () => {
+    let { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Verified work', { kind: 'ai' });
+    const doneColumnId = state.columns[4]!.id;
+    state = addCard(state, doneColumnId, 'Already done');
+    const existingDoneId = state.columns[4]!.cards[0]!.id;
+    state = setAssignee(state, existingDoneId, { kind: 'human' });
+    const board = fakeBoard(state);
+    let verificationCalls = 0;
+    const gateways = verificationGateways(async (card) => {
+      verificationCalls += 1;
+      await board.store.appendActivity(card.id, 'Checked the workspace and tests.\nVERIFY: PASS');
+      return true;
+    });
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), {
+      pollIntervalMs: 0,
+      verifyWithAi: true,
+    });
+
+    assert.equal(verificationCalls, 1);
+    assert.equal(board.columnTitleOf(cardId), 'Done');
+    assert.deepEqual(
+      board.getState().columns[4]!.cards.map((card) => card.id),
+      [existingDoneId, cardId],
+    );
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
+    assert.deepEqual(summary.verified, ['Verified work']);
+    assert.deepEqual(summary.verificationsRequested, ['Verified work']);
+    assert.equal(summary.parked.length, 0);
+    assert.match(board.findCard(cardId).activity ?? '', /AI loop verified this card/);
+    assert.match(board.findCard(cardId).activity ?? '', /moved to "Done"/);
+  });
+
+  test('VERIFY: FAIL and VERIFY: HUMAN leave the card in Verify with the agent reason', async () => {
+    const cases = [
+      { marker: 'VERIFY: FAIL: The focused test still fails.', reason: 'The focused test still fails.' },
+      { marker: 'VERIFY: HUMAN: Visual sign-off is required.', reason: 'Visual sign-off is required.' },
+    ] as const;
+
+    for (const verificationCase of cases) {
+      const { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, verificationCase.marker, { kind: 'ai' });
+      const board = fakeBoard(state);
+      const gateways = verificationGateways(async (card) => {
+        await board.store.appendActivity(card.id, verificationCase.marker);
+        return true;
+      });
+
+      const summary = await runBoardLoop(board.store, gateways, neverCancelled(), {
+        pollIntervalMs: 0,
+        verifyWithAi: true,
+      });
+
+      assert.equal(board.columnTitleOf(cardId), 'Verify');
+      assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+      assert.equal(summary.verified.length, 0);
+      assert.equal(summary.parked.length, 1);
+      assert.ok((board.findCard(cardId).activity ?? '').includes(`Why: ${verificationCase.reason}`));
+    }
+  });
+
+  test('AI verification enabled without a gateway safely hands the card to Human', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'No verifier available', { kind: 'ai' });
+    const board = fakeBoard(state);
+
+    const summary = await runBoardLoop(board.store, verificationGateways(), neverCancelled(), {
+      pollIntervalMs: 0,
+      verifyWithAi: true,
+    });
+
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    assert.equal(summary.parked.length, 1);
+    assert.equal(summary.skipped.length, 0);
+    assert.match(board.findCard(cardId).activity ?? '', /No AI verification gateway is available/);
+  });
+
+  test('a verification hand-off that fails to start hands the card to Human instead of skipping it', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Verifier failed to launch', { kind: 'ai' });
+    const board = fakeBoard(state);
+    let attempts = 0;
+    const gateways = verificationGateways(async () => {
+      attempts += 1;
+      return false;
+    });
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), {
+      pollIntervalMs: 0,
+      verifyWithAi: true,
+    });
+
+    assert.equal(attempts, 1);
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    assert.equal(summary.parked.length, 1);
+    assert.equal(summary.skipped.length, 0);
+    assert.equal(summary.verificationsRequested.length, 0);
+    assert.match(board.findCard(cardId).activity ?? '', /hand-off could not be started/);
+  });
+
+  test('a passing verdict without available Done capacity hands the card to Human in Verify', async () => {
+    const noDone = boardWithCard(['Backlog', 'Verify'], 1, 'Board has no Done', { kind: 'ai' });
+    const noDoneBoard = fakeBoard(noDone.state);
+    const noDoneSummary = await runBoardLoop(
+      noDoneBoard.store,
+      verificationGateways(async (card) => {
+        await noDoneBoard.store.appendActivity(card.id, 'VERIFY: PASS');
+        return true;
+      }),
+      neverCancelled(),
+      { pollIntervalMs: 0, verifyWithAi: true },
+    );
+
+    assert.equal(noDoneBoard.columnTitleOf(noDone.cardId), 'Verify');
+    assert.deepEqual(noDoneBoard.findCard(noDone.cardId).assignee, { kind: 'human' });
+    assert.equal(noDoneSummary.parked.length, 1);
+    assert.match(noDoneBoard.findCard(noDone.cardId).activity ?? '', /no Done column/);
+
+    let fullDone = boardWithCard([...FULL_COLUMNS], 3, 'Done is full', { kind: 'ai' });
+    const doneColumnId = fullDone.state.columns[4]!.id;
+    fullDone.state = addCard(fullDone.state, doneColumnId, 'Occupies Done');
+    fullDone.state = setColumnConfig(fullDone.state, doneColumnId, { wipLimit: 1 });
+    const fullDoneBoard = fakeBoard(fullDone.state);
+    const fullDoneSummary = await runBoardLoop(
+      fullDoneBoard.store,
+      verificationGateways(async (card) => {
+        await fullDoneBoard.store.appendActivity(card.id, 'VERIFY: PASS');
+        return true;
+      }),
+      neverCancelled(),
+      { pollIntervalMs: 0, verifyWithAi: true },
+    );
+
+    assert.equal(fullDoneBoard.columnTitleOf(fullDone.cardId), 'Verify');
+    assert.deepEqual(fullDoneBoard.findCard(fullDone.cardId).assignee, { kind: 'human' });
+    assert.equal(fullDoneSummary.parked.length, 1);
+    assert.match(fullDoneBoard.findCard(fullDone.cardId).activity ?? '', /Done.*WIP limit/);
+  });
+
   test('skips a card whose agent reports BLOCKED', async () => {
     const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Tricky work', { kind: 'ai' });
     const board = fakeBoard(state);
@@ -799,6 +1046,50 @@ suite('board loop run', () => {
     );
   });
 
+  test('reports elapsed time for one pending verification and never starts it twice', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Slow verification', { kind: 'ai' });
+    const board = fakeBoard(state);
+    let verificationCalls = 0;
+    const gateways = verificationGateways(async () => {
+      verificationCalls += 1;
+      return true;
+    });
+
+    let clock = 0;
+    const control: LoopControl = {
+      isCancelled: () => false,
+      delay: async () => {
+        clock += 10 * 60_000;
+        if (clock >= 50 * 60_000 && board.findCard(cardId).assignee?.kind === 'ai') {
+          board.mutate((current) => appendActivity(
+            current,
+            cardId,
+            'VERIFY: HUMAN: A visual check needs a person.',
+          ));
+        }
+      },
+    };
+    const messages: string[] = [];
+
+    const summary = await runBoardLoop(board.store, gateways, control, {
+      pollIntervalMs: 0,
+      verifyWithAi: true,
+      now: () => clock,
+      onEvent: (message) => messages.push(message),
+    });
+
+    assert.equal(verificationCalls, 1, 'the card is not verified again while its hand-off is in flight');
+    assert.equal(summary.verificationsRequested.length, 1);
+    assert.equal(board.columnTitleOf(cardId), 'Verify');
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
+    const waitMessages = messages.filter((message) => message.includes('Slow verification') && message.includes('Waiting'));
+    assert.ok(waitMessages.length > 0, `expected verification wait progress, got: ${JSON.stringify(messages)}`);
+    assert.ok(
+      waitMessages.some((message) => /AI verification.*40m/.test(message)),
+      `expected a verification wait with elapsed time, got: ${JSON.stringify(waitMessages)}`,
+    );
+  });
+
   test('cancelling during a pending wait exits promptly without marking the card failed', async () => {
     const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Still working', { kind: 'ai' });
     const board = fakeBoard(state);
@@ -874,9 +1165,10 @@ suite('doability prompt and parsing', () => {
     assert.match(prompt, /Title: Refactor the parser/);
     assert.match(prompt, /Split parse and serialize\./);
     assert.match(prompt, /DOABLE_BY_AI or NEEDS_HUMAN/);
-    // Verification never routes a card to a human — a person always verifies
-    // in the Verify column, so triage must judge implementability only.
-    assert.match(prompt, /verified by a human in the Verify column/);
+    // Verification happens in the Verify column regardless of who performs it,
+    // so triage must judge implementability only.
+    assert.match(prompt, /verified in the Verify column before Done/);
+    assert.doesNotMatch(prompt, /verified by a human/);
     assert.match(prompt, /NOT a reason/);
     assert.match(prompt, /When genuinely unsure, prefer DOABLE_BY_AI/);
   });
@@ -893,7 +1185,8 @@ suite('doability prompt and parsing', () => {
       '.mwnn/cards/card-1.md',
     );
     assert.match(prompt, /IMPLEMENT the card autonomously/);
-    assert.match(prompt, /verified by a human in the Verify column/);
+    assert.match(prompt, /verified in the Verify column before Done/);
+    assert.doesNotMatch(prompt, /verified by a human/);
     assert.match(prompt, /NOT a reason to assign the card to a human/);
     assert.match(prompt, /When genuinely unsure, prefer AI/);
     assert.match(prompt, /assignee: \{ kind: ai \}/);

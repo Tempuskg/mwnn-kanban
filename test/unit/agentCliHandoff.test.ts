@@ -421,6 +421,71 @@ suite('agent CLI card handoff evidence', () => {
     assert.equal(parseTerminalCardStatus('before\nSTATUS: BLOCKED', 7).valid, false);
     assert.equal(parseTerminalCardStatus('before\nSTATUS: DONE', 7).valid, true);
   });
+
+  test('accepts verification only when a parsed verdict was appended by the run', async (context) => {
+    for (const verdict of [
+      'VERIFY: PASS',
+      'VERIFY: FAIL: a required behavior is broken',
+      'VERIFY: HUMAN: visual sign-off is required',
+    ]) {
+      await context.test(verdict, async () => {
+        const { state, cardId } = boardWithCard();
+        const board = fakeStore(state);
+        const result = await runAgentCliCardHandoff(
+          {
+            kind: 'verification',
+            target: target('codex'),
+            cardId,
+            prompt: 'verify the completed work',
+            cwd: 'E:\\workspace',
+            store: board.store,
+            signal: new AbortController().signal,
+          },
+          handoffOptions(async () => {
+            board.mutate((current) => appendActivity(current, cardId, verdict));
+            return successfulProcess();
+          }),
+        );
+
+        assert.equal(result.completed, true);
+        assert.equal(result.cancelled, false);
+        assert.match(board.card(cardId).activity ?? '', /verification handoff started/);
+      });
+    }
+  });
+
+  test('rejects absent, stale, and unparseable verification verdicts with the required format', async (context) => {
+    for (const appended of [undefined, 'VERIFY: PASS: maybe', 'VERIFY: FAIL', 'VERIFY: HUMAN:'] as const) {
+      await context.test(appended ?? 'no appended verdict', async () => {
+        const { state, cardId } = boardWithCard();
+        const board = fakeStore(appendActivity(state, cardId, 'VERIFY: PASS'));
+        const result = await runAgentCliCardHandoff(
+          {
+            kind: 'verification',
+            target: target('codex'),
+            cardId,
+            prompt: 'verify the completed work',
+            cwd: 'E:\\workspace',
+            store: board.store,
+            signal: new AbortController().signal,
+          },
+          handoffOptions(async () => {
+            if (appended !== undefined) {
+              board.mutate((current) => appendActivity(current, cardId, appended));
+            }
+            return successfulProcess();
+          }),
+        );
+
+        assert.equal(result.completed, false);
+        assert.equal(result.cancelled, false);
+        assert.match(result.reason ?? '', /VERIFY: PASS/);
+        assert.match(result.reason ?? '', /VERIFY: FAIL: <reason>/);
+        assert.match(result.reason ?? '', /VERIFY: HUMAN: <reason>/);
+        assert.match(board.card(cardId).activity ?? '', /verification handoff failed/);
+      });
+    }
+  });
 });
 
 suite('agent CLI process observation', () => {
