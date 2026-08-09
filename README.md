@@ -37,12 +37,17 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 | `mwnn-kanban.defaultReadyReverseWip` | `3` | Default minimum number of defined cards the Ready column should keep available. |
 | `mwnn-kanban.enableRunWithAI` | `true` | Enable AI-assisted board actions when supported language models are available. |
 | `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, or `cursor`; `prompt` asks whether to use a VS Code chat extension or local CLI. |
+| `mwnn-kanban.aiLoopVerifyCards` | `false` | Let the AI loop verify AI-assigned cards in the Verify column. When off, the loop assigns those cards to a human for verification. |
 | `mwnn-kanban.agentCliPaths` | `{}` | Optional executable-path overrides for each agent CLI provider, used by both `Run Card with AI` and the AI loop. Full paths containing spaces are supported. |
 | `mwnn-kanban.chatProviderCommands` | `{}` | Optional VS Code command overrides for interactive chat handoffs, including AI Loop chat mode. |
 
 ## AI Loop Providers
 
 With the default `prompt` setting, the loop first offers both execution channels: `VS Code chat extension` for interactive handoffs to GitHub Copilot, Codex (ChatGPT), or Claude Code, and `Local agent CLI` for synchronous non-interactive execution. Set `mwnn-kanban.aiLoopProvider` to `chat` to always use the chat-extension picker.
+
+`mwnn-kanban.aiLoopVerifyCards` is off (`false`) by default. When it is off, the loop stops automating an AI-assigned card in the Verify column and assigns it to a human for verification. When it is on, the selected provider verifies the card against its acceptance criteria and records one of the requested Activity markers: `VERIFY: PASS`, `VERIFY: FAIL: <reason>`, or `VERIFY: HUMAN: <reason>` when it cannot verify the work. A passing verification is the only case in which the loop moves a card to Done. A failure, a cannot-verify verdict, an unavailable verification handoff, or any other non-passing outcome leaves the card in Verify, assigns it to a human, and records the reason in the card's Activity.
+
+The execution channels differ when an agent produces no verdict. A local CLI run is synchronous, so if the process ends without a valid `VERIFY:` marker, the loop hands the card back to a human and records why. A chat handoff is asynchronous: if it never writes a valid `VERIFY:` marker, the loop keeps waiting and shows a live elapsed-time progress line until you stop the loop.
 
 In CLI mode, the loop invokes each provider with the existing MWNN definition, triage, or implementation prompt and the active workspace as its working directory. Executables are discovered on `PATH`, or can be configured as full paths in `mwnn-kanban.agentCliPaths`. The path is never split into a shell command, so paths containing spaces are safe.
 
