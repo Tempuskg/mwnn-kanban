@@ -5,6 +5,16 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      registry:
+        description: Registry to publish to
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - vs-marketplace
+          - open-vsx
 
 permissions:
   contents: read
@@ -65,6 +75,7 @@ jobs:
   publish-vs-marketplace:
     name: Publish to VS Marketplace
     needs: package
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.registry == 'both' || inputs.registry == 'vs-marketplace' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download VSIX artifact
@@ -86,6 +97,7 @@ jobs:
   publish-open-vsx:
     name: Publish to Open VSX
     needs: package
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.registry == 'both' || inputs.registry == 'open-vsx' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download VSIX artifact
