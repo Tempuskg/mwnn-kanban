@@ -175,7 +175,10 @@ function splitSections(body: string): Record<string, string> {
   };
 
   for (const line of lines) {
-    const headingMatch = line.match(/^##\s+(.+)$/);
+    // Only the three contract headings delimit card sections. Other level-two
+    // Markdown headings belong to the editable section content and must survive
+    // a parse/serialize cycle (especially inside Activity).
+    const headingMatch = line.match(/^##\s+(Description|Acceptance criteria|Activity)\s*$/);
     if (headingMatch) {
       flush();
       currentHeading = headingMatch[1];

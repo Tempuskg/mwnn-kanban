@@ -32,6 +32,7 @@ import {
   reorderColumns,
   setAssignee,
   setAcceptanceCriteria,
+  setActivity,
   setColumnConfig,
   setDependencies,
   setDescription,
@@ -79,6 +80,7 @@ export interface BoardStore {
   setDependencies(cardId: string, dependsOn: readonly string[]): Promise<BoardState>;
   setDescription(cardId: string, description: string): Promise<BoardState>;
   setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<BoardState>;
+  setActivity(cardId: string, activity: string): Promise<BoardState>;
   appendActivity(cardId: string, entry: string): Promise<BoardState>;
   setColumnConfig(columnId: string, config: SetColumnConfig): Promise<BoardState>;
   renameColumn(columnId: string, title: string): Promise<BoardState>;
@@ -156,6 +158,7 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     setDescription: (cardId, description) => commit((current) => setDescription(current, cardId, description)),
     setAcceptanceCriteria: (cardId, acceptanceCriteria) =>
       commit((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
+    setActivity: (cardId, activity) => commit((current) => setActivity(current, cardId, activity)),
     appendActivity: (cardId, entry) => commit((current) => appendActivity(current, cardId, entry)),
     setColumnConfig: (columnId, config) => commit((current) => setColumnConfig(current, columnId, config)),
     renameColumn: (columnId, title) => commit((current) => renameColumn(current, columnId, title)),

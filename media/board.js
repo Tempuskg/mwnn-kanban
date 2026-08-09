@@ -2,6 +2,34 @@
 // Webview UI for MWNN Kanban. Plain browser JS - no Node or vscode imports.
 // Mirrors the message protocol declared in src/types.ts.
 (function () {
+  function normalizeActivityContent(value) {
+    if (typeof value !== 'string') {
+      return '';
+    }
+    return value
+      .replace(/\r\n?/g, '\n')
+      .replace(/^\s*\n+|\n+\s*$/g, '')
+      .trimEnd();
+  }
+
+  function createActivityDraft(activity) {
+    const initialValue = typeof activity === 'string' ? activity : '';
+    return {
+      initialValue,
+      hasChanges: (value) => normalizeActivityContent(value) !== normalizeActivityContent(initialValue),
+      save: (value) => normalizeActivityContent(value),
+      discard: () => initialValue,
+    };
+  }
+
+  // Loading this script from the Node test runner returns only the pure Activity
+  // draft helper; the VS Code webview has no CommonJS `module` and continues
+  // through the normal browser bootstrap below.
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { createActivityDraft };
+    return;
+  }
+
   const vscode = acquireVsCodeApi();
 
   /**
@@ -798,9 +826,11 @@
     const columnSelector = renderColumnSelectorField(record.column.id);
     const descriptionInput = renderTextArea('Description', record.card.description ?? '', 6);
     const acceptanceInput = renderTextArea('Acceptance criteria', record.card.acceptanceCriteria ?? '', 5);
+    const activityDraft = createActivityDraft(record.card.activity);
+    const activityInput = renderTextArea('Activity', activityDraft.initialValue, 8);
+    activityInput.input.placeholder = 'No activity yet. Add notes or Markdown.';
     const assigneeControls = renderAssigneeControls(record.card.assignee);
     const dependencyControls = renderDependencyControls(record.card);
-    const activityView = renderActivity(record.card.activity);
 
     form.append(
       titleInput.wrapper,
@@ -809,7 +839,7 @@
       descriptionInput.wrapper,
       acceptanceInput.wrapper,
       dependencyControls.wrapper,
-      activityView,
+      activityInput.wrapper,
     );
 
     const footer = document.createElement('div');
@@ -861,6 +891,8 @@
       title: titleInput.input,
       description: descriptionInput.input,
       acceptanceCriteria: acceptanceInput.input,
+      activity: activityInput.input,
+      activityDraft,
       assigneeKind: assigneeControls.kind,
       assigneeName: assigneeControls.name,
       getDependencies: dependencyControls.getDependencies,
@@ -881,7 +913,10 @@
           saveCardDetails(record.card, fields);
           closeCardDetails();
         },
-        closeCardDetails,
+        () => {
+          fields.activity.value = fields.activityDraft.discard();
+          closeCardDetails();
+        },
         () => close.focus(),
       );
     };
@@ -943,6 +978,10 @@
 
     const nextAcceptanceCriteria = normalizeText(fields.acceptanceCriteria.value);
     if (nextAcceptanceCriteria !== normalizeText(card.acceptanceCriteria)) {
+      return true;
+    }
+
+    if (fields.activityDraft.hasChanges(fields.activity.value)) {
       return true;
     }
 
@@ -1251,22 +1290,6 @@
     return { wrapper, getDependencies: () => deps.slice() };
   }
 
-  function renderActivity(activity) {
-    const wrapper = document.createElement('section');
-    wrapper.className = 'card-activity';
-
-    const label = document.createElement('h3');
-    label.className = 'card-field-label';
-    label.textContent = 'Activity';
-
-    const body = document.createElement('pre');
-    body.className = 'card-activity-body';
-    body.textContent = activity ?? 'No activity yet.';
-
-    wrapper.append(label, body);
-    return wrapper;
-  }
-
   function renderColumnDetails(column) {
     const backdrop = document.createElement('div');
     backdrop.className = 'card-modal-backdrop';
@@ -1483,6 +1506,14 @@
         type: 'setAcceptanceCriteria',
         cardId: card.id,
         acceptanceCriteria: nextAcceptanceCriteria,
+      });
+    }
+
+    if (fields.activityDraft.hasChanges(fields.activity.value)) {
+      post({
+        type: 'setActivity',
+        cardId: card.id,
+        activity: fields.activityDraft.save(fields.activity.value),
       });
     }
 

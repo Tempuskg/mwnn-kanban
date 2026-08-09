@@ -558,6 +558,51 @@ suite('board store', () => {
     assert.equal(parseCard(fileSystem.snapshot().get(cardFile!) ?? '').card.activity, 'Agent: did the work');
   });
 
+  test('setActivity persists and reloads an edit without changing frontmatter or other body sections', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const cardDocument: CardDocument = {
+      columnId: 'col-ready',
+      position: 1750,
+      card: {
+        id: 'card-activity',
+        title: 'Preserve my fields',
+        createdAt: 1719360000000,
+        updatedAt: 1719363600000,
+        description: 'Description stays exactly as written.',
+        acceptanceCriteria: '- [ ] Criterion stays unchecked',
+        activity: '### Existing entry\n\nSTATUS: IN PROGRESS',
+        assignee: { kind: 'human', name: 'Alex' },
+      },
+    };
+    const cardPath = '.mwnn/cards/card-activity.md';
+    const originalText = serializeCard(cardDocument);
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      [cardPath]: originalText,
+    });
+    const store = await createBoardStore(createDeps({ fileSystem }));
+    const editedActivity = '### Existing entry\n\nSTATUS: IN PROGRESS\n\n## Human note\n- Preserved **Markdown**';
+
+    await store.setActivity('card-activity', editedActivity);
+
+    const savedText = fileSystem.snapshot().get(cardPath) ?? '';
+    const saved = parseCard(savedText);
+    const originalFrontmatter = originalText.match(/^---\n[\s\S]*?\n---/)?.[0];
+    const savedFrontmatter = savedText.match(/^---\n[\s\S]*?\n---/)?.[0];
+    assert.equal(savedFrontmatter, originalFrontmatter);
+    assert.equal(saved.columnId, cardDocument.columnId);
+    assert.equal(saved.position, cardDocument.position);
+    assert.equal(saved.card.description, cardDocument.card.description);
+    assert.equal(saved.card.acceptanceCriteria, cardDocument.card.acceptanceCriteria);
+    assert.equal(saved.card.activity, editedActivity);
+
+    const reloaded = await createBoardStore(createDeps({ fileSystem }));
+    assert.equal(reloaded.getState().columns[0]!.cards[0]!.activity, editedActivity);
+  });
+
   test('reload keeps the current state when an external edit leaves invalid columns json', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));

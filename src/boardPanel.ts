@@ -276,6 +276,9 @@ export class BoardPanel {
       case 'setAcceptanceCriteria':
         await this.deps.store.setAcceptanceCriteria(message.cardId, message.acceptanceCriteria);
         break;
+      case 'setActivity':
+        await this.deps.store.setActivity(message.cardId, message.activity);
+        break;
       case 'setAssignee':
         await this.deps.store.setAssignee(message.cardId, message.assignee);
         break;

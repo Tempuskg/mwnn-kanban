@@ -308,6 +308,23 @@ export function setAcceptanceCriteria(state: BoardState, cardId: string, accepta
   return next;
 }
 
+export function setActivity(state: BoardState, cardId: string, activity: string): BoardState {
+  const next = cloneBoard(state);
+  const normalized = normalizeActivity(activity);
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      if (normalized) {
+        card.activity = normalized;
+      } else {
+        delete card.activity;
+      }
+      break;
+    }
+  }
+  return next;
+}
+
 export function appendActivity(state: BoardState, cardId: string, entry: string): BoardState {
   const next = cloneBoard(state);
   const normalized = entry.trim();
@@ -324,6 +341,14 @@ export function appendActivity(state: BoardState, cardId: string, entry: string)
     }
   }
   return next;
+}
+
+function normalizeActivity(activity: string): string | undefined {
+  const normalized = activity
+    .replace(/\r\n?/g, '\n')
+    .replace(/^\s*\n+|\n+\s*$/g, '')
+    .trimEnd();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 /**

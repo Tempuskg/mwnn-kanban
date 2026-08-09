@@ -33,6 +33,10 @@ suite('webview protocol', () => {
       }),
       true,
     );
+    assert.equal(
+      isWebviewToHostMessage({ type: 'setActivity', cardId: 'card-1', activity: '### Human note' }),
+      true,
+    );
     assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1', assignee: { kind: 'ai', name: 'Copilot' } }), true);
     assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1', dependsOn: [] }), true);
@@ -75,6 +79,7 @@ suite('webview protocol', () => {
       isWebviewToHostMessage({ type: 'setAcceptanceCriteria', cardId: 'card-1', acceptanceCriteria: 1 }),
       false,
     );
+    assert.equal(isWebviewToHostMessage({ type: 'setActivity', cardId: 'card-1', activity: 1 }), false);
     assert.equal(isWebviewToHostMessage({ type: 'setAssignee', cardId: 'card-1', assignee: { kind: 'robot' } }), false);
     assert.equal(isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'setDependencies', cardId: 'card-1', dependsOn: ['card-2', 3] }), false);

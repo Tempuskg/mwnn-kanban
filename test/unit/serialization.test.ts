@@ -75,6 +75,32 @@ suite('serialization', () => {
     assert.deepEqual(parseCard(serializeCard(document)), document);
   });
 
+  test('card markdown preserves multiline Markdown Activity content', () => {
+    const activity = [
+      '## 2026-08-09 - Human note',
+      '',
+      '- Kept a list item',
+      '- [x] Kept a workflow marker',
+      '',
+      '    const formatted = true;',
+    ].join('\n');
+    const document: CardDocument = {
+      columnId: 'col-impl',
+      position: 1000,
+      card: {
+        id: 'card-activity',
+        title: 'Editable activity',
+        createdAt: 1719360000000,
+        activity,
+      },
+    };
+
+    const serialized = serializeCard(document);
+    assert.equal(parseCard(serialized).card.activity, activity);
+    assert.match(serialized, /- \[x\] Kept a workflow marker/);
+    assert.match(serialized, /## 2026-08-09 - Human note/);
+  });
+
   test('columns json round-trips with roles and limits', () => {
     const document: ColumnsDocument = {
       version: BOARD_FILE_VERSION,

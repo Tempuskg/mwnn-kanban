@@ -21,6 +21,7 @@ import {
   reorderColumns,
   setAssignee,
   setAcceptanceCriteria,
+  setActivity,
   setColumnConfig,
   setDependencies,
   setDescription,
@@ -407,6 +408,32 @@ suite('board operations', () => {
     board = appendActivity(board, cardId, '\nSecond note\n');
 
     assert.equal(board.columns[0]!.cards[0]!.activity, 'First note\n\nSecond note');
+  });
+
+  test('setActivity replaces or removes Activity while preserving unrelated card data', () => {
+    let board = defaultBoard(['Ready']);
+    board = addCard(board, board.columns[0]!.id, 'Documented');
+    const cardId = board.columns[0]!.cards[0]!.id;
+    board = setDescription(board, cardId, 'Keep this description');
+    board = setAcceptanceCriteria(board, cardId, '- [ ] Keep this criterion');
+    board = setAssignee(board, cardId, { kind: 'human', name: 'Alex' });
+    board = appendActivity(board, cardId, 'Original entry');
+    const original = board.columns[0]!.cards[0]!;
+
+    const edited = setActivity(board, cardId, '## Review\r\n\r\n  indented Markdown\r\n- kept');
+    const editedCard = edited.columns[0]!.cards[0]!;
+
+    assert.equal(original.activity, 'Original entry', 'the input board is unchanged');
+    assert.equal(editedCard.activity, '## Review\n\n  indented Markdown\n- kept');
+    assert.equal(editedCard.title, original.title);
+    assert.equal(editedCard.createdAt, original.createdAt);
+    assert.equal(editedCard.updatedAt, original.updatedAt);
+    assert.equal(editedCard.description, original.description);
+    assert.equal(editedCard.acceptanceCriteria, original.acceptanceCriteria);
+    assert.deepEqual(editedCard.assignee, original.assignee);
+
+    const cleared = setActivity(edited, cardId, '  \n\n  ');
+    assert.equal(cleared.columns[0]!.cards[0]!.activity, undefined);
   });
 
   test('setAcceptanceCriteria trims text and clears blank values', () => {

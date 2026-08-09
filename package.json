@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor Kanban board for the Methodology With No Name (MWNN), persisted per workspace.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",

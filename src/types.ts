@@ -63,6 +63,7 @@ export type WebviewToHostMessage =
   | { readonly type: 'reorderColumn'; readonly columnId: string; readonly toIndex: number }
   | { readonly type: 'setDescription'; readonly cardId: string; readonly description: string }
   | { readonly type: 'setAcceptanceCriteria'; readonly cardId: string; readonly acceptanceCriteria: string }
+  | { readonly type: 'setActivity'; readonly cardId: string; readonly activity: string }
   | { readonly type: 'setAssignee'; readonly cardId: string; readonly assignee?: Assignee }
   | { readonly type: 'setDependencies'; readonly cardId: string; readonly dependsOn: readonly string[] }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
@@ -142,6 +143,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return typeof value['cardId'] === 'string' && typeof value['description'] === 'string';
     case 'setAcceptanceCriteria':
       return typeof value['cardId'] === 'string' && typeof value['acceptanceCriteria'] === 'string';
+    case 'setActivity':
+      return typeof value['cardId'] === 'string' && typeof value['activity'] === 'string';
     case 'setAssignee':
       return (
         typeof value['cardId'] === 'string' &&
