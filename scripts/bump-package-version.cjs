@@ -30,6 +30,27 @@ function updateJson(file, nextVersion) {
   fs.writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`);
 }
 
+function updateReadme(file, currentVersion, nextVersion) {
+  if (!fs.existsSync(file)) {
+    return;
+  }
+
+  const currentBadge = `VS%20Marketplace-v${currentVersion}-007ACC`;
+  const nextBadge = `VS%20Marketplace-v${nextVersion}-007ACC`;
+  const currentLabel = `VS Marketplace v${currentVersion}`;
+  const nextLabel = `VS Marketplace v${nextVersion}`;
+  const readme = fs.readFileSync(file, 'utf8');
+
+  if (!readme.includes(currentBadge) || !readme.includes(currentLabel)) {
+    throw new Error(`README.md is missing the VS Marketplace v${currentVersion} badge`);
+  }
+
+  fs.writeFileSync(
+    file,
+    readme.replace(currentBadge, nextBadge).replace(currentLabel, nextLabel),
+  );
+}
+
 const root = path.resolve(__dirname, '..');
 const pkgPath = path.join(root, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -37,5 +58,6 @@ const next = bumpPatch(pkg.version);
 
 updateJson(pkgPath, next);
 updateJson(path.join(root, 'package-lock.json'), next);
+updateReadme(path.join(root, 'README.md'), pkg.version, next);
 
 console.log(`Bumped version: ${pkg.version} -> ${next}`);

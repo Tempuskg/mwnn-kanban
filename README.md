@@ -1,11 +1,14 @@
 # MWNN Kanban
 
+[![VS Marketplace v0.0.1](https://img.shields.io/badge/VS%20Marketplace-v0.0.1-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
+[![Open VSX](https://img.shields.io/open-vsx/v/darrenjmcleod/mwnn-kanban?label=Open%20VSX)](https://open-vsx.org/extension/darrenjmcleod/mwnn-kanban)
+
 An in-editor Kanban board for VS Code built around the Methodology With No Name (MWNN). The board lives in workspace files, supports human and AI assignees, and keeps methodology signals like WIP and reverse-WIP visible directly in the editor.
 
 ## Features
 
 - Git-trackable board storage in `.mwnn/` by default, with one markdown file per card and live reload when those files change.
-- Default MWNN board shape of `Backlog`, `Ready`, `In Progress`, and `Done`, with editable columns, WIP limits, and Ready reverse-WIP support.
+- Default MWNN board shape of `Backlog`, `Ready`, `In Progress`, `Verify`, and `Done`, with editable columns, WIP limits, and Ready reverse-WIP support.
 - Card detail editing in the webview for title, description, acceptance criteria, assignee, and activity history.
 - Human and AI assignees with a `Run Card with AI` command and in-board action for AI-assigned work, targeting either a VS Code chat extension or a local agent CLI.
 - A cancellable AI board loop that runs definition and implementation handoffs through a supported VS Code chat extension or a locally installed Copilot, Codex, Claude Code, or Cursor Agent CLI.
@@ -24,6 +27,7 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 | `MWNN Kanban: Run Card with AI` | Pick an AI-assigned card and hand it to a VS Code chat extension or run it with a locally installed agent CLI, recording the dispatch in card activity. |
 | `MWNN Kanban: Run Board with AI Loop` | Process eligible board cards through a selected VS Code chat extension or local non-interactive agent CLI. |
 | `MWNN Kanban: Stop AI Loop` | Stop the loop and cancel an active CLI process without advancing its card. |
+| `MWNN Kanban: Stop Card AI Run` | Cancel the active per-card local agent CLI run without advancing its card. |
 | `MWNN Kanban: Import Plan` | Hand a local plan path or clipboard text to an available VS Code AI chat provider for card import. |
 | `MWNN Kanban: Reset Board` | Clear all cards and recreate the default board. |
 
@@ -37,6 +41,7 @@ An in-editor Kanban board for VS Code built around the Methodology With No Name 
 | `mwnn-kanban.defaultReadyReverseWip` | `3` | Default minimum number of defined cards the Ready column should keep available. |
 | `mwnn-kanban.enableRunWithAI` | `true` | Enable AI-assisted board actions when supported language models are available. |
 | `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, or `cursor`; `prompt` asks whether to use a VS Code chat extension or local CLI. |
+| `mwnn-kanban.aiLoopReviewFreshDefinitions` | `false` | Pause newly AI-defined cards in Ready until the next loop run so a human can review the definition first. |
 | `mwnn-kanban.aiLoopVerifyCards` | `false` | Let the AI loop verify AI-assigned cards in the Verify column. When off, the loop assigns those cards to a human for verification. |
 | `mwnn-kanban.agentCliPaths` | `{}` | Optional executable-path overrides for each agent CLI provider, used by both `Run Card with AI` and the AI loop. Full paths containing spaces are supported. |
 | `mwnn-kanban.chatProviderCommands` | `{}` | Optional VS Code command overrides for interactive chat handoffs, including AI Loop chat mode. |
@@ -92,6 +97,39 @@ npm run smoke:agent-cli -- codex # isolated live smoke for one installed provide
 ```
 
 Press `F5` to launch an Extension Development Host, then run `MWNN Kanban: Open Board` from the Command Palette.
+
+## Publishing
+
+The same `mwnn-kanban.vsix` artifact is published to both registries. Before the first release, create or confirm the `darrenjmcleod` publisher in the [Visual Studio Marketplace publisher portal](https://marketplace.visualstudio.com/manage/publishers/) and create a token for all accessible organizations with the `Marketplace (Manage)` scope. Then create the matching Open VSX namespace after signing the Eclipse Publisher Agreement:
+
+```powershell
+$env:OVSX_PAT = '<open-vsx-token>'
+npx --yes ovsx create-namespace darrenjmcleod -p $env:OVSX_PAT
+```
+
+Validate and package a release locally:
+
+```powershell
+npm ci
+npm run compile-tests
+npm run compile
+npm test
+npm run lint
+npm run package:vsix
+```
+
+Publish that exact artifact after setting registry tokens in the current PowerShell session:
+
+```powershell
+$env:VSCE_PAT = '<visual-studio-marketplace-token>'
+$env:OVSX_PAT = '<open-vsx-token>'
+npx --yes @vscode/vsce publish --packagePath .\mwnn-kanban.vsix -p $env:VSCE_PAT
+npx --yes ovsx publish .\mwnn-kanban.vsix -p $env:OVSX_PAT
+```
+
+For automated releases, add repository secrets named `VSCE_PAT` and `OVSX_PAT`. Pushing a tag that exactly matches the manifest version (for example, `v0.0.1`) or manually dispatching the `Release extension` workflow validates the extension, builds one VSIX, uploads it as a workflow artifact, and publishes that same file to both registries. Run `npm run version:build` for a patch bump; it updates `package.json`, `package-lock.json`, and the VS Marketplace version badge without creating a commit or tag.
+
+> **Marketplace authentication:** Microsoft has announced that global Azure DevOps PATs will stop working on December 1, 2026. The `VSCE_PAT` flow above is valid for the initial release, but the VS Marketplace publishing job must be migrated to [Microsoft Entra ID secure automated publishing](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#secure-automated-publishing-to-visual-studio-marketplace) before that date. Open VSX continues to use its own access token.
 
 ## Architecture
 

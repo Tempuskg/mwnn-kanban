@@ -5,6 +5,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-08-08
+
 ### Changed
 - AI-loop progress now appears in the VS Code status bar so it remains visible without covering the built-in chat composer or submit button.
 - AI implementation handoffs now keep acceptance-criteria checkboxes current, and a completed loop synchronizes any remaining unchecked items before moving the card to verification.
@@ -22,3 +24,6 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - AI definition fill: dragging an undefined card into a Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel shows a "Fill in with AI" button when both are empty. Requests are handed off to the available AI chat extension and recorded in the card Activity log.
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
+
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.1

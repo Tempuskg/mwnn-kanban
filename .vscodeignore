@@ -7,6 +7,7 @@ src/**
 test/**
 dist-test/**
 node_modules/**
+package-lock.json
 wiki/**
 raw/**
 docs/**

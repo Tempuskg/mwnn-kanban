@@ -10,6 +10,14 @@
     "type": "git",
     "url": "https://github.com/Tempuskg/mwnn-kanban.git"
   },
+  "homepage": "https://github.com/Tempuskg/mwnn-kanban#readme",
+  "bugs": {
+    "url": "https://github.com/Tempuskg/mwnn-kanban/issues"
+  },
+  "galleryBanner": {
+    "color": "#171717",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.93.0"
   },
@@ -272,6 +280,7 @@
     "watch": "webpack --watch",
     "build:production": "webpack --mode production --devtool hidden-source-map",
     "package": "npm run build:production",
+    "package:vsix": "npx --yes @vscode/vsce package --out mwnn-kanban.vsix",
     "compile-tests": "tsc -p tsconfig.test.json",
     "watch-tests": "tsc -p tsconfig.test.json --watch",
     "pretest": "npm run compile-tests",
