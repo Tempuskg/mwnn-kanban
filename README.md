@@ -1,6 +1,6 @@
 # MWNN Kanban
 
-[![VS Marketplace v0.0.1](https://img.shields.io/badge/VS%20Marketplace-v0.0.1-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
+[![VS Marketplace v0.0.2](https://img.shields.io/badge/VS%20Marketplace-v0.0.2-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
 [![Open VSX](https://img.shields.io/open-vsx/v/darrenjmcleod/mwnn-kanban?label=Open%20VSX)](https://open-vsx.org/extension/darrenjmcleod/mwnn-kanban)
 
 An in-editor Kanban board for VS Code built around the [Methodology With No Name (MWNN)](https://www.darrenmcleod.com/2025/07/kanban-and-methodology-with-no-name.html). The board lives in workspace files, supports human and AI assignees, and keeps methodology signals like WIP and reverse-WIP visible directly in the editor.

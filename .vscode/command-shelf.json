@@ -9,6 +9,14 @@
       "group": null,
       "sortOrder": 0,
       "terminalMode": "dedicated"
+    },
+    {
+      "id": "a70c61f1-7a2e-4d9b-9088-f18953cd5eca",
+      "label": "Increment extension version",
+      "command": "npm run version:build",
+      "group": null,
+      "sortOrder": 1,
+      "terminalMode": "dedicated"
     }
   ]
 }
