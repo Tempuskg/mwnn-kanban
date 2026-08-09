@@ -13,7 +13,7 @@ MWNN Kanban is a VS Code extension that provides an in-editor Kanban board for m
 - Assume strict optional-property typing. Omit absent optional keys instead of passing `undefined`.
 - Use plain relative file paths in summaries and handoffs; do not rely on rendered anchor text.
 - When public documentation already shows that a supported API or command is unavailable, stop command-id hunting and choose the documented fallback.
-- When the user asks about publishing, answer with the repo's exact VS Marketplace and Open VSX flow first instead of generic marketplace guidance. On Windows, default to PowerShell syntax unless the user explicitly asks for `cmd` or bash.
+- When the user asks about publishing, use the repo's synchronized release flow: build one VSIX and publish that exact artifact to both Visual Studio Marketplace and Open VSX. Never add or use a per-registry selector, and treat a release as incomplete unless both publication jobs succeed. On Windows, default to PowerShell syntax unless the user explicitly asks for `cmd` or bash.
 - Do not read unrelated prompt or policy files unless the active task explicitly depends on them.
 
 ## Language & Build

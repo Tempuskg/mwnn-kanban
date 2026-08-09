@@ -21,6 +21,7 @@ For `/implement`, `/proceed`, direct implementation requests, or generated imple
 13. Analysis recommendations may target only repository-local AI control files: `AGENTS.md`, `.github/copilot-instructions.md`, and when present `CLAUDE.md`, `*.instructions.md`, `*.prompt.md`, `*.agent.md`, `SKILL.md`, and similar local AI instruction files. If evidence is insufficient, say so instead of recommending source, test, build, or general documentation changes.
 14. Re-read local AI instructions, and re-read `package.json` only when the task depends on repo metadata such as commands, contribution points, versioning, or release flow. Do not reuse commands, conventions, or assumptions from memory or another repo.
 15. Use memory or auxiliary tool reads only when the retrieved state changes the next step. Prefer targeted existence checks over broad wildcard scans.
+16. Treat extension releases as atomic across registries: publish the same VSIX artifact to both Visual Studio Marketplace and Open VSX. Never add or use a per-registry selector, and do not report a release complete unless both publication jobs succeed.
 
 ## Quick Start / Known Constraints
 
@@ -30,6 +31,7 @@ For `/implement`, `/proceed`, direct implementation requests, or generated imple
 - Webview UX changes need a Development Host smoke test; they rarely surface in unit tests.
 - Strict optional-property typing is active in this repo, so omit optional keys rather than passing `undefined`.
 - Repo type: VS Code extension. For patch version bumps, prefer `npm run version:build`. For explicit version sets, use the documented exact `npm version` path without automatic git tag or commit creation.
+- Every extension release must publish the same VSIX to both Visual Studio Marketplace and Open VSX. Do not add a registry selector or intentionally publish to only one registry.
 - Release-relevant files are `package.json`, `package-lock.json`, `README.md`, and any `scripts/bump-package-version.cjs`. Verify only the expected release files for versioning tasks.
 - Defer `README.md`, `wiki/`, `CHANGELOG.md`, and plan/status-file sync until the changed surface passes one green targeted validation step, unless the user explicitly asks for docs now.
 - Use plain relative file paths in summaries and handoffs.
