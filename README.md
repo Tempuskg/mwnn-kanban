@@ -98,39 +98,6 @@ npm run smoke:agent-cli -- codex # isolated live smoke for one installed provide
 
 Press `F5` to launch an Extension Development Host, then run `MWNN Kanban: Open Board` from the Command Palette.
 
-## Publishing
-
-The same `mwnn-kanban.vsix` artifact is published to both registries. Before the first release, create or confirm the `darrenjmcleod` publisher in the [Visual Studio Marketplace publisher portal](https://marketplace.visualstudio.com/manage/publishers/) and create a token for all accessible organizations with the `Marketplace (Manage)` scope. Then create the matching Open VSX namespace after signing the Eclipse Publisher Agreement:
-
-```powershell
-$env:OVSX_PAT = '<open-vsx-token>'
-npx --yes ovsx create-namespace darrenjmcleod -p $env:OVSX_PAT
-```
-
-Validate and package a release locally:
-
-```powershell
-npm ci
-npm run compile-tests
-npm run compile
-npm test
-npm run lint
-npm run package:vsix
-```
-
-Publish that exact artifact after setting registry tokens in the current PowerShell session:
-
-```powershell
-$env:VSCE_PAT = '<visual-studio-marketplace-token>'
-$env:OVSX_PAT = '<open-vsx-token>'
-npx --yes @vscode/vsce publish --packagePath .\mwnn-kanban.vsix -p $env:VSCE_PAT
-npx --yes ovsx publish .\mwnn-kanban.vsix -p $env:OVSX_PAT
-```
-
-For automated releases, add repository secrets named `VSCE_PAT` and `OVSX_PAT`. Pushing a tag that exactly matches the manifest version (for example, `v0.0.1`) or manually dispatching the `Release extension` workflow validates the extension, builds one VSIX, uploads it as a workflow artifact, and publishes that same file to both registries. Run `npm run version:build` for a patch bump; it updates `package.json`, `package-lock.json`, and the VS Marketplace version badge without creating a commit or tag.
-
-> **Marketplace authentication:** Microsoft has announced that global Azure DevOps PATs will stop working on December 1, 2026. The `VSCE_PAT` flow above is valid for the initial release, but the VS Marketplace publishing job must be migrated to [Microsoft Entra ID secure automated publishing](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#secure-automated-publishing-to-visual-studio-marketplace) before that date. Open VSX continues to use its own access token.
-
 ## Architecture
 
 The extension host (`src/`) and the board UI (`media/board.js`) run in separate contexts and communicate only through `postMessage`. Shared message types and board models live in `src/types.ts`, the board persistence layer lives in `src/boardStore.ts`, and the board contract for direct editors is documented in `AGENTS.md` plus the generated `.mwnn/README.md`.

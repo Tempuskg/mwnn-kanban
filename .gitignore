@@ -3,5 +3,6 @@ dist/
 dist-test/
 *.vsix
 .vscode-test/
+.vscode/command-shelf.json
 *.log
 .chat/
