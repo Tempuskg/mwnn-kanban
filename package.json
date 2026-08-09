@@ -284,7 +284,7 @@
     "compile-tests": "tsc -p tsconfig.test.json",
     "watch-tests": "tsc -p tsconfig.test.json --watch",
     "pretest": "npm run compile-tests",
-    "test": "node --test \"dist-test/test/unit/*.test.js\"",
+    "test": "node ./scripts/run-unit-tests.cjs",
     "presmoke:agent-cli": "npm run compile-tests",
     "smoke:agent-cli": "node ./scripts/smoke-agent-cli.cjs",
     "version:build": "node ./scripts/bump-package-version.cjs",
