@@ -134,7 +134,7 @@ function cardDocuments(snapshot: Map<string, string>): CardDocument[] {
 }
 
 suite('board store', () => {
-  test('initializes from default columns and writes the board files when storage is empty', async () => {
+  test('keeps a default board in memory without creating files until the first mutation', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['A', 'Ready', 'Done'] }));
 
@@ -142,6 +142,10 @@ suite('board store', () => {
       store.getState().columns.map((column) => column.title),
       ['A', 'Ready', 'Done'],
     );
+    assert.equal(await fileSystem.exists('.mwnn'), false);
+    assert.equal(fileSystem.snapshot().size, 0);
+
+    await store.addCard(store.getState().columns[0]!.id, 'First task');
 
     const columnsDocument = parseColumns(fileSystem.snapshot().get('.mwnn/columns.json') ?? '');
     assert.equal(columnsDocument.version, BOARD_FILE_VERSION);
@@ -499,7 +503,7 @@ suite('board store', () => {
     );
   });
 
-  test('writes the board readme when loading an existing board that predates it', async () => {
+  test('writes the board readme on the first mutation of an existing board that predates it', async () => {
     const columnsDocument: ColumnsDocument = {
       version: BOARD_FILE_VERSION,
       columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
@@ -509,7 +513,10 @@ suite('board store', () => {
       '.mwnn/columns.json': serializeColumns(columnsDocument),
     });
 
-    await createBoardStore(createDeps({ fileSystem }));
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    assert.equal(fileSystem.snapshot().has('.mwnn/README.md'), false);
+    await store.addCard('col-ready', 'Task');
 
     assert.match(fileSystem.snapshot().get('.mwnn/README.md') ?? '', /cards\/<card-id>\.md/);
   });

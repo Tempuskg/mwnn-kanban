@@ -91,7 +91,6 @@ export interface BoardStore {
 
 export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore> {
   let state = await loadOrInitializeState(deps);
-  await ensureBoardReadme(deps);
 
   async function refreshFromDisk(): Promise<void> {
     const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
@@ -178,6 +177,10 @@ async function loadOrInitializeState(deps: BoardStoreDeps): Promise<BoardState> 
       await writeBoardState(deps, fallback);
       return fallback;
     }
+  }
+
+  if (deps.legacyMemento?.get<unknown>(STORAGE_KEY) === undefined) {
+    return createInitialBoard(deps.defaultColumns, deps.defaultReadyReverseWip);
   }
 
   const initialized = await migrateOrCreateDefaultState(deps);

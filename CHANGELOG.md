@@ -8,6 +8,9 @@ All notable changes to MWNN Kanban are documented here. The format follows
 ### Added
 - Card Activity can now be edited as multiline Markdown from the card details view, including clearing saved Activity or discarding an unsaved draft, with changes persisted to the card file.
 
+### Changed
+- The extension now activates after VS Code startup without creating `.mwnn` board files in an untouched workspace; board storage is created on the first board mutation.
+
 ## [0.0.1] - 2026-08-08
 
 ### Changed
