@@ -59,9 +59,13 @@ export interface FileSystemLike {
   createDirectory(path: string): Promise<void>;
 }
 
-export interface BoardStoreDeps {
-  readonly fileSystem: FileSystemLike;
+export interface BoardReaderDeps {
+  readonly fileSystem: Pick<FileSystemLike, 'exists' | 'readFile' | 'readDirectory'>;
   readonly boardFolder: string;
+}
+
+export interface BoardStoreDeps extends BoardReaderDeps {
+  readonly fileSystem: FileSystemLike;
   readonly defaultColumns: readonly string[];
   readonly defaultReadyReverseWip: number;
   readonly legacyMemento?: MementoLike;
@@ -201,7 +205,24 @@ function createInitialBoard(defaultColumns: readonly string[], defaultReadyRever
   return applyInitialColumnMetadata(defaultBoard(defaultColumns), defaultReadyReverseWip);
 }
 
-async function readBoardState(deps: BoardStoreDeps): Promise<BoardState> {
+/**
+ * Disk-only reader for `readBoardAt()`. Unlike `getBoard()`, which returns the
+ * board as the extension sees it and may include an uncommitted default,
+ * `readBoardAt()` reflects only board state that is present on disk.
+ */
+export async function readBoardStateIfPresent(deps: BoardReaderDeps): Promise<BoardState | undefined> {
+  try {
+    if (!(await deps.fileSystem.exists(boardPath(deps.boardFolder, COLUMNS_FILE)))) {
+      return undefined;
+    }
+
+    return await readBoardState(deps);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readBoardState(deps: BoardReaderDeps): Promise<BoardState> {
   const columnsDocument = parseColumns(await deps.fileSystem.readFile(boardPath(deps.boardFolder, COLUMNS_FILE)));
   const cardDocuments = await readCardDocuments(deps);
 
@@ -235,7 +256,7 @@ async function readBoardState(deps: BoardStoreDeps): Promise<BoardState> {
   };
 }
 
-async function readCardDocuments(deps: BoardStoreDeps): Promise<CardDocument[]> {
+async function readCardDocuments(deps: BoardReaderDeps): Promise<CardDocument[]> {
   const cardsDirectory = boardPath(deps.boardFolder, CARDS_DIR);
   if (!(await deps.fileSystem.exists(cardsDirectory))) {
     return [];

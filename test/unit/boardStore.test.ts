@@ -12,6 +12,8 @@ import {
 } from '../../src/serialization';
 import {
   createBoardStore,
+  readBoardStateIfPresent,
+  type BoardReaderDeps,
   type BoardStoreDeps,
   type FileSystemLike,
   type MementoLike,
@@ -134,6 +136,53 @@ function cardDocuments(snapshot: Map<string, string>): CardDocument[] {
 }
 
 suite('board store', () => {
+  test('reads an existing board through read-only dependencies', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const cardDocument: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: { id: 'card-a', title: 'Task', createdAt: 1 },
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-a.md': serializeCard(cardDocument),
+    });
+    const readerFileSystem: BoardReaderDeps['fileSystem'] = {
+      exists: fileSystem.exists,
+      readFile: fileSystem.readFile,
+      readDirectory: fileSystem.readDirectory,
+    };
+
+    const state = await readBoardStateIfPresent({ boardFolder: '.mwnn', fileSystem: readerFileSystem });
+
+    assert.ok(state);
+    assert.equal(state.columns[0]!.title, 'Ready');
+    assert.equal(state.columns[0]!.cards[0]!.title, 'Task');
+  });
+
+  test('returns undefined when columns.json is absent', async () => {
+    const state = await readBoardStateIfPresent({
+      boardFolder: '.mwnn',
+      fileSystem: createFakeFileSystem(),
+    });
+
+    assert.equal(state, undefined);
+  });
+
+  test('returns undefined instead of rejecting for an invalid board', async () => {
+    const state = await readBoardStateIfPresent({
+      boardFolder: '.mwnn',
+      fileSystem: createFakeFileSystem({
+        '.mwnn/columns.json': JSON.stringify({ version: 1, columns: [] }),
+      }),
+    });
+
+    assert.equal(state, undefined);
+  });
+
   test('keeps a default board in memory without creating files until the first mutation', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['A', 'Ready', 'Done'] }));
