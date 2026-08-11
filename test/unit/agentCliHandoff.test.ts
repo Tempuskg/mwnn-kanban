@@ -425,6 +425,7 @@ suite('agent CLI card handoff evidence', () => {
   test('accepts verification only when a parsed verdict was appended by the run', async (context) => {
     for (const verdict of [
       'VERIFY: PASS',
+      'VERIFY: PASS — every acceptance criterion is objectively verified.',
       'VERIFY: FAIL: a required behavior is broken',
       'VERIFY: HUMAN: visual sign-off is required',
     ]) {

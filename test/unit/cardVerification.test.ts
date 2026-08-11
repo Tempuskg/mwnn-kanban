@@ -9,6 +9,8 @@ suite('card verification verdict parser', () => {
   test('parses pass, fail, and human verdicts', () => {
     const verdicts: readonly [string, VerificationVerdict][] = [
       ['VERIFY: PASS', { kind: 'pass' }],
+      ['VERIFY: PASS — every acceptance criterion is objectively verified.', { kind: 'pass' }],
+      ['VERIFY: PASS - verified by the focused test run', { kind: 'pass' }],
       ['VERIFY: FAIL: a required behavior is missing', {
         kind: 'fail',
         reason: 'a required behavior is missing',
@@ -57,6 +59,7 @@ suite('card verification verdict parser', () => {
       undefined,
       'an invalid last marker must not fall back to an earlier pass',
     );
+    assert.equal(parseVerificationVerdict('VERIFY: PASS: maybe', 0), undefined);
   });
 
   test('does not infer a pass from fully checked acceptance criteria', () => {

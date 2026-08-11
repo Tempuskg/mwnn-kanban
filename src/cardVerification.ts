@@ -30,7 +30,10 @@ export function parseVerificationVerdict(
   if (!verdictLine) {
     return undefined;
   }
-  if (/^VERIFY:\s*PASS\s*$/i.test(verdictLine)) {
+  // Older prompts displayed an explanatory dash suffix beside the PASS marker,
+  // which agents could reasonably copy verbatim. Accept that harmless suffix
+  // while keeping colon-delimited and otherwise ambiguous forms invalid.
+  if (/^VERIFY:\s*PASS(?:\s+(?:—|-)\s*.*)?$/i.test(verdictLine)) {
     return { kind: 'pass' };
   }
 
