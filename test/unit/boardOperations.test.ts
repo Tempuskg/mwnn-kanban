@@ -1,13 +1,15 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
-import { isAssignee, isBoardState } from '../../src/types';
+import { BOARD_STATE_VERSION, isAssignee, isBoardState, type BoardState, type Card, type Column } from '../../src/types';
 import {
   addCard,
   addColumn,
   appendActivity,
   blockingDependencies,
+  boardsEqual,
   canMoveCardToColumn,
   calculateCardPosition,
+  cloneBoard,
   defaultBoard,
   deleteCard,
   duplicateCard,
@@ -29,6 +31,126 @@ import {
 } from '../../src/utils';
 
 suite('board operations', () => {
+  test('boardsEqual truth table compares fields explicitly and preserves order', () => {
+    const board: BoardState = {
+      version: BOARD_STATE_VERSION,
+      columns: [
+        {
+          id: 'col-ready',
+          title: 'Ready',
+          cards: [
+            {
+              id: 'card-1',
+              title: 'First',
+              createdAt: 1,
+              updatedAt: 2,
+              description: 'Description',
+              acceptanceCriteria: '- [ ] Ship it',
+              activity: 'Started',
+              assignee: { kind: 'ai', name: 'Codex' },
+              dependsOn: ['card-2', 'card-3'],
+            },
+            { id: 'card-2', title: 'Second', createdAt: 3 },
+          ],
+          role: 'ready',
+          wipLimit: 2,
+          reverseWip: 1,
+        },
+        {
+          id: 'col-done',
+          title: 'Done',
+          cards: [],
+          role: 'done',
+          wipLimit: null,
+          reverseWip: null,
+        },
+      ],
+    };
+    const equivalentWithDifferentKeyOrder: BoardState = {
+      columns: [
+        {
+          reverseWip: 1,
+          wipLimit: 2,
+          role: 'ready',
+          cards: [
+            {
+              dependsOn: ['card-2', 'card-3'],
+              assignee: { name: 'Codex', kind: 'ai' },
+              activity: 'Started',
+              acceptanceCriteria: '- [ ] Ship it',
+              description: 'Description',
+              updatedAt: 2,
+              createdAt: 1,
+              title: 'First',
+              id: 'card-1',
+            },
+            { createdAt: 3, title: 'Second', id: 'card-2' },
+          ],
+          title: 'Ready',
+          id: 'col-ready',
+        },
+        {
+          reverseWip: null,
+          wipLimit: null,
+          role: 'done',
+          cards: [],
+          title: 'Done',
+          id: 'col-done',
+        },
+      ],
+      version: BOARD_STATE_VERSION,
+    };
+
+    const withFirstColumn = (changes: Partial<Column>): BoardState => {
+      const changed = cloneBoard(board);
+      changed.columns[0] = { ...changed.columns[0]!, ...changes };
+      return changed;
+    };
+    const withFirstCard = (changes: Partial<Card>): BoardState => {
+      const changed = cloneBoard(board);
+      changed.columns[0]!.cards[0] = { ...changed.columns[0]!.cards[0]!, ...changes };
+      return changed;
+    };
+    const withReorderedColumns = cloneBoard(board);
+    withReorderedColumns.columns.reverse();
+    const withReorderedCards = cloneBoard(board);
+    withReorderedCards.columns[0]!.cards.reverse();
+    const withFewerColumns = cloneBoard(board);
+    withFewerColumns.columns.pop();
+    const withFewerCards = cloneBoard(board);
+    withFewerCards.columns[0]!.cards.pop();
+
+    const cases: readonly { readonly name: string; readonly other: BoardState; readonly expected: boolean }[] = [
+      { name: 'same object', other: board, expected: true },
+      { name: 'same fields in a different key order', other: equivalentWithDifferentKeyOrder, expected: true },
+      { name: 'fewer columns', other: withFewerColumns, expected: false },
+      { name: 'column order', other: withReorderedColumns, expected: false },
+      { name: 'column id', other: withFirstColumn({ id: 'col-other' }), expected: false },
+      { name: 'column title', other: withFirstColumn({ title: 'Queue' }), expected: false },
+      { name: 'column role', other: withFirstColumn({ role: 'backlog' }), expected: false },
+      { name: 'column wip limit', other: withFirstColumn({ wipLimit: 3 }), expected: false },
+      { name: 'column reverse-wip limit', other: withFirstColumn({ reverseWip: 2 }), expected: false },
+      { name: 'fewer cards', other: withFewerCards, expected: false },
+      { name: 'card order', other: withReorderedCards, expected: false },
+      { name: 'card id', other: withFirstCard({ id: 'card-other' }), expected: false },
+      { name: 'card title', other: withFirstCard({ title: 'Changed' }), expected: false },
+      { name: 'card creation time', other: withFirstCard({ createdAt: 4 }), expected: false },
+      { name: 'card update time', other: withFirstCard({ updatedAt: 5 }), expected: false },
+      { name: 'card description', other: withFirstCard({ description: 'Changed' }), expected: false },
+      { name: 'acceptance criteria', other: withFirstCard({ acceptanceCriteria: '- [ ] Changed' }), expected: false },
+      { name: 'activity', other: withFirstCard({ activity: 'Changed' }), expected: false },
+      { name: 'assignee kind', other: withFirstCard({ assignee: { kind: 'human', name: 'Codex' } }), expected: false },
+      { name: 'assignee name', other: withFirstCard({ assignee: { kind: 'ai', name: 'Other' } }), expected: false },
+      { name: 'dependency', other: withFirstCard({ dependsOn: ['card-2'] }), expected: false },
+      { name: 'dependency order', other: withFirstCard({ dependsOn: ['card-3', 'card-2'] }), expected: false },
+    ];
+
+    for (const { name, other, expected } of cases) {
+      assert.equal(boardsEqual(board, other), expected, name);
+      assert.equal(boardsEqual(other, board), expected, `${name} (symmetric)`);
+    }
+  });
+
   test('defaultBoard uses provided column titles', () => {
     const board = defaultBoard(['Backlog', 'Doing']);
     assert.deepEqual(

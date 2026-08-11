@@ -162,6 +162,65 @@ function cloneColumn(column: Column): Column {
   return clone;
 }
 
+function orderedArraysEqual<T>(
+  left: readonly T[],
+  right: readonly T[],
+  valuesEqual: (leftValue: T, rightValue: T) => boolean,
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => {
+    const rightValue = right[index];
+    return rightValue !== undefined && valuesEqual(value, rightValue);
+  });
+}
+
+function assigneesEqual(left: Assignee | undefined, right: Assignee | undefined): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  return left.kind === right.kind && left.name === right.name;
+}
+
+function dependenciesEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  return orderedArraysEqual(left, right, (leftId, rightId) => leftId === rightId);
+}
+
+function cardsEqual(left: Card, right: Card): boolean {
+  return (
+    left.id === right.id &&
+    left.title === right.title &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt &&
+    left.description === right.description &&
+    left.acceptanceCriteria === right.acceptanceCriteria &&
+    left.activity === right.activity &&
+    assigneesEqual(left.assignee, right.assignee) &&
+    dependenciesEqual(left.dependsOn, right.dependsOn)
+  );
+}
+
+function columnsEqual(left: Column, right: Column): boolean {
+  return (
+    left.id === right.id &&
+    left.title === right.title &&
+    left.role === right.role &&
+    left.wipLimit === right.wipLimit &&
+    left.reverseWip === right.reverseWip &&
+    orderedArraysEqual(left.cards, right.cards, cardsEqual)
+  );
+}
+
+/** Compare every persisted board field while preserving column, card, and dependency order. */
+export function boardsEqual(left: BoardState, right: BoardState): boolean {
+  return left === right || (left.version === right.version && orderedArraysEqual(left.columns, right.columns, columnsEqual));
+}
+
 /** Return a deep copy so callers never mutate the stored state in place. */
 export function cloneBoard(state: BoardState): BoardState {
   return { version: state.version, columns: state.columns.map(cloneColumn) };
