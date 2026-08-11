@@ -15,6 +15,10 @@ An in-editor Kanban board for VS Code built around the [Methodology With No Name
 - AI definition fill for undefined cards: dragging a card without a Description into the Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel exposes a `Fill in with AI` button whenever both are empty. Definition fills can target a VS Code chat extension or a local agent CLI.
 - Drag-and-drop card movement plus direct column add, rename, delete, limit, and reorder flows from the board UI.
 
+## Privacy and network access
+
+MWNN Kanban never transmits usage, board, or time data. When a Pro license is validated, the extension contacts Polar and sends the license key; the validation result is cached locally for up to 24 hours. This license check is the only network request MWNN Kanban makes directly. AI handoffs run through the chat extension or local agent CLI you choose and are subject to that provider's privacy terms.
+
 ## Commands
 
 | Command | Description |

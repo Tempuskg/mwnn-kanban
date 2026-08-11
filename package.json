@@ -1,7 +1,7 @@
 {
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
-  "description": "An in-editor Kanban board for the Methodology With No Name (MWNN), persisted per workspace.",
+  "description": "An in-editor MWNN Kanban board. Pro license validation sends the license key to Polar; no usage, board, or time data is transmitted.",
   "version": "0.0.6",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",

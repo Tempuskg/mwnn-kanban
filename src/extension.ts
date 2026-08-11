@@ -52,6 +52,7 @@ import {
   type RunCardWithAgentCliDeps,
   type RunWithAiProviderChoice,
 } from './runWithAi';
+import { activateProFeatures } from './pro';
 import {
   buildDoabilityPrompt,
   buildTriagePrompt,
@@ -720,6 +721,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       openBoard().postState();
     }),
   );
+
+  void activateProFeatures({
+    extensionContext: context,
+    log: (message) => cliOutputChannel.appendLine(`[pro] ${message}`),
+    registerDisposable: (disposable) => context.subscriptions.push(disposable),
+  });
 }
 
 export function deactivate(): void {
