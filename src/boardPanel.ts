@@ -54,6 +54,10 @@ export class BoardPanel {
 
   private readonly disposables: vscode.Disposable[] = [];
 
+  private webviewReady = false;
+
+  private pendingRevealCardId: string | undefined;
+
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly deps: BoardPanelDeps,
@@ -147,6 +151,24 @@ export class BoardPanel {
   }
 
   /**
+   * Open a card in the current board panel once its webview can receive
+   * messages. Call {@link show} first so a panel exists. A freshly created
+   * panel drains the pending reveal when the webview posts its ready message.
+   */
+  static revealCard(cardId: string): boolean {
+    const panel = BoardPanel.current;
+    if (!panel || !collectCardIds(panel.deps.store.getState()).includes(cardId)) {
+      return false;
+    }
+
+    panel.pendingRevealCardId = cardId;
+    if (panel.webviewReady) {
+      panel.postState();
+    }
+    return true;
+  }
+
+  /**
    * Push a live agent-CLI run status into the webview so the board can badge
    * the card and show the latest output line. A no-op when the board is
    * closed; the webview keeps its own per-card status map between pushes.
@@ -172,11 +194,20 @@ export class BoardPanel {
       zoom: clampZoom(this.deps.zoomMemento.get<number>(ZOOM_MEMENTO_KEY, ZOOM_DEFAULT)),
     };
     void this.panel.webview.postMessage(message);
+
+    if (!this.webviewReady || !this.pendingRevealCardId) {
+      return;
+    }
+
+    const cardId = this.pendingRevealCardId;
+    this.pendingRevealCardId = undefined;
+    void this.panel.webview.postMessage({ type: 'openCard', cardId } satisfies HostToWebviewMessage);
   }
 
   private async handleMessage(message: WebviewToHostMessage): Promise<void> {
     switch (message.type) {
       case 'ready':
+        this.webviewReady = true;
         this.postState();
         return;
       case 'requestAddCard': {
