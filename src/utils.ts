@@ -378,6 +378,7 @@ export function setActivity(state: BoardState, cardId: string, activity: string)
       } else {
         delete card.activity;
       }
+      card.updatedAt = Date.now();
       break;
     }
   }

@@ -532,7 +532,7 @@ suite('board operations', () => {
     assert.equal(board.columns[0]!.cards[0]!.activity, 'First note\n\nSecond note');
   });
 
-  test('setActivity replaces or removes Activity while preserving unrelated card data', () => {
+  test('setActivity replaces or removes Activity while preserving unrelated card data', (t) => {
     let board = defaultBoard(['Ready']);
     board = addCard(board, board.columns[0]!.id, 'Documented');
     const cardId = board.columns[0]!.cards[0]!.id;
@@ -541,6 +541,8 @@ suite('board operations', () => {
     board = setAssignee(board, cardId, { kind: 'human', name: 'Alex' });
     board = appendActivity(board, cardId, 'Original entry');
     const original = board.columns[0]!.cards[0]!;
+    const activityEditedAt = (original.updatedAt ?? original.createdAt) + 1;
+    t.mock.method(Date, 'now', () => activityEditedAt);
 
     const edited = setActivity(board, cardId, '## Review\r\n\r\n  indented Markdown\r\n- kept');
     const editedCard = edited.columns[0]!.cards[0]!;
@@ -549,10 +551,11 @@ suite('board operations', () => {
     assert.equal(editedCard.activity, '## Review\n\n  indented Markdown\n- kept');
     assert.equal(editedCard.title, original.title);
     assert.equal(editedCard.createdAt, original.createdAt);
-    assert.equal(editedCard.updatedAt, original.updatedAt);
+    assert.equal(editedCard.updatedAt, activityEditedAt);
     assert.equal(editedCard.description, original.description);
     assert.equal(editedCard.acceptanceCriteria, original.acceptanceCriteria);
     assert.deepEqual(editedCard.assignee, original.assignee);
+    assert.equal(boardsEqual(board, edited), false, 'the board fingerprint sees the activity-only edit');
 
     const cleared = setActivity(edited, cardId, '  \n\n  ');
     assert.equal(cleared.columns[0]!.cards[0]!.activity, undefined);

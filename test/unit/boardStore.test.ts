@@ -565,7 +565,7 @@ suite('board store', () => {
     assert.equal(parseCard(fileSystem.snapshot().get(cardFile!) ?? '').card.activity, 'Agent: did the work');
   });
 
-  test('setActivity persists and reloads an edit without changing frontmatter or other body sections', async () => {
+  test('setActivity persists and reloads an edit while changing only updatedAt in frontmatter', async (t) => {
     const columnsDocument: ColumnsDocument = {
       version: BOARD_FILE_VERSION,
       columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
@@ -592,16 +592,21 @@ suite('board store', () => {
     });
     const store = await createBoardStore(createDeps({ fileSystem }));
     const editedActivity = '### Existing entry\n\nSTATUS: IN PROGRESS\n\n## Human note\n- Preserved **Markdown**';
+    const activityEditedAt = 1719367200000;
+    t.mock.method(Date, 'now', () => activityEditedAt);
 
     await store.setActivity('card-activity', editedActivity);
 
     const savedText = fileSystem.snapshot().get(cardPath) ?? '';
     const saved = parseCard(savedText);
-    const originalFrontmatter = originalText.match(/^---\n[\s\S]*?\n---/)?.[0];
-    const savedFrontmatter = savedText.match(/^---\n[\s\S]*?\n---/)?.[0];
-    assert.equal(savedFrontmatter, originalFrontmatter);
+    const expectedDocument: CardDocument = {
+      ...cardDocument,
+      card: { ...cardDocument.card, updatedAt: activityEditedAt, activity: editedActivity },
+    };
+    assert.equal(savedText, serializeCard(expectedDocument));
     assert.equal(saved.columnId, cardDocument.columnId);
     assert.equal(saved.position, cardDocument.position);
+    assert.equal(saved.card.updatedAt, activityEditedAt);
     assert.equal(saved.card.description, cardDocument.card.description);
     assert.equal(saved.card.acceptanceCriteria, cardDocument.card.acceptanceCriteria);
     assert.equal(saved.card.activity, editedActivity);
