@@ -11,6 +11,7 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'addColumn', title: 'Ready' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 'card-1', title: 'Rename' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'duplicateCard', cardId: 'card-1' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'copyCardPath', cardId: 'card-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'renameColumn', columnId: 'col-1', title: 'Ready' }), true);
     assert.equal(
       isWebviewToHostMessage({
@@ -63,6 +64,7 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'addColumn' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 1, title: 'Rename' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'duplicateCard', cardId: 1 }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'copyCardPath', cardId: 1 }), false);
     assert.equal(isWebviewToHostMessage({ type: 'renameColumn', columnId: 1, title: 'Ready' }), false);
     assert.equal(
       isWebviewToHostMessage({ type: 'setColumnLimits', columnId: 'col-1', wipLimit: 1.5, reverseWip: null }),

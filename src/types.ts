@@ -52,6 +52,7 @@ export type WebviewToHostMessage =
   | { readonly type: 'addColumn'; readonly title: string }
   | { readonly type: 'editCard'; readonly cardId: string; readonly title: string }
   | { readonly type: 'duplicateCard'; readonly cardId: string }
+  | { readonly type: 'copyCardPath'; readonly cardId: string }
   | { readonly type: 'renameColumn'; readonly columnId: string; readonly title: string }
   | {
       readonly type: 'setColumnLimits';
@@ -84,6 +85,13 @@ export interface CliRunStatus {
 export type HostToWebviewMessage =
   | { readonly type: 'state'; readonly board: BoardState; readonly enableRunWithAI: boolean; readonly zoom: number }
   | { readonly type: 'openCard'; readonly cardId: string }
+  | {
+      readonly type: 'cardPathCopyResult';
+      readonly cardId: string;
+      readonly ok: boolean;
+      readonly path: string;
+      readonly message: string;
+    }
   | ({ readonly type: 'cliRunStatus' } & CliRunStatus);
 
 /** Runtime type guard for persisted/posted board state. */
@@ -121,6 +129,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'editCard':
       return typeof value['cardId'] === 'string' && typeof value['title'] === 'string';
     case 'duplicateCard':
+      return typeof value['cardId'] === 'string';
+    case 'copyCardPath':
       return typeof value['cardId'] === 'string';
     case 'renameColumn':
       return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';

@@ -100,6 +100,17 @@ npm run lint             # ESLint
 npm run smoke:agent-cli -- codex # isolated live smoke for one installed provider
 ```
 
+### Local Pro package stub
+
+The extension resolves the optional `@tempuskg/mwnn-kanban-pro` package at runtime. To exercise that loading boundary without GitHub Packages credentials, build and link the repository's no-op stub:
+
+```powershell
+npm run link:pro-stub
+npm run compile
+```
+
+`link:pro-stub` builds `mwnn-kanban-pro/dist/index.js` and links the package into `node_modules` without changing `package.json` or `package-lock.json`. Re-run it after an `npm install` replaces the link. The stub only confirms that package discovery and registration work; it does not implement or unlock paid features.
+
 Press `F5` to launch an Extension Development Host, then run `MWNN Kanban: Open Board` from the Command Palette.
 
 ## Architecture

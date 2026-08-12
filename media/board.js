@@ -22,11 +22,31 @@
     };
   }
 
+  /**
+   * @param {string} cardId
+   * @param {(message: { type: 'copyCardPath', cardId: string }) => void} postMessage
+   */
+  function requestCardPathCopy(cardId, postMessage) {
+    postMessage({ type: 'copyCardPath', cardId });
+  }
+
+  /**
+   * @param {{ ok: boolean, message: string }} result
+   * @returns {{ text: string, className: string, role: 'status' | 'alert' }}
+   */
+  function createCardPathCopyFeedback(result) {
+    return {
+      text: result.message,
+      className: result.ok ? 'card-modal-copy-feedback-success' : 'card-modal-copy-feedback-error',
+      role: result.ok ? 'status' : 'alert',
+    };
+  }
+
   // Loading this script from the Node test runner returns only the pure Activity
   // draft helper; the VS Code webview has no CommonJS `module` and continues
   // through the normal browser bootstrap below.
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { createActivityDraft };
+    module.exports = { createActivityDraft, requestCardPathCopy, createCardPathCopyFeedback };
     return;
   }
 
@@ -113,6 +133,8 @@
       render();
     } else if (message && message.type === 'openCard') {
       openCardDetails(message.cardId);
+    } else if (message && message.type === 'cardPathCopyResult') {
+      applyCardPathCopyResult(message);
     } else if (message && message.type === 'cliRunStatus') {
       applyCliRunStatus(message);
     }
@@ -784,6 +806,30 @@
   }
 
   /**
+   * @param {{ cardId: string, ok: boolean, message: string }} message
+   */
+  function applyCardPathCopyResult(message) {
+    if (message.cardId !== openCardId) {
+      return;
+    }
+
+    const button = /** @type {HTMLButtonElement | null} */ (root.querySelector('.card-modal-copy-path'));
+    if (button) {
+      button.disabled = false;
+    }
+
+    const feedback = /** @type {HTMLElement | null} */ (root.querySelector('.card-modal-copy-feedback'));
+    if (!feedback) {
+      return;
+    }
+    const next = createCardPathCopyFeedback(message);
+    feedback.className = `card-modal-copy-feedback ${next.className}`;
+    feedback.textContent = next.text;
+    feedback.setAttribute('role', next.role);
+    feedback.hidden = false;
+  }
+
+  /**
    * @param {{ column: Column, card: Card }} record
    */
   function renderCardDetails(record) {
@@ -810,7 +856,33 @@
     subtitle.className = 'card-modal-subtitle';
     subtitle.textContent = `Currently in ${record.column.title}`;
 
-    titleBlock.append(title, subtitle);
+    const pathActions = document.createElement('div');
+    pathActions.className = 'card-modal-path-actions';
+
+    const copyPath = document.createElement('button');
+    copyPath.className = 'card-modal-copy-path';
+    copyPath.type = 'button';
+    copyPath.textContent = 'Copy card path';
+    copyPath.title = 'Copy the absolute Markdown file path';
+    copyPath.setAttribute('aria-label', `Copy path for card "${record.card.title}"`);
+
+    const copyFeedback = document.createElement('span');
+    copyFeedback.className = 'card-modal-copy-feedback';
+    copyFeedback.setAttribute('role', 'status');
+    copyFeedback.setAttribute('aria-live', 'polite');
+    copyFeedback.hidden = true;
+
+    copyPath.addEventListener('click', () => {
+      copyPath.disabled = true;
+      copyFeedback.className = 'card-modal-copy-feedback';
+      copyFeedback.textContent = 'Copying card path…';
+      copyFeedback.setAttribute('role', 'status');
+      copyFeedback.hidden = false;
+      requestCardPathCopy(record.card.id, post);
+    });
+
+    pathActions.append(copyPath, copyFeedback);
+    titleBlock.append(title, subtitle, pathActions);
 
     const close = document.createElement('button');
     close.className = 'card-modal-close';

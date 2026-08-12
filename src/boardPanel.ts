@@ -8,6 +8,7 @@ import type { BoardStore } from './boardStore';
 import type { BoardPanelStatus } from './boardButton';
 import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
+import { copyCardPathToClipboard } from './cardPath';
 import { canMoveCardToColumn } from './utils';
 import { isWebviewToHostMessage, type CliRunStatus, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
 
@@ -259,6 +260,35 @@ export class BoardPanel {
         if (newCardId) {
           void this.panel.webview.postMessage({ type: 'openCard', cardId: newCardId } satisfies HostToWebviewMessage);
         }
+        return;
+      }
+      case 'copyCardPath': {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceFolder) {
+          void this.panel.webview.postMessage({
+            type: 'cardPathCopyResult',
+            cardId: message.cardId,
+            ok: false,
+            path: '',
+            message: 'Could not copy card path. Open a workspace folder and try again.',
+          } satisfies HostToWebviewMessage);
+          return;
+        }
+        const boardFolder = vscode.workspace
+          .getConfiguration('mwnn-kanban')
+          .get<string>('boardFolder', '.mwnn');
+        const result = await copyCardPathToClipboard(
+          workspaceFolder,
+          boardFolder,
+          message.cardId,
+          (value) => vscode.env.clipboard.writeText(value),
+        );
+        const response: HostToWebviewMessage = {
+          type: 'cardPathCopyResult',
+          cardId: message.cardId,
+          ...result,
+        };
+        void this.panel.webview.postMessage(response);
         return;
       }
       case 'renameColumn':

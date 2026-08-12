@@ -3,6 +3,7 @@
 .claude/**
 .chat/**
 .mwnn/**
+mwnn-kanban-pro/**
 src/**
 test/**
 dist-test/**

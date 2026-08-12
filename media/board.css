@@ -542,6 +542,7 @@ body {
 .card-modal-close,
 .card-modal-save,
 .card-modal-ai,
+.card-modal-copy-path,
 .card-modal-duplicate,
 .card-modal-danger {
   background: transparent;
@@ -569,6 +570,7 @@ body {
 .card-modal-close:focus-visible,
 .card-modal-save:focus-visible,
 .card-modal-ai:focus-visible,
+.card-modal-copy-path:focus-visible,
 .card-modal-duplicate:focus-visible,
 .card-modal-danger:focus-visible {
   border-color: var(--vscode-focusBorder);
@@ -708,9 +710,19 @@ body {
 .card-modal-close,
 .card-modal-save,
 .card-modal-ai,
+.card-modal-copy-path,
 .card-modal-duplicate,
 .card-modal-danger {
   padding: 8px 12px;
+}
+
+.card-modal-copy-path:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.card-modal-copy-path:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .card-modal-duplicate:hover {
@@ -737,6 +749,27 @@ body {
 .card-modal-danger:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.card-modal-path-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.card-modal-copy-feedback {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8rem;
+}
+
+.card-modal-copy-feedback-success {
+  color: var(--vscode-testing-iconPassed, var(--vscode-foreground));
+}
+
+.card-modal-copy-feedback-error {
+  color: var(--vscode-errorForeground);
 }
 
 .card-modal-form {

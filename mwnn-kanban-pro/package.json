@@ -1,0 +1,19 @@
+{
+  "name": "@tempuskg/mwnn-kanban-pro",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local no-op development stub for MWNN Kanban Pro.",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}
