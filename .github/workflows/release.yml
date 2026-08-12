@@ -37,6 +37,17 @@ jobs:
             exit 1
           fi
 
+      - name: Authenticate to GitHub Packages
+        shell: bash
+        env:
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: |
+          if [[ -z "$GH_PACKAGES_TOKEN" ]]; then
+            echo "::error::Repository secret GH_PACKAGES_TOKEN is not configured."
+            exit 1
+          fi
+          printf '%s\n' "//npm.pkg.github.com/:_authToken=$GH_PACKAGES_TOKEN" >> .npmrc
+
       - name: Install dependencies
         run: npm ci
 

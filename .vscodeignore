@@ -6,7 +6,14 @@
 src/**
 test/**
 dist-test/**
+# @tempuskg/mwnn-kanban-pro is loaded at runtime via a dynamic require.resolve()
+# (src/pro/loader.ts), so webpack cannot inline it into dist/extension.js — it
+# must ship as a real node_modules directory instead. Only the manifest and
+# compiled entry point are needed; excluding the sourcemap keeps the private
+# package from being trivially de-minified.
 node_modules/**
+!node_modules/@tempuskg/mwnn-kanban-pro/package.json
+!node_modules/@tempuskg/mwnn-kanban-pro/dist/index.js
 package-lock.json
 wiki/**
 raw/**
@@ -20,6 +27,7 @@ tsconfig*.json
 webpack.config.js
 eslint.config.mjs
 .gitignore
+.npmrc
 .vscodeignore
 AGENTS.md
 CONTRIBUTING.md
