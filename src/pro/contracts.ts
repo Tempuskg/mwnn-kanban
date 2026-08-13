@@ -36,6 +36,12 @@ export interface ProFeatureCapabilities {
 export interface ProFeatureRegistrationContext {
   readonly extensionContext: vscode.ExtensionContext;
   readonly capabilities?: ProFeatureCapabilities;
+  readonly hasProLicense: (
+    workspaceFolder?: vscode.WorkspaceFolder,
+  ) => Promise<boolean>;
+  readonly showUpgradePrompt: (
+    workspaceFolder?: vscode.WorkspaceFolder,
+  ) => Promise<void>;
   readonly log: (message: string) => void;
   readonly registerDisposable: (disposable: vscode.Disposable) => void;
 }

@@ -10,7 +10,9 @@ const LICENSE_KEY = 'license-key';
 const ORGANIZATION_ID = 'organization-id';
 const SECRET_STORAGE_KEY = 'mwnn-kanban-pro.licenseKey';
 const CACHE_STORAGE_KEY = 'mwnn-kanban-pro.licenseCache';
+const TRIAL_STORAGE_KEY = 'mwnn-kanban-pro.trialStartedAt';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
 
 interface CapturedRequest {
   readonly url: string;
@@ -105,6 +107,25 @@ function seedLicenseKey(harness: Harness): void {
 }
 
 suite('Pro license manager', () => {
+  test('starts a local trial without a key and expires at the 14-day boundary', async () => {
+    const harness = createHarness();
+    let currentTime = 1_000;
+    const manager = createProLicenseManager({
+      context: harness.context,
+      now: () => currentTime,
+    });
+
+    assert.equal(await manager.hasProLicense(), true);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
+
+    currentTime += TRIAL_DURATION_MS - 1;
+    assert.equal(await manager.hasProLicense(), true);
+
+    currentTime += 1;
+    assert.equal(await manager.hasProLicense(), false);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
+  });
+
   test('stores and validates a granted key with the configured Polar endpoint', async () => {
     const harness = createHarness();
     const requests: CapturedRequest[] = [];
@@ -143,6 +164,20 @@ suite('Pro license manager', () => {
     });
 
     assert.equal(await manager.hasProLicense(), false);
+  });
+
+  test('keeps a live trial active when a stored key is rejected', async () => {
+    const harness = createHarness();
+    seedLicenseKey(harness);
+    harness.globalState.set(TRIAL_STORAGE_KEY, 1_000);
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{ status: 'revoked' }]),
+      getConfiguration: () => createConfiguration(),
+      now: () => 1_000 + TRIAL_DURATION_MS - 1,
+    });
+
+    assert.equal(await manager.hasProLicense(), true);
   });
 
   test('accepts a legacy valid response', async () => {

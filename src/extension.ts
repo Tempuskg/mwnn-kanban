@@ -56,6 +56,9 @@ import {
   activateProFeatures,
   createBoardCapability,
   createBoardChangeEvent,
+  hasProLicense,
+  initializeProLicenseCommands,
+  showUpgradePrompt,
   type BoardChangeEvent,
 } from './pro';
 import {
@@ -149,7 +152,40 @@ function readAgentCliPaths(): AgentCliPathOverrides {
     .get<AgentCliPathOverrides>('agentCliPaths', {});
 }
 
+function getImplicitWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  if (activeUri) {
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(activeUri);
+    if (workspaceFolder) {
+      return workspaceFolder;
+    }
+  }
+
+  return vscode.workspace.workspaceFolders?.[0];
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  context.subscriptions.push(...initializeProLicenseCommands(context, {
+    registerCommand: (command, callback) =>
+      vscode.commands.registerCommand(command, callback),
+    executeCommand: (command, ...args) =>
+      vscode.commands.executeCommand(command, ...args),
+    getImplicitWorkspaceFolder,
+    getConfiguration: (workspaceFolder) =>
+      vscode.workspace.getConfiguration(
+        'mwnn-kanban-pro',
+        workspaceFolder?.uri,
+      ),
+    showInputBox: (options) => vscode.window.showInputBox(options),
+    showInformationMessage: (message, ...items) =>
+      vscode.window.showInformationMessage(message, ...items),
+    showWarningMessage: (message, options, ...items) =>
+      vscode.window.showWarningMessage(message, options, ...items),
+    showErrorMessage: (message) => vscode.window.showErrorMessage(message),
+    openExternal: (target) => vscode.env.openExternal(target),
+    parseUri: (value) => vscode.Uri.parse(value),
+  }));
+
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (!workspaceRoot) {
     registerUnavailableCommands(context);
@@ -753,6 +789,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   void activateProFeatures({
     extensionContext: context,
+    hasProLicense,
+    showUpgradePrompt,
     log: (message) => cliOutputChannel.appendLine(`[pro] ${message}`),
     registerDisposable: (disposable) => context.subscriptions.push(disposable),
     capabilities: { board: boardCapability },

@@ -111,6 +111,27 @@
         "command": "mwnn-kanban.resetBoard",
         "title": "Reset Board",
         "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.upgradeToPro",
+        "title": "Get MWNN Kanban Pro",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "mwnn-kanban.enterProLicenseKey",
+        "title": "Enter Pro License Key",
+        "category": "MWNN Kanban Pro"
+      },
+      {
+        "command": "mwnn-kanban.clearProLicenseKey",
+        "title": "Clear Pro License Key",
+        "category": "MWNN Kanban Pro"
+      },
+      {
+        "command": "mwnn-kanban.showProLicenseStatus",
+        "title": "Show Pro License Status",
+        "category": "MWNN Kanban Pro"
       }
     ],
     "configuration": {
@@ -283,6 +304,19 @@
         },
         {
           "command": "mwnn-kanban.resetBoard"
+        },
+        {
+          "command": "mwnn-kanban.upgradeToPro",
+          "when": "!mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban.enterProLicenseKey"
+        },
+        {
+          "command": "mwnn-kanban.clearProLicenseKey"
+        },
+        {
+          "command": "mwnn-kanban.showProLicenseStatus"
         }
       ]
     }

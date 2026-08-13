@@ -22,6 +22,8 @@ function createRegistrationContext(
 ): ProFeatureRegistrationContext {
   return {
     extensionContext: {} as vscode.ExtensionContext,
+    hasProLicense: async () => false,
+    showUpgradePrompt: async () => undefined,
     log: (message) => {
       logs.push(message);
     },

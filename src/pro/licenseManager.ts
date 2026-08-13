@@ -4,7 +4,9 @@ const DEFAULT_POLAR_API_BASE_URL = 'https://api.polar.sh';
 const POLAR_VALIDATE_PATH = '/v1/customer-portal/license-keys/validate';
 const SECRETS_KEY = 'mwnn-kanban-pro.licenseKey';
 const CACHE_STATE_KEY = 'mwnn-kanban-pro.licenseCache';
+const TRIAL_STATE_KEY = 'mwnn-kanban-pro.trialStartedAt';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
 
 interface LicenseCache {
   readonly valid: boolean;
@@ -171,22 +173,42 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
     return cached.valid;
   }
 
+  async function hasActiveTrial(startIfMissing: boolean): Promise<boolean> {
+    const checkedAt = now();
+    const storedStartedAt: unknown = deps.context.globalState.get(TRIAL_STATE_KEY);
+    let startedAt = typeof storedStartedAt === 'number'
+      && Number.isFinite(storedStartedAt)
+      ? storedStartedAt
+      : undefined;
+
+    if (startedAt === undefined) {
+      if (!startIfMissing) {
+        return false;
+      }
+
+      startedAt = checkedAt;
+      await deps.context.globalState.update(TRIAL_STATE_KEY, startedAt);
+    }
+
+    return checkedAt < startedAt + TRIAL_DURATION_MS;
+  }
+
   async function hasProLicense(
     workspaceFolder?: vscode.WorkspaceFolder,
   ): Promise<boolean> {
     const key = await deps.context.secrets.get(SECRETS_KEY);
     if (!key) {
-      return false;
+      return hasActiveTrial(true);
     }
 
     const cached = readFreshCachedValidity();
     if (cached !== undefined) {
-      return cached;
+      return cached || await hasActiveTrial(false);
     }
 
     const valid = await validateLicenseKey(key, workspaceFolder);
     await storeCache(valid);
-    return valid;
+    return valid || await hasActiveTrial(false);
   }
 
   async function promptEnterKey(
@@ -229,6 +251,12 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
   async function showLicenseStatus(
     workspaceFolder?: vscode.WorkspaceFolder,
   ): Promise<void> {
+    const valid = await hasProLicense(workspaceFolder);
+    if (valid) {
+      await Promise.resolve(showInformationMessage('MWNN Kanban Pro is active.'));
+      return;
+    }
+
     if (!getOrganizationId(workspaceFolder)) {
       await Promise.resolve(showInformationMessage(
         'MWNN Kanban Pro is not configured. Set mwnn-kanban-pro.polar.organizationId to enable license validation.',
@@ -236,11 +264,8 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
       return;
     }
 
-    const valid = await hasProLicense(workspaceFolder);
     await Promise.resolve(showInformationMessage(
-      valid
-        ? 'MWNN Kanban Pro is active.'
-        : 'MWNN Kanban Pro is not activated. Use "Enter Pro License Key" to activate.',
+      'MWNN Kanban Pro is not activated. Use "Enter Pro License Key" to activate.',
     ));
   }
 
