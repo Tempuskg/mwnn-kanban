@@ -544,6 +544,38 @@ suite('board store', () => {
     assert.deepEqual(reloaded.getState().columns[0]!.cards.map((card) => card.title), ['B', 'C', 'A']);
   });
 
+  test('persists a cross-column move to the top while preserving destination-card order', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [
+        { id: 'col-verify', title: 'Verify', role: 'verify', wipLimit: null, reverseWip: null },
+        { id: 'col-done', title: 'Done', role: 'done', wipLimit: null, reverseWip: null },
+      ],
+    };
+    const cards = [
+      { columnId: 'col-verify', position: 1000, card: { id: 'card-moving', title: 'Moving', createdAt: 1 } },
+      { columnId: 'col-done', position: 1000, card: { id: 'card-done-a', title: 'Done A', createdAt: 2 } },
+      { columnId: 'col-done', position: 2000, card: { id: 'card-done-b', title: 'Done B', createdAt: 3 } },
+    ] satisfies CardDocument[];
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      ...Object.fromEntries(cards.map((card) => [`.mwnn/cards/${card.card.id}.md`, serializeCard(card)])),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.moveCard('card-moving', 'col-done', 0);
+
+    const after = fileSystem.snapshot();
+    assert.equal(after.get('.mwnn/cards/card-done-a.md'), before.get('.mwnn/cards/card-done-a.md'));
+    assert.equal(after.get('.mwnn/cards/card-done-b.md'), before.get('.mwnn/cards/card-done-b.md'));
+    const reloaded = await createBoardStore(createDeps({ fileSystem }));
+    assert.deepEqual(
+      reloaded.getState().columns[1]!.cards.map((card) => card.title),
+      ['Moving', 'Done A', 'Done B'],
+    );
+  });
+
   test('repairs duplicate existing positions deterministically when the next card is added', async () => {
     const columnsDocument: ColumnsDocument = {
       version: BOARD_FILE_VERSION,

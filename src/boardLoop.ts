@@ -687,7 +687,9 @@ export async function runBoardLoop(
       }
       case 'complete': {
         report(`Completing verified card "${card.title}" in ${action.toColumn.title}`);
-        await store.moveCard(card.id, action.toColumn.id, action.toColumn.cards.length);
+        // Put the most recently completed AI Loop card first while leaving the
+        // existing Done-card order intact below it.
+        await store.moveCard(card.id, action.toColumn.id, 0);
         await store.appendActivity(card.id, formatLoopVerificationPassedEntry(action.toColumn.title));
         session.verifications.delete(card.id);
         summary.verified.push(card.title);

@@ -745,12 +745,33 @@ suite('board loop run', () => {
     assert.deepEqual(summary.parked.length, 1);
   });
 
-  test('with AI verification enabled, VERIFY: PASS moves the card to the end of Done', async () => {
+  test('with AI verification enabled, VERIFY: PASS moves the card to the top of an empty Done column', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Verified work', { kind: 'ai' });
+    const board = fakeBoard(state);
+    const gateways = verificationGateways(async (card) => {
+      await board.store.appendActivity(card.id, 'Checked the workspace and tests.\nVERIFY: PASS');
+      return true;
+    });
+
+    await runBoardLoop(board.store, gateways, neverCancelled(), {
+      pollIntervalMs: 0,
+      verifyWithAi: true,
+    });
+
+    assert.equal(board.columnTitleOf(cardId), 'Done');
+    assert.deepEqual(
+      board.getState().columns[4]!.cards.map((card) => card.id),
+      [cardId],
+    );
+  });
+
+  test('with AI verification enabled, VERIFY: PASS moves the card above Done cards without reordering them', async () => {
     let { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Verified work', { kind: 'ai' });
     const doneColumnId = state.columns[4]!.id;
-    state = addCard(state, doneColumnId, 'Already done');
-    const existingDoneId = state.columns[4]!.cards[0]!.id;
-    state = setAssignee(state, existingDoneId, { kind: 'human' });
+    state = addCard(state, doneColumnId, 'Already done first');
+    const firstExistingDoneId = state.columns[4]!.cards[0]!.id;
+    state = addCard(state, doneColumnId, 'Already done second');
+    const secondExistingDoneId = state.columns[4]!.cards[1]!.id;
     const board = fakeBoard(state);
     let verificationCalls = 0;
     const gateways = verificationGateways(async (card) => {
@@ -768,7 +789,7 @@ suite('board loop run', () => {
     assert.equal(board.columnTitleOf(cardId), 'Done');
     assert.deepEqual(
       board.getState().columns[4]!.cards.map((card) => card.id),
-      [existingDoneId, cardId],
+      [cardId, firstExistingDoneId, secondExistingDoneId],
     );
     assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
     assert.deepEqual(summary.verified, ['Verified work']);
