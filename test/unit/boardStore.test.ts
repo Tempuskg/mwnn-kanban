@@ -14,6 +14,7 @@ import {
   createBoardStore,
   readBoardStateIfPresent,
   type BoardReaderDeps,
+  type BoardStoreChange,
   type BoardStoreDeps,
   type FileSystemLike,
   type MementoLike,
@@ -202,6 +203,41 @@ suite('board store', () => {
     assert.match(fileSystem.snapshot().get('.mwnn/README.md') ?? '', /source of truth/i);
   });
 
+  test('notifies after a mutation is persisted with cloned previous and current states', async () => {
+    const fileSystem = createFakeFileSystem();
+    const changes: BoardStoreChange[] = [];
+    let persistedAtNotification = false;
+    const store = await createBoardStore(
+      createDeps({
+        fileSystem,
+        defaultColumns: ['Ready'],
+        onDidChange(change) {
+          changes.push(change);
+          persistedAtNotification = cardDocuments(fileSystem.snapshot()).some(
+            (document) => document.card.title === 'Task',
+          );
+        },
+      }),
+    );
+    const previous = store.getState();
+
+    const current = await store.addCard(previous.columns[0]!.id, 'Task');
+
+    assert.equal(changes.length, 1);
+    const change = changes[0];
+    assert.ok(change);
+    assert.equal(change.reason, 'mutation');
+    assert.deepEqual(change.previous, previous);
+    assert.deepEqual(change.current, current);
+    assert.notStrictEqual(change.previous, previous);
+    assert.notStrictEqual(change.current, current);
+    assert.equal(persistedAtNotification, true);
+
+    change.previous.columns[0]!.title = 'Mutated previous snapshot';
+    change.current.columns[0]!.title = 'Mutated current snapshot';
+    assert.equal(store.getState().columns[0]!.title, 'Ready');
+  });
+
   test('persists added cards as markdown files and reloads them from disk', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['To Do'] }));
@@ -309,6 +345,30 @@ suite('board store', () => {
     );
     const files = [...fileSystem.snapshot().keys()].filter((filePath) => filePath.startsWith('.mwnn/cards/'));
     assert.equal(files.length, 1, 'the deleted copy must stay deleted on disk');
+  });
+
+  test('a throwing change listener does not reject mutations or stall the queue', async () => {
+    const fileSystem = createFakeFileSystem();
+    let notificationCount = 0;
+    const store = await createBoardStore(
+      createDeps({
+        fileSystem,
+        defaultColumns: ['Ready'],
+        onDidChange() {
+          notificationCount += 1;
+          throw new Error('listener failed');
+        },
+      }),
+    );
+    const columnId = store.getState().columns[0]!.id;
+
+    await Promise.all([store.addCard(columnId, 'First'), store.addCard(columnId, 'Second')]);
+
+    assert.deepEqual(
+      store.getState().columns[0]!.cards.map((card) => card.title),
+      ['First', 'Second'],
+    );
+    assert.equal(notificationCount, 2);
   });
 
   test('appendActivity persists markdown activity updates', async () => {
@@ -570,12 +630,37 @@ suite('board store', () => {
     assert.match(fileSystem.snapshot().get('.mwnn/README.md') ?? '', /cards\/<card-id>\.md/);
   });
 
-  test('reload picks up external card edits from disk', async () => {
+  test('does not notify for a reload without a board change', async () => {
     const fileSystem = createFakeFileSystem();
-    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));
+    let notificationCount = 0;
+    const store = await createBoardStore(
+      createDeps({
+        fileSystem,
+        defaultColumns: ['Ready'],
+        onDidChange() {
+          notificationCount += 1;
+        },
+      }),
+    );
+
+    await store.addCard(store.getState().columns[0]!.id, 'Task');
+    assert.equal(notificationCount, 1);
+
+    await store.reload();
+    assert.equal(notificationCount, 1);
+  });
+
+  test('reload notifies after an external card edit', async () => {
+    const fileSystem = createFakeFileSystem();
+    const changes: BoardStoreChange[] = [];
+    const store = await createBoardStore(
+      createDeps({ fileSystem, defaultColumns: ['Ready'], onDidChange: (change) => changes.push(change) }),
+    );
     const columnId = store.getState().columns[0]!.id;
 
     await store.addCard(columnId, 'Original');
+    changes.length = 0;
+    const previous = store.getState();
 
     const cardFile = [...fileSystem.snapshot().keys()].find((filePath) => filePath.startsWith('.mwnn/cards/'));
     assert.ok(cardFile, 'expected a card markdown file to be written');
@@ -584,8 +669,15 @@ suite('board store', () => {
     parsed.card.title = 'Externally edited';
     await fileSystem.writeFile(cardFile!, serializeCard(parsed));
 
-    await store.reload();
-    assert.equal(store.getState().columns[0]!.cards[0]!.title, 'Externally edited');
+    const current = await store.reload();
+
+    assert.equal(current.columns[0]!.cards[0]!.title, 'Externally edited');
+    assert.equal(changes.length, 1);
+    const change = changes[0];
+    assert.ok(change);
+    assert.equal(change.reason, 'reload');
+    assert.deepEqual(change.previous, previous);
+    assert.deepEqual(change.current, current);
   });
 
   test('a board mutation preserves an external activity edit instead of clobbering it', async () => {

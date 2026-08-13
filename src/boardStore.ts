@@ -19,6 +19,7 @@ import {
   addCard,
   addColumn,
   appendActivity,
+  boardsEqual,
   calculateCardPosition,
   cloneBoard,
   defaultBoard,
@@ -64,11 +65,18 @@ export interface BoardReaderDeps {
   readonly boardFolder: string;
 }
 
+export interface BoardStoreChange {
+  readonly previous: BoardState;
+  readonly current: BoardState;
+  readonly reason: 'mutation' | 'reload';
+}
+
 export interface BoardStoreDeps extends BoardReaderDeps {
   readonly fileSystem: FileSystemLike;
   readonly defaultColumns: readonly string[];
   readonly defaultReadyReverseWip: number;
   readonly legacyMemento?: MementoLike;
+  readonly onDidChange?: (change: BoardStoreChange) => void;
 }
 
 export interface BoardStore {
@@ -95,6 +103,7 @@ export interface BoardStore {
 
 export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore> {
   let state = await loadOrInitializeState(deps);
+  let published = cloneBoard(state);
 
   async function refreshFromDisk(): Promise<void> {
     const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
@@ -109,65 +118,73 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     }
   }
 
-  // Serialise all commits so that rapid back-to-back messages (e.g. setAssignee
-  // followed immediately by moveCard) never race: the second commit's
-  // refreshFromDisk always reads the state the first commit already wrote.
+  // Serialise mutations and reloads so a watcher refresh cannot interleave with
+  // an in-flight write, and each mutation sees the preceding write on disk.
   let commitQueue: Promise<unknown> = Promise.resolve();
 
-  // Pull in any external edits (e.g. a hand-off agent appending to a card's
-  // Activity section) before applying and writing, so a board mutation never
-  // overwrites newer on-disk content with stale in-memory state.
-  function commit(apply: (current: BoardState) => BoardState): Promise<BoardState> {
-    const next = commitQueue.then(async () => {
-      await refreshFromDisk();
-      // Keep the "blocked cards can't sit past Ready" invariant after every change:
-      // a mutation may have blocked a card that is already in a work column (e.g.
-      // adding a dependency), so pull any such card back to Ready before writing.
-      state = cloneBoard(enforceBlockedCardPlacement(apply(state)));
-      await writeBoardState(deps, state);
-      return cloneBoard(state);
-    });
-    // Swallow errors on the queue tail so a failed commit doesn't stall
-    // subsequent ones; errors still propagate to the original caller via `next`.
-    commitQueue = next.catch(() => undefined);
-    return next;
+  function notify(current: BoardState, reason: BoardStoreChange['reason']): void {
+    if (boardsEqual(published, current)) {
+      return;
+    }
+
+    const previous = published;
+    published = cloneBoard(current);
+    try {
+      deps.onDidChange?.({
+        previous: cloneBoard(previous),
+        current: cloneBoard(current),
+        reason,
+      });
+    } catch {
+      // Observers are outside the persistence contract and cannot break its queue.
+    }
   }
 
-  // Route reloads through the same queue as commits. A reload triggered by the
-  // file watcher (e.g. after a card write) must never run its refreshFromDisk
-  // interleaved with an in-flight commit's apply/write, or it can re-read the
-  // pre-change disk and clobber the committed state — for instance resurrecting
-  // a card the user just deleted right after duplicating it.
-  function reload(): Promise<BoardState> {
+  // Pull in external edits before every operation. Mutations then apply and
+  // persist their change; reloads only publish the refreshed state.
+  function runQueued(apply?: (current: BoardState) => BoardState): Promise<BoardState> {
     const next = commitQueue.then(async () => {
       await refreshFromDisk();
-      return cloneBoard(state);
+      if (apply !== undefined) {
+        // A mutation may block a card already in a work column, so pull it back
+        // to Ready before the updated board is written.
+        state = cloneBoard(enforceBlockedCardPlacement(apply(state)));
+        await writeBoardState(deps, state);
+      }
+
+      const current = cloneBoard(state);
+      notify(current, apply === undefined ? 'reload' : 'mutation');
+      return current;
     });
+    // Swallow errors on the queue tail so a failed operation doesn't stall
+    // subsequent ones; errors still propagate to the original caller via `next`.
     commitQueue = next.catch(() => undefined);
     return next;
   }
 
   return {
     getState: () => cloneBoard(state),
-    reload,
-    addColumn: (title) => commit((current) => addColumn(current, title)),
-    addCard: (columnId, title) => commit((current) => addCard(current, columnId, title)),
-    editCard: (cardId, title) => commit((current) => editCard(current, cardId, title)),
-    duplicateCard: (cardId) => commit((current) => duplicateCard(current, cardId)),
-    deleteCard: (cardId) => commit((current) => deleteCard(current, cardId)),
-    moveCard: (cardId, toColumnId, toIndex) => commit((current) => moveCard(current, cardId, toColumnId, toIndex)),
-    setAssignee: (cardId, assignee) => commit((current) => setAssignee(current, cardId, assignee)),
-    setDependencies: (cardId, dependsOn) => commit((current) => setDependencies(current, cardId, dependsOn)),
-    setDescription: (cardId, description) => commit((current) => setDescription(current, cardId, description)),
+    reload: () => runQueued(),
+    addColumn: (title) => runQueued((current) => addColumn(current, title)),
+    addCard: (columnId, title) => runQueued((current) => addCard(current, columnId, title)),
+    editCard: (cardId, title) => runQueued((current) => editCard(current, cardId, title)),
+    duplicateCard: (cardId) => runQueued((current) => duplicateCard(current, cardId)),
+    deleteCard: (cardId) => runQueued((current) => deleteCard(current, cardId)),
+    moveCard: (cardId, toColumnId, toIndex) =>
+      runQueued((current) => moveCard(current, cardId, toColumnId, toIndex)),
+    setAssignee: (cardId, assignee) => runQueued((current) => setAssignee(current, cardId, assignee)),
+    setDependencies: (cardId, dependsOn) => runQueued((current) => setDependencies(current, cardId, dependsOn)),
+    setDescription: (cardId, description) => runQueued((current) => setDescription(current, cardId, description)),
     setAcceptanceCriteria: (cardId, acceptanceCriteria) =>
-      commit((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
-    setActivity: (cardId, activity) => commit((current) => setActivity(current, cardId, activity)),
-    appendActivity: (cardId, entry) => commit((current) => appendActivity(current, cardId, entry)),
-    setColumnConfig: (columnId, config) => commit((current) => setColumnConfig(current, columnId, config)),
-    renameColumn: (columnId, title) => commit((current) => renameColumn(current, columnId, title)),
-    removeColumn: (columnId, targetColumnId) => commit((current) => removeColumn(current, columnId, targetColumnId)),
-    reorderColumns: (columnId, toIndex) => commit((current) => reorderColumns(current, columnId, toIndex)),
-    reset: () => commit(() => createInitialBoard(deps.defaultColumns, deps.defaultReadyReverseWip)),
+      runQueued((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
+    setActivity: (cardId, activity) => runQueued((current) => setActivity(current, cardId, activity)),
+    appendActivity: (cardId, entry) => runQueued((current) => appendActivity(current, cardId, entry)),
+    setColumnConfig: (columnId, config) => runQueued((current) => setColumnConfig(current, columnId, config)),
+    renameColumn: (columnId, title) => runQueued((current) => renameColumn(current, columnId, title)),
+    removeColumn: (columnId, targetColumnId) =>
+      runQueued((current) => removeColumn(current, columnId, targetColumnId)),
+    reorderColumns: (columnId, toIndex) => runQueued((current) => reorderColumns(current, columnId, toIndex)),
+    reset: () => runQueued(() => createInitialBoard(deps.defaultColumns, deps.defaultReadyReverseWip)),
   };
 }
 
