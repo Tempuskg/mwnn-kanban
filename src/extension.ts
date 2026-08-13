@@ -52,7 +52,12 @@ import {
   type RunCardWithAgentCliDeps,
   type RunWithAiProviderChoice,
 } from './runWithAi';
-import { activateProFeatures } from './pro';
+import {
+  activateProFeatures,
+  createBoardCapability,
+  createBoardChangeEvent,
+  type BoardChangeEvent,
+} from './pro';
 import {
   buildDoabilityPrompt,
   buildTriagePrompt,
@@ -65,7 +70,7 @@ import {
 } from './boardLoop';
 import { BoardPanel } from './boardPanel';
 import { BoardSidebarViewProvider } from './sidebarView';
-import { createBoardStore, type FileSystemLike } from './boardStore';
+import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from './boardStore';
 import {
   parseSkillDocument,
   planSkillInstallation,
@@ -151,13 +156,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
 
+  const boardFolder = readBoardFolder();
+  const boardChangeEmitter = new vscode.EventEmitter<BoardChangeEvent>();
+  context.subscriptions.push(boardChangeEmitter);
   const workspaceFs = createWorkspaceFileSystem(workspaceRoot);
   const store = await createBoardStore({
     fileSystem: workspaceFs,
-    boardFolder: readBoardFolder(),
+    boardFolder,
     defaultColumns: readDefaultColumns(),
     defaultReadyReverseWip: readDefaultReadyReverseWip(),
     legacyMemento: context.workspaceState,
+    onDidChange: (change) => {
+      boardChangeEmitter.fire(createBoardChangeEvent(
+        change,
+        workspaceRoot.fsPath,
+        boardFolder,
+      ));
+    },
+  });
+
+  const boardCapability = createBoardCapability({
+    store,
+    workspaceRoot: workspaceRoot.fsPath,
+    boardFolder,
+    onDidChangeBoard: boardChangeEmitter.event,
+    readBoardAt: (rootFsPath, targetBoardFolder) =>
+      readBoardStateIfPresent({
+        fileSystem: createWorkspaceFileSystem(vscode.Uri.file(rootFsPath)),
+        boardFolder: targetBoardFolder,
+      }),
+    showBoard: () => {
+      openBoard();
+    },
+    revealCard: (cardId) => BoardPanel.revealCard(cardId),
   });
 
   const inFlightCardHandoffs = createChatHandoffInFlight();
@@ -269,9 +300,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return false;
       }
 
-      const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
-      const cardFilePath = `${boardFolder}/cards/${selection.card.id}.md`;
-      const prompt = buildCardHandoffPrompt(selection.card, cardFilePath);
+      const prompt = buildCardHandoffPrompt(
+        selection.card,
+        boardCapability.cardFilePath(selection.card.id),
+      );
 
       if (choice.kind === 'cli') {
         return runCardWithAgentCli(
@@ -310,9 +342,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return false;
       }
 
-      const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
-      const cardFilePath = `${boardFolder}/cards/${card.id}.md`;
-      const prompt = buildCardDefinitionPrompt(card, cardFilePath);
+      const prompt = buildCardDefinitionPrompt(card, boardCapability.cardFilePath(card.id));
 
       if (choice.kind === 'cli') {
         return runCardWithAgentCli(
@@ -368,11 +398,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
     }
 
-    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
+    const normalizedBoardFolder = boardFolder.replace(/\\/g, '/').replace(/\/+$/, '');
     const prompt = buildPlanImportPrompt(
       source,
       { columnId: targetColumn.id, columnTitle: targetColumn.title, existingCount: targetColumn.cards.length },
-      boardFolder,
+      normalizedBoardFolder,
       referencePathsForEnv(providerEnv, SKILL_SLUGS),
     );
     const handedOff = await handOffPromptToChat(target, prompt, 'the plan');
@@ -405,8 +435,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    const boardFolder = readBoardFolder().replace(/\\/g, '/').replace(/\/+$/, '');
-    const cardFilePath = (card: BoardCard): string => `${boardFolder}/cards/${card.id}.md`;
+    const cardFilePath = (card: BoardCard): string => boardCapability.cardFilePath(card.id);
     const loop = { cancelled: false, abortController: new AbortController() };
     activeLoop = loop;
 
@@ -579,7 +608,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const openBoard = (): BoardPanel => BoardPanel.show(boardPanelDeps);
 
-  context.subscriptions.push(registerBoardWatcher(workspaceRoot, readBoardFolder(), store));
+  context.subscriptions.push(registerBoardWatcher(workspaceRoot, boardFolder, store));
   context.subscriptions.push(
     // Reopen the board automatically when VS Code restores a session in which
     // the board panel was open (restart or window reload). Restoration routes
@@ -726,6 +755,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     extensionContext: context,
     log: (message) => cliOutputChannel.appendLine(`[pro] ${message}`),
     registerDisposable: (disposable) => context.subscriptions.push(disposable),
+    capabilities: { board: boardCapability },
   });
 }
 
