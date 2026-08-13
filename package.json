@@ -229,6 +229,18 @@
           ],
           "description": "Column titles used when a board is first created or reset. Roles are inferred from these titles, and the default set includes a Ready column for reverse-WIP tracking.",
           "scope": "resource"
+        },
+        "mwnn-kanban-pro.polar.organizationId": {
+          "type": "string",
+          "default": "",
+          "description": "Polar organization id used to validate MWNN Kanban Pro license keys.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.polar.apiBaseUrl": {
+          "type": "string",
+          "default": "https://api.polar.sh",
+          "description": "Polar API base URL used for MWNN Kanban Pro license validation. Change this only when testing against a Polar sandbox.",
+          "scope": "application"
         }
       }
     },
