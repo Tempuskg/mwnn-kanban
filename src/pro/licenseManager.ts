@@ -11,6 +11,7 @@ const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
 interface LicenseCache {
   readonly valid: boolean;
   readonly expiresAt: number;
+  readonly benefitId?: string;
 }
 
 export interface LicenseSecretStorage {
@@ -75,7 +76,8 @@ function isLicenseCache(value: unknown): value is LicenseCache {
   const record = value as Record<string, unknown>;
   return typeof record.valid === 'boolean'
     && typeof record.expiresAt === 'number'
-    && Number.isFinite(record.expiresAt);
+    && Number.isFinite(record.expiresAt)
+    && (record.benefitId === undefined || typeof record.benefitId === 'string');
 }
 
 function isPolarLegacyValidResponse(value: unknown): value is { readonly valid: boolean } {
@@ -88,7 +90,10 @@ function isPolarLegacyValidResponse(value: unknown): value is { readonly valid: 
 
 function isPolarValidatedLicenseKey(
   value: unknown,
-): value is { readonly status: 'granted' | 'revoked' | 'disabled' } {
+): value is {
+  readonly status: 'granted' | 'revoked' | 'disabled';
+  readonly benefit_id?: unknown;
+} {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
@@ -111,6 +116,12 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
       .trim();
   }
 
+  function getBenefitId(workspaceFolder?: vscode.WorkspaceFolder): string {
+    return getConfiguration(workspaceFolder)
+      .get<string>('polar.benefitId', '')
+      .trim();
+  }
+
   function getPolarApiBaseUrl(workspaceFolder?: vscode.WorkspaceFolder): string {
     const configured = getConfiguration(workspaceFolder)
       .get<string>('polar.apiBaseUrl', DEFAULT_POLAR_API_BASE_URL)
@@ -122,10 +133,11 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
     return `${getPolarApiBaseUrl(workspaceFolder)}${POLAR_VALIDATE_PATH}`;
   }
 
-  async function storeCache(valid: boolean): Promise<void> {
+  async function storeCache(valid: boolean, benefitId: string): Promise<void> {
     const cache: LicenseCache = {
       valid,
       expiresAt: now() + CACHE_TTL_MS,
+      ...(benefitId ? { benefitId } : {}),
     };
     await deps.context.globalState.update(CACHE_STATE_KEY, cache);
   }
@@ -135,6 +147,7 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
     workspaceFolder?: vscode.WorkspaceFolder,
   ): Promise<boolean> {
     const organizationId = getOrganizationId(workspaceFolder);
+    const benefitId = getBenefitId(workspaceFolder);
     if (!organizationId) {
       return false;
     }
@@ -146,6 +159,7 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
         body: JSON.stringify({
           key,
           organization_id: organizationId,
+          ...(benefitId ? { benefit_id: benefitId } : {}),
         }),
       });
 
@@ -155,18 +169,26 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
 
       const data: unknown = await response.json();
       if (isPolarLegacyValidResponse(data)) {
-        return data.valid;
+        return benefitId ? false : data.valid;
       }
 
-      return isPolarValidatedLicenseKey(data) ? data.status === 'granted' : false;
+      return isPolarValidatedLicenseKey(data)
+        && data.status === 'granted'
+        && (!benefitId || data.benefit_id === benefitId);
     } catch {
       return false;
     }
   }
 
-  function readFreshCachedValidity(): boolean | undefined {
+  function readFreshCachedValidity(
+    workspaceFolder?: vscode.WorkspaceFolder,
+  ): boolean | undefined {
     const cached: unknown = deps.context.globalState.get(CACHE_STATE_KEY);
     if (!isLicenseCache(cached) || cached.expiresAt <= now()) {
+      return undefined;
+    }
+
+    if ((cached.benefitId ?? '') !== getBenefitId(workspaceFolder)) {
       return undefined;
     }
 
@@ -201,13 +223,13 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
       return hasActiveTrial(true);
     }
 
-    const cached = readFreshCachedValidity();
+    const cached = readFreshCachedValidity(workspaceFolder);
     if (cached !== undefined) {
       return cached || await hasActiveTrial(false);
     }
 
     const valid = await validateLicenseKey(key, workspaceFolder);
-    await storeCache(valid);
+    await storeCache(valid, getBenefitId(workspaceFolder));
     return valid || await hasActiveTrial(false);
   }
 
@@ -226,7 +248,7 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
 
     await deps.context.secrets.store(SECRETS_KEY, key);
     const valid = await validateLicenseKey(key, workspaceFolder);
-    await storeCache(valid);
+    await storeCache(valid, getBenefitId(workspaceFolder));
 
     if (valid) {
       void Promise.resolve(showInformationMessage('MWNN Kanban Pro license activated.'));

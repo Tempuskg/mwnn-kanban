@@ -8,6 +8,8 @@ import {
 
 const LICENSE_KEY = 'license-key';
 const ORGANIZATION_ID = 'organization-id';
+const BENEFIT_ID = 'benefit-id';
+const OTHER_BENEFIT_ID = 'other-benefit-id';
 const SECRET_STORAGE_KEY = 'mwnn-kanban-pro.licenseKey';
 const CACHE_STORAGE_KEY = 'mwnn-kanban-pro.licenseCache';
 const TRIAL_STORAGE_KEY = 'mwnn-kanban-pro.trialStartedAt';
@@ -126,7 +128,7 @@ suite('Pro license manager', () => {
     assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
   });
 
-  test('stores and validates a granted key with the configured Polar endpoint', async () => {
+  test('validates any granted benefit when no benefit id is configured', async () => {
     const harness = createHarness();
     const requests: CapturedRequest[] = [];
     const manager = createProLicenseManager({
@@ -152,6 +154,85 @@ suite('Pro license manager', () => {
       organization_id: ORGANIZATION_ID,
     });
     assert.ok(harness.globalState.has(CACHE_STORAGE_KEY));
+  });
+
+  test('sends and verifies the configured benefit id', async () => {
+    const harness = createHarness();
+    seedLicenseKey(harness);
+    const requests: CapturedRequest[] = [];
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{
+        status: 'granted',
+        benefit_id: BENEFIT_ID,
+      }], requests),
+      getConfiguration: () => createConfiguration({
+        'polar.benefitId': ` ${BENEFIT_ID} `,
+      }),
+    });
+
+    assert.equal(await manager.hasProLicense(), true);
+    assert.equal(typeof requests[0]?.init?.body, 'string');
+    assert.deepEqual(JSON.parse(requests[0]?.init?.body as string), {
+      key: LICENSE_KEY,
+      organization_id: ORGANIZATION_ID,
+      benefit_id: BENEFIT_ID,
+    });
+  });
+
+  test('rejects a granted key for a different benefit', async () => {
+    const harness = createHarness();
+    seedLicenseKey(harness);
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{
+        status: 'granted',
+        benefit_id: OTHER_BENEFIT_ID,
+      }]),
+      getConfiguration: () => createConfiguration({
+        'polar.benefitId': BENEFIT_ID,
+      }),
+    });
+
+    assert.equal(await manager.hasProLicense(), false);
+  });
+
+  test('rejects a granted response without benefit information when configured', async () => {
+    const harness = createHarness();
+    seedLicenseKey(harness);
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{ status: 'granted' }]),
+      getConfiguration: () => createConfiguration({
+        'polar.benefitId': BENEFIT_ID,
+      }),
+    });
+
+    assert.equal(await manager.hasProLicense(), false);
+  });
+
+  test('does not reuse an unscoped cache after a benefit id is configured', async () => {
+    const harness = createHarness();
+    seedLicenseKey(harness);
+    harness.globalState.set(CACHE_STORAGE_KEY, {
+      valid: true,
+      expiresAt: 2_000,
+    });
+    const requests: CapturedRequest[] = [];
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{
+        status: 'granted',
+        benefit_id: OTHER_BENEFIT_ID,
+      }], requests),
+      getConfiguration: () => createConfiguration({
+        'polar.benefitId': BENEFIT_ID,
+      }),
+      now: () => 1_000,
+    });
+
+    assert.equal(await manager.hasProLicense(), false);
+    assert.equal(requests.length, 1);
   });
 
   test('rejects a revoked current-shape response', async () => {
@@ -180,7 +261,7 @@ suite('Pro license manager', () => {
     assert.equal(await manager.hasProLicense(), true);
   });
 
-  test('accepts a legacy valid response', async () => {
+  test('accepts a legacy valid response when no benefit id is configured', async () => {
     const harness = createHarness();
     seedLicenseKey(harness);
     const manager = createProLicenseManager({
@@ -190,6 +271,20 @@ suite('Pro license manager', () => {
     });
 
     assert.equal(await manager.hasProLicense(), true);
+  });
+
+  test('rejects a legacy valid response when a benefit id is configured', async () => {
+    const harness = createHarness();
+    seedLicenseKey(harness);
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{ valid: true }]),
+      getConfiguration: () => createConfiguration({
+        'polar.benefitId': BENEFIT_ID,
+      }),
+    });
+
+    assert.equal(await manager.hasProLicense(), false);
   });
 
   test('returns false when Polar validation fails on the network', async () => {

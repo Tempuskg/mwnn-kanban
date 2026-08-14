@@ -257,6 +257,12 @@
           "description": "Polar organization id used to validate MWNN Kanban Pro license keys.",
           "scope": "application"
         },
+        "mwnn-kanban-pro.polar.benefitId": {
+          "type": "string",
+          "default": "",
+          "description": "Polar License Keys benefit id required for MWNN Kanban Pro license validation. Leave empty only for sandbox testing without a configured benefit.",
+          "scope": "application"
+        },
         "mwnn-kanban-pro.polar.apiBaseUrl": {
           "type": "string",
           "default": "https://api.polar.sh",
