@@ -132,6 +132,11 @@
         "command": "mwnn-kanban.showProLicenseStatus",
         "title": "Show Pro License Status",
         "category": "MWNN Kanban Pro"
+      },
+      {
+        "command": "mwnn-kanban-pro.hello",
+        "title": "Hello from MWNN Kanban Pro",
+        "category": "MWNN Kanban Pro"
       }
     ],
     "configuration": {
@@ -345,6 +350,9 @@
     "smoke:agent-cli": "node ./scripts/smoke-agent-cli.cjs",
     "version:build": "node ./scripts/bump-package-version.cjs",
     "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "@tempuskg/mwnn-kanban-pro": "0.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",
