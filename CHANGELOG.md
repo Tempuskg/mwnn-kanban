@@ -13,6 +13,9 @@ All notable changes to MWNN Kanban are documented here. The format follows
 ### Changed
 - The extension now activates after VS Code startup without creating `.mwnn` board files in an untouched workspace; board storage is created on the first board mutation.
 
+### Fixed
+- AI-loop verification now accepts an exact verdict wrapped in Markdown backticks and prompts agents to write future verdict markers as plain text, preventing successful CLI verification runs from being rejected.
+
 ## [0.0.1] - 2026-08-08
 
 ### Changed

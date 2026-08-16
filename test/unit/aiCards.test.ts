@@ -138,10 +138,13 @@ suite('ai card helpers', () => {
     assert.match(prompt, /Do not implement, change, or fix the work/i);
     assert.match(prompt, /uncheck any acceptance criterion that is not actually met/i);
     assert.match(prompt, /exactly one terminal marker on its own line/i);
-    assert.match(prompt, /copy the applicable form exactly/i);
-    assert.match(prompt, /`VERIFY: PASS`/);
-    assert.match(prompt, /`VERIFY: FAIL: <reason>`/);
-    assert.match(prompt, /`VERIFY: HUMAN: <reason>`/);
+    assert.match(prompt, /copy the applicable line exactly/i);
+    assert.match(prompt, /^VERIFY: PASS$/m);
+    assert.match(prompt, /^VERIFY: FAIL: <reason>$/m);
+    assert.match(prompt, /^VERIFY: HUMAN: <reason>$/m);
+    assert.match(prompt, /Write the marker as plain text/i);
+    assert.match(prompt, /Do not wrap it in backticks, quotes, a list item, or a code block/i);
+    assert.doesNotMatch(prompt, /`VERIFY:/);
     assert.doesNotMatch(prompt, /VERIFY: PASS\s+[—-]/);
     assert.match(prompt, /visual or UX checks, external services, credentials, and ambiguous or subjective criteria/i);
   });

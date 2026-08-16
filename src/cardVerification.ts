@@ -24,6 +24,14 @@ export function parseVerificationVerdict(
     .slice(activityBaseline)
     .split(/\r?\n/)
     .map((line) => line.trim())
+    .map((line) => {
+      // Older verification prompts presented the marker in backticks, so an
+      // agent could copy those delimiters into Activity along with the token.
+      // Unwrap only when the entire line is inline code; prose that merely
+      // mentions a marker must not resolve a verification run.
+      const inlineCode = /^(`+)(.*?)\1$/.exec(line);
+      return inlineCode?.[2]?.trim() ?? line;
+    })
     .filter((line) => /^VERIFY:/i.test(line))
     .at(-1);
 

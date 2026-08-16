@@ -9,6 +9,7 @@ suite('card verification verdict parser', () => {
   test('parses pass, fail, and human verdicts', () => {
     const verdicts: readonly [string, VerificationVerdict][] = [
       ['VERIFY: PASS', { kind: 'pass' }],
+      ['`VERIFY: PASS`', { kind: 'pass' }],
       ['VERIFY: PASS — every acceptance criterion is objectively verified.', { kind: 'pass' }],
       ['VERIFY: PASS - verified by the focused test run', { kind: 'pass' }],
       ['VERIFY: FAIL: a required behavior is missing', {
@@ -18,6 +19,10 @@ suite('card verification verdict parser', () => {
       ['VERIFY: HUMAN: visual judgment is required', {
         kind: 'human',
         reason: 'visual judgment is required',
+      }],
+      ['`VERIFY: FAIL: a focused test failed`', {
+        kind: 'fail',
+        reason: 'a focused test failed',
       }],
     ];
 

@@ -53,6 +53,13 @@
           "id": "mwnn-kanban.sidebar",
           "name": "MWNN Kanban",
           "icon": "media/sidebar-icon.svg"
+        },
+        {
+          "type": "tree",
+          "id": "mwnn-kanban.myWork",
+          "name": "My Work",
+          "when": "mwnn-kanban.hasProLicense",
+          "icon": "$(checklist)"
         }
       ]
     },
@@ -137,6 +144,58 @@
         "command": "mwnn-kanban-pro.hello",
         "title": "Hello from MWNN Kanban Pro",
         "category": "MWNN Kanban Pro"
+      },
+      {
+        "command": "mwnn-kanban-pro.openPortfolio",
+        "title": "Open Portfolio",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "mwnn-kanban-pro.rescanProjects",
+        "title": "Rescan Projects",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mwnn-kanban-pro.startTimer",
+        "title": "Start Timer",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(play)"
+      },
+      {
+        "command": "mwnn-kanban-pro.stopTimer",
+        "title": "Stop Timer",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "mwnn-kanban-pro.correctLastSession",
+        "title": "Correct Last Session",
+        "category": "MWNN Kanban Pro"
+      },
+      {
+        "command": "mwnn-kanban-pro.exportTimesheet",
+        "title": "Export Timesheet",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(export)"
+      },
+      {
+        "command": "mwnn-kanban-pro.startFocusSession",
+        "title": "Start Focus Session",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(target)"
+      },
+      {
+        "command": "mwnn-kanban-pro.stopFocusSession",
+        "title": "Stop Focus Session",
+        "category": "MWNN Kanban Pro"
+      },
+      {
+        "command": "mwnn-kanban-pro.setAllocationTargets",
+        "title": "Set Allocation Targets",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(settings-gear)"
       }
     ],
     "configuration": {
@@ -258,7 +317,7 @@
         },
         "mwnn-kanban-pro.polar.organizationId": {
           "type": "string",
-          "default": "",
+          "default": "9a3f3f03-1384-425b-8a7a-54866b7d634a",
           "description": "Polar organization id used to validate MWNN Kanban Pro license keys.",
           "scope": "application"
         },
@@ -272,6 +331,132 @@
           "type": "string",
           "default": "https://api.polar.sh",
           "description": "Polar API base URL used for MWNN Kanban Pro license validation. Change this only when testing against a Polar sandbox.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.heartbeatSeconds": {
+          "type": "number",
+          "default": 30,
+          "description": "Seconds between automatic activity heartbeats.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.idleTimeoutMinutes": {
+          "type": "number",
+          "default": 5,
+          "description": "Minutes without tracked activity before an automatic session closes.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.minSessionMinutes": {
+          "type": "number",
+          "default": 1,
+          "description": "Minimum duration in minutes for a tracked session to be persisted.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.maxSliceMinutes": {
+          "type": "number",
+          "default": 5,
+          "description": "Maximum minutes in one persisted time slice before a checkpoint is written.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.trackWhenUnfocused": {
+          "type": "boolean",
+          "default": false,
+          "description": "Continue automatic activity tracking while the VS Code window is unfocused.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.manualTimerSuppressesAutomatic": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suppress automatic slices while a manual timer is running.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.autoRegisterProjects": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically register workspace projects that contain a Kanban board.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.projectRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Machine-local roots to scan for Kanban projects.",
+          "scope": "machine"
+        },
+        "mwnn-kanban-pro.scanDepth": {
+          "type": "number",
+          "default": 2,
+          "description": "Maximum directory depth when scanning configured project roots.",
+          "scope": "machine"
+        },
+        "mwnn-kanban-pro.scanIgnore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Machine-local directory names or paths to skip during project scans.",
+          "scope": "machine"
+        },
+        "mwnn-kanban-pro.allocationWindowDays": {
+          "type": "number",
+          "default": 7,
+          "description": "Number of days included in allocation and drift calculations.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.minTrackedHoursForDrift": {
+          "type": "number",
+          "default": 2,
+          "description": "Minimum tracked hours required before drift and debt are considered reliable.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.outputWindowDays": {
+          "type": "number",
+          "default": 30,
+          "description": "Number of days included in Output and throughput calculations.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.focusSessionMinutes": {
+          "type": "number",
+          "default": 25,
+          "description": "Length in minutes of a focus session.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.focusBreakMinutes": {
+          "type": "number",
+          "default": 5,
+          "description": "Length in minutes of the break offered after a focus session.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.driftNudges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show occasional nudges when allocation drift is actionable.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.nudgeThresholdPercent": {
+          "type": "number",
+          "default": 10,
+          "description": "Absolute drift percentage-point threshold before a nudge can appear.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.nudgeCooldownHours": {
+          "type": "number",
+          "default": 4,
+          "description": "Minimum hours between allocation drift nudges.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.queueDepth": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum number of cards shown in the unified My Work queue.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.backfillFromActivity": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include eligible historical card activity when building flow metrics.",
           "scope": "application"
         }
       }
@@ -328,6 +513,75 @@
         },
         {
           "command": "mwnn-kanban.showProLicenseStatus"
+        },
+        {
+          "command": "mwnn-kanban-pro.hello",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.openPortfolio",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.rescanProjects",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.startTimer",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.stopTimer",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.correctLastSession",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.exportTimesheet",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.startFocusSession",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.stopFocusSession",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.setAllocationTargets",
+          "when": "mwnn-kanban.hasProLicense"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "mwnn-kanban-pro.openPortfolio",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mwnn-kanban-pro.rescanProjects",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mwnn-kanban-pro.startTimer",
+          "when": "view == mwnn-kanban.myWork && viewItem == mwnn-kanban.card && mwnn-kanban.hasProLicense",
+          "group": "inline@1"
+        },
+        {
+          "command": "mwnn-kanban-pro.stopTimer",
+          "when": "view == mwnn-kanban.myWork && viewItem == mwnn-kanban.card && mwnn-kanban.hasProLicense",
+          "group": "inline@2"
+        },
+        {
+          "command": "mwnn-kanban-pro.startFocusSession",
+          "when": "view == mwnn-kanban.myWork && viewItem == mwnn-kanban.card && mwnn-kanban.hasProLicense",
+          "group": "inline@3"
         }
       ]
     }
