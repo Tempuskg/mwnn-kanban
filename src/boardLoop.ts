@@ -919,6 +919,7 @@ export function formatLoopParkEntry(timestamp: Date = new Date()): string {
   return [
     `### ${timestamp.toISOString()} - AI loop parked in Verify`,
     'Implementation finished; reassigned to Human for verification and sign-off.',
+    ...HUMAN_VERIFICATION_INSTRUCTIONS,
   ].join('\n');
 }
 
@@ -940,8 +941,19 @@ export function formatLoopVerificationHandbackEntry(
     `### ${timestamp.toISOString()} - AI loop handed verification to Human`,
     'The card remains in Verify and was reassigned to Human.',
     `Why: ${reason}`,
+    `Verification focus: Investigate this specific AI-verification result before sign-off: ${reason}`,
+    ...HUMAN_VERIFICATION_INSTRUCTIONS,
   ].join('\n');
 }
+
+const HUMAN_VERIFICATION_INSTRUCTIONS = [
+  'Human verification procedure:',
+  "1. Independently verify every acceptance criterion against the current workspace; do not rely only on the AI's completion claim.",
+  '2. Review the implementation and all existing Activity context, then run every relevant automated check and every applicable manual or visual check.',
+  '3. Record each check performed and its result in Activity, with concrete evidence for the corresponding acceptance criterion.',
+  '4. Move the card to Done only when every acceptance criterion passes.',
+  '5. If any criterion fails or cannot be verified, leave the card in Verify and document the failed or unverified criteria, evidence, and required follow-up in Activity.',
+] as const;
 
 export function formatLoopAdvanceEntry(columnTitle: string, timestamp: Date = new Date()): string {
   return [

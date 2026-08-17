@@ -166,6 +166,18 @@ function boardWithCard(
   return { state, cardId };
 }
 
+function assertHumanVerificationInstructions(activity: string): void {
+  assert.match(activity, /independently verify every acceptance criterion against the current workspace/i);
+  assert.match(activity, /review the implementation and all existing Activity context/i);
+  assert.match(activity, /every relevant automated check and every applicable manual or visual check/i);
+  assert.match(activity, /record each check performed and its result in Activity/i);
+  assert.match(activity, /move the card to Done only when every acceptance criterion passes/i);
+  assert.match(
+    activity,
+    /leave the card in Verify and document the failed or unverified criteria, evidence, and required follow-up in Activity/i,
+  );
+}
+
 suite('board loop planning', () => {
   test('selects AI-assigned cards and never human-assigned ones', () => {
     let { state, cardId } = boardWithCard([...FULL_COLUMNS], 1, 'AI task', { kind: 'ai' });
@@ -732,7 +744,7 @@ suite('board loop run', () => {
     assert.equal(summary.cancelled, false);
   });
 
-  test('reassigns a card already sitting in Verify to Human without moving it to Done', async () => {
+  test('normal Verify handoff gives Human a self-contained verification procedure', async () => {
     const { state, cardId } = boardWithCard([...FULL_COLUMNS], 3, 'Finished work', { kind: 'ai' });
     const board = fakeBoard(state);
     const { gateways, log } = instantGateways(board);
@@ -743,6 +755,7 @@ suite('board loop run', () => {
     assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
     assert.deepEqual(log.dispatched, []);
     assert.deepEqual(summary.parked.length, 1);
+    assertHumanVerificationInstructions(board.findCard(cardId).activity ?? '');
   });
 
   test('with AI verification enabled, VERIFY: PASS moves the card to the top of an empty Done column', async () => {
@@ -799,7 +812,7 @@ suite('board loop run', () => {
     assert.match(board.findCard(cardId).activity ?? '', /moved to "Done"/);
   });
 
-  test('VERIFY: FAIL and VERIFY: HUMAN leave the card in Verify with the agent reason', async () => {
+  test('AI-verification handbacks give Human actionable instructions and preserve the reason as a focus', async () => {
     const cases = [
       { marker: 'VERIFY: FAIL: The focused test still fails.', reason: 'The focused test still fails.' },
       { marker: 'VERIFY: HUMAN: Visual sign-off is required.', reason: 'Visual sign-off is required.' },
@@ -822,7 +835,10 @@ suite('board loop run', () => {
       assert.deepEqual(board.findCard(cardId).assignee, { kind: 'human' });
       assert.equal(summary.verified.length, 0);
       assert.equal(summary.parked.length, 1);
-      assert.ok((board.findCard(cardId).activity ?? '').includes(`Why: ${verificationCase.reason}`));
+      const activity = board.findCard(cardId).activity ?? '';
+      assert.ok(activity.includes(`Why: ${verificationCase.reason}`));
+      assert.ok(activity.includes(`Verification focus: Investigate this specific AI-verification result before sign-off: ${verificationCase.reason}`));
+      assertHumanVerificationInstructions(activity);
     }
   });
 
