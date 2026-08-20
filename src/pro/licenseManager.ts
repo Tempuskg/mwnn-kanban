@@ -7,6 +7,10 @@ const CACHE_STATE_KEY = 'mwnn-kanban-pro.licenseCache';
 const TRIAL_STATE_KEY = 'mwnn-kanban-pro.trialStartedAt';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
+// A stalled connection to Polar (dead network, silent firewall drop) must not
+// hang every Pro command forever; fail the validation and fall through to the
+// trial/cached path instead.
+const LICENSE_VALIDATE_TIMEOUT_MS = 8_000;
 
 interface LicenseCache {
   readonly valid: boolean;
@@ -161,6 +165,7 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
           organization_id: organizationId,
           ...(benefitId ? { benefit_id: benefitId } : {}),
         }),
+        signal: AbortSignal.timeout(LICENSE_VALIDATE_TIMEOUT_MS),
       });
 
       if (!response.ok) {

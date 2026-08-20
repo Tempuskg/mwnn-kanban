@@ -6,6 +6,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The GitHub Copilot CLI provider now prefers standalone `copilot` and falls back to GitHub CLI's modern `gh copilot` passthrough for both AI-loop and per-card runs, while rejecting the retired suggestion/explanation extension.
 - Pro license commands for purchasing, entering, inspecting, and clearing a key, with validated status published through `mwnn-kanban.hasProLicense` for gated UI surfaces.
 - Card Activity can now be edited as multiline Markdown from the card details view, including clearing saved Activity or discarding an unsaved draft, with changes persisted to the card file.
 - Card details now offer an accessible copy-path action that copies the card's absolute Markdown file path and reports clipboard success or failure in the dialog.
@@ -13,8 +14,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 ### Changed
 - The extension now activates after VS Code startup without creating `.mwnn` board files in an untouched workspace; board storage is created on the first board mutation.
 
-### Fixed
-- AI-loop verification now accepts an exact verdict wrapped in Markdown backticks and prompts agents to write future verdict markers as plain text, preventing successful CLI verification runs from being rejected.
+- Cursor Agent CLI handoffs now deliver the full prompt on Windows: the `cursor-agent.cmd` PowerShell shim is unwrapped to `node.exe` so stdin is not dropped, and a temp prompt-file pointer is used only when that layout is unavailable.
+- Every board-opening entry point now reveals the single live MWNN Kanban panel, while panel closure and session restoration safely create or adopt only one replacement.
 
 ## [0.0.1] - 2026-08-08
 

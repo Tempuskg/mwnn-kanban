@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
@@ -11,6 +12,7 @@ export const AGENT_CLI_PROVIDER_IDS = ['copilot', 'codex', 'claude-code', 'curso
 export type AgentCliProviderId = (typeof AGENT_CLI_PROVIDER_IDS)[number];
 export type AgentCliPathOverrides = Partial<Record<AgentCliProviderId, string>>;
 export type AgentCliHandoffKind = 'implementation' | 'definition' | 'triage' | 'verification';
+export type AgentCliLauncher = 'standalone' | 'gh-copilot';
 
 export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
   copilot: 'GitHub Copilot CLI',
@@ -41,9 +43,13 @@ interface AgentCliProviderSpec {
  *   sandbox needed for card/code edits.
  * - Claude Code: print mode reads the piped prompt; non-interactive
  *   permission bypass.
- * - Cursor: print mode plus `--force` (file edits in headless mode). Cursor
- *   documents piped stdin as data alongside an argument prompt, so a
- *   single-line pointer argument defers to the piped hand-off.
+ * - Cursor: print mode plus `--force` (file edits in headless mode). Do not
+ *   put a dummy prompt on argv: Cursor treats that argument as the whole
+ *   task and ignores piped stdin. The Windows `cursor-agent.cmd` shim
+ *   relaunches through PowerShell and drops stdin, so the launcher unwraps
+ *   to that install's `node.exe` + `index.js` when present. If unwrap is
+ *   unavailable, the prompt is written to a temp file and a single-line
+ *   `-p` pointer names that file (cmd.exe-safe).
  */
 const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   copilot: {
@@ -60,13 +66,7 @@ const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   },
   cursor: {
     defaultCommands: ['cursor-agent'],
-    args: [
-      '-p',
-      '--force',
-      '--output-format',
-      'text',
-      'Carry out the complete hand-off instructions piped to you on stdin.',
-    ],
+    args: ['-p', '--force', '--output-format', 'text'],
   },
 };
 
@@ -75,6 +75,8 @@ export interface AgentCliTarget {
   readonly label: string;
   /** Resolved executable or script path. Kept separate from arguments. */
   readonly executable: string;
+  /** Whether the executable is the agent itself or GitHub CLI's Copilot passthrough. */
+  readonly launcher: AgentCliLauncher;
 }
 
 export interface AgentCliResolutionFailure {
@@ -93,6 +95,12 @@ export interface ExecutableDiscoveryOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly platform?: NodeJS.Platform;
   readonly canExecute?: (candidate: string, platform: NodeJS.Platform) => Promise<boolean>;
+  readonly probeGhCopilot?: (executable: string, cwd: string) => Promise<GhCopilotProbeResult>;
+}
+
+export interface GhCopilotProbeResult {
+  readonly supported: boolean;
+  readonly reason?: string;
 }
 
 /**
@@ -106,13 +114,22 @@ export async function resolveAgentCliTarget(
   options: ExecutableDiscoveryOptions = {},
 ): Promise<AgentCliResolution> {
   const configured = normalizeConfiguredPath(configuredPaths[provider]);
+  if (provider === 'copilot') {
+    return resolveCopilotCliTarget(configured, options);
+  }
+
   const commands = configured ? [configured] : PROVIDER_SPECS[provider].defaultCommands;
   for (const command of commands) {
     const executable = await findExecutable(command, options);
     if (executable) {
       return {
         available: true,
-        target: { provider, label: AGENT_CLI_LABELS[provider], executable },
+        target: {
+          provider,
+          label: AGENT_CLI_LABELS[provider],
+          executable,
+          launcher: 'standalone',
+        },
       };
     }
   }
@@ -126,6 +143,168 @@ export async function resolveAgentCliTarget(
     attemptedCommand,
     reason: `${AGENT_CLI_LABELS[provider]} is selected, but its ${source} was not found or is not executable. Install the CLI or set ${setting} to its full executable path; paths containing spaces are supported.`,
   };
+}
+
+async function resolveCopilotCliTarget(
+  configured: string | undefined,
+  options: ExecutableDiscoveryOptions,
+): Promise<AgentCliResolution> {
+  if (configured) {
+    const executable = await findExecutable(configured, options);
+    if (!executable) {
+      return copilotResolutionFailure(
+        configured,
+        `its configured path "${configured}" was not found or is not executable`,
+      );
+    }
+    if (isGitHubCliExecutable(executable, options.platform ?? process.platform)) {
+      return resolveGhCopilotTarget(executable, configured, true, options);
+    }
+    return {
+      available: true,
+      target: {
+        provider: 'copilot',
+        label: AGENT_CLI_LABELS.copilot,
+        executable,
+        launcher: 'standalone',
+      },
+    };
+  }
+
+  const standalone = await findExecutable('copilot', options);
+  if (standalone) {
+    return {
+      available: true,
+      target: {
+        provider: 'copilot',
+        label: AGENT_CLI_LABELS.copilot,
+        executable: standalone,
+        launcher: 'standalone',
+      },
+    };
+  }
+
+  const gh = await findExecutable('gh', options);
+  if (!gh) {
+    return copilotResolutionFailure(
+      'copilot, gh',
+      'neither standalone command "copilot" nor GitHub CLI command "gh" was found on PATH',
+    );
+  }
+  return resolveGhCopilotTarget(gh, 'gh', false, options);
+}
+
+async function resolveGhCopilotTarget(
+  executable: string,
+  attemptedCommand: string,
+  configured: boolean,
+  options: ExecutableDiscoveryOptions,
+): Promise<AgentCliResolution> {
+  const cwd = options.cwd ?? process.cwd();
+  const probe = options.probeGhCopilot ?? defaultProbeGhCopilot;
+  let support: GhCopilotProbeResult;
+  try {
+    support = await probe(executable, cwd);
+  } catch (error: unknown) {
+    support = {
+      supported: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (support.supported) {
+    return {
+      available: true,
+      target: {
+        provider: 'copilot',
+        label: AGENT_CLI_LABELS.copilot,
+        executable,
+        launcher: 'gh-copilot',
+      },
+    };
+  }
+
+  const source = configured
+    ? `the configured GitHub CLI path "${attemptedCommand}"`
+    : `GitHub CLI at "${executable}"`;
+  const detail = support.reason?.trim()
+    ? ` ${support.reason.trim()}`
+    : '';
+  return copilotResolutionFailure(
+    attemptedCommand,
+    `${source} does not provide the modern built-in \`gh copilot\` passthrough.${detail}`,
+  );
+}
+
+function copilotResolutionFailure(
+  attemptedCommand: string,
+  problem: string,
+): AgentCliResolutionFailure {
+  const normalizedProblem = problem.trim().replace(/\.+$/, '');
+  return {
+    available: false,
+    provider: 'copilot',
+    attemptedCommand,
+    reason: `${AGENT_CLI_LABELS.copilot} is selected, but ${normalizedProblem}. Install the standalone Copilot CLI or update GitHub CLI to a version with the modern \`gh copilot\` passthrough, then rerun; the retired \`github/gh-copilot\` suggestion/explanation extension is not supported. The mwnn-kanban.agentCliPaths["copilot"] setting can point to either executable; paths containing spaces are supported.`,
+  };
+}
+
+function isGitHubCliExecutable(executable: string, platform: NodeJS.Platform): boolean {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const basename = pathApi.basename(executable).toLowerCase();
+  return basename.replace(/\.(?:com|exe|bat|cmd)$/i, '') === 'gh';
+}
+
+/**
+ * Probe GitHub CLI's own help instead of invoking the nested Copilot binary.
+ * The modern built-in command describes itself as the GitHub Copilot CLI;
+ * the retired `github/gh-copilot` extension exposes suggest/explain help and
+ * therefore cannot satisfy this capability check.
+ */
+async function defaultProbeGhCopilot(
+  executable: string,
+  cwd: string,
+): Promise<GhCopilotProbeResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const result = await runAgentCliProcess(
+      {
+        provider: 'copilot',
+        label: 'GitHub CLI Copilot capability check',
+        command: executable,
+        args: ['copilot', '--help'],
+        stdin: '',
+        cwd,
+      },
+      controller.signal,
+    );
+    if (result.cancelled) {
+      return { supported: false, reason: 'The capability check timed out.' };
+    }
+    if (!result.started) {
+      return {
+        supported: false,
+        reason: `The capability check could not start: ${result.error?.trim() || 'the operating system rejected the process start'}.`,
+      };
+    }
+    if (result.exitCode !== 0 || result.error) {
+      const output = conciseProcessOutput(result.stderr || result.stdout);
+      return {
+        supported: false,
+        reason: `The capability check failed${output ? `: ${output}` : ''}.`,
+      };
+    }
+    const help = `${result.stdout}\n${result.stderr}`;
+    if (!/\bRuns? the GitHub Copilot CLI\b/i.test(help)) {
+      return {
+        supported: false,
+        reason: 'Its Copilot help is not the modern agentic passthrough; update GitHub CLI.',
+      };
+    }
+    return { supported: true };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function resolveAllAgentCliTargets(
@@ -260,13 +439,143 @@ export function buildAgentCliInvocation(
   prompt: string,
   cwd: string,
 ): AgentCliInvocation {
+  const providerArgs = [...PROVIDER_SPECS[target.provider].args];
   return {
     provider: target.provider,
     label: target.label,
     command: target.executable,
-    args: [...PROVIDER_SPECS[target.provider].args],
+    args: target.launcher === 'gh-copilot'
+      ? ['copilot', '--', ...providerArgs]
+      : providerArgs,
     stdin: prompt,
     cwd,
+  };
+}
+
+export interface PreparedAgentCliInvocation {
+  readonly invocation: AgentCliInvocation;
+  readonly cleanup?: () => Promise<void>;
+}
+
+export interface PrepareAgentCliInvocationOptions {
+  readonly platform?: NodeJS.Platform;
+}
+
+/**
+ * Cursor's Windows `.cmd` shim relaunches through PowerShell and does not
+ * forward piped stdin to `node.exe`. Unwrap to the versioned Node entrypoint
+ * when that layout is present; otherwise point `-p` at a temp prompt file.
+ */
+export async function prepareAgentCliInvocation(
+  target: AgentCliTarget,
+  prompt: string,
+  cwd: string,
+  options: PrepareAgentCliInvocationOptions = {},
+): Promise<PreparedAgentCliInvocation> {
+  const invocation = buildAgentCliInvocation(target, prompt, cwd);
+  if (target.provider !== 'cursor') {
+    return { invocation };
+  }
+
+  const platform = options.platform ?? process.platform;
+  const unwrapped = await resolveCursorWindowsLaunch(target.executable, platform);
+  if (unwrapped) {
+    return {
+      invocation: {
+        ...invocation,
+        command: unwrapped.command,
+        args: [unwrapped.script, ...PROVIDER_SPECS.cursor.args],
+      },
+    };
+  }
+
+  if (platform === 'win32' && /\.(?:cmd|bat|ps1)$/i.test(target.executable)) {
+    const pointer = await writeCursorPromptPointer(prompt);
+    return {
+      invocation: {
+        ...invocation,
+        args: [...PROVIDER_SPECS.cursor.args, pointer.pointer],
+      },
+      cleanup: pointer.cleanup,
+    };
+  }
+
+  return { invocation };
+}
+
+const CURSOR_VERSION_DIR = /^\d{4}\.\d{1,2}\.\d{1,2}(?:-\d{2}-\d{2}-\d{2})?-[a-f0-9]+$/i;
+
+export async function resolveCursorWindowsLaunch(
+  executable: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ readonly command: string; readonly script: string } | undefined> {
+  if (platform !== 'win32') {
+    return undefined;
+  }
+  const pathApi = path.win32;
+  const versionsRoot = pathApi.join(pathApi.dirname(executable), 'versions');
+  let names: string[];
+  try {
+    names = await fs.readdir(versionsRoot);
+  } catch {
+    return undefined;
+  }
+
+  const ranked = names
+    .filter((name) => CURSOR_VERSION_DIR.test(name))
+    .sort((left, right) => {
+      const rank = cursorVersionRank(right) - cursorVersionRank(left);
+      return rank !== 0 ? rank : right.localeCompare(left);
+    });
+  for (const name of ranked) {
+    const command = pathApi.join(versionsRoot, name, 'node.exe');
+    const script = pathApi.join(versionsRoot, name, 'index.js');
+    if (await isRegularFile(command) && await isRegularFile(script)) {
+      return { command, script };
+    }
+  }
+  return undefined;
+}
+
+function cursorVersionRank(name: string): number {
+  const datePart = name.split('-')[0];
+  const parts = datePart?.split('.') ?? [];
+  if (parts.length !== 3) {
+    return 0;
+  }
+  const year = parts[0] ?? '';
+  const month = (parts[1] ?? '').padStart(2, '0');
+  const day = (parts[2] ?? '').padStart(2, '0');
+  const rank = Number(`${year}${month}${day}`);
+  return Number.isFinite(rank) ? rank : 0;
+}
+
+async function isRegularFile(candidate: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(candidate);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function writeCursorPromptPointer(prompt: string): Promise<{
+  readonly pointer: string;
+  readonly cleanup: () => Promise<void>;
+}> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mwnn-cursor-handoff-'));
+  const file = path.join(dir, 'handoff.txt');
+  try {
+    await fs.writeFile(file, prompt, { encoding: 'utf8', mode: 0o600 });
+  } catch (error: unknown) {
+    await fs.rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    pointer: `Read the UTF-8 file at ${file} first and carry out those complete hand-off instructions. That file is the full prompt.`,
+    cleanup: async () => {
+      await fs.rm(dir, { recursive: true, force: true });
+    },
   };
 }
 
@@ -559,6 +868,7 @@ export interface AgentCliCardHandoffOptions {
   readonly now?: () => Date;
   /** Forwarded to the process runner so callers can surface live CLI output. */
   readonly observer?: AgentCliProcessObserver;
+  readonly platform?: NodeJS.Platform;
 }
 
 /**
@@ -591,8 +901,18 @@ export async function runAgentCliCardHandoff(
   );
   const afterStart = findCard(await handoff.store.reload(), handoff.cardId);
   const activityBaseline = (afterStart?.activity ?? before.activity ?? '').length;
-  const invocation = buildAgentCliInvocation(handoff.target, handoff.prompt, handoff.cwd);
-  const processResult = await runProcess(invocation, handoff.signal, options.observer);
+  const prepared = await prepareAgentCliInvocation(
+    handoff.target,
+    handoff.prompt,
+    handoff.cwd,
+    options.platform !== undefined ? { platform: options.platform } : {},
+  );
+  let processResult: AgentCliProcessResult;
+  try {
+    processResult = await runProcess(prepared.invocation, handoff.signal, options.observer);
+  } finally {
+    await prepared.cleanup?.();
+  }
 
   if (processResult.cancelled || handoff.signal.aborted) {
     await appendIfCardExists(

@@ -175,6 +175,12 @@
         "category": "MWNN Kanban Pro"
       },
       {
+        "command": "mwnn-kanban-pro.openTimesheet",
+        "title": "Correct Timesheet",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(table)"
+      },
+      {
         "command": "mwnn-kanban-pro.exportTimesheet",
         "title": "Export Timesheet",
         "category": "MWNN Kanban Pro",
@@ -283,7 +289,7 @@
           "properties": {
             "copilot": {
               "type": "string",
-              "description": "Path to the GitHub Copilot CLI executable."
+              "description": "Path to either the standalone GitHub Copilot CLI executable or the GitHub CLI (gh) executable. The modern built-in 'gh copilot' passthrough is supported; the retired github/gh-copilot suggestion/explanation extension is not."
             },
             "codex": {
               "type": "string",
@@ -536,6 +542,10 @@
         },
         {
           "command": "mwnn-kanban-pro.correctLastSession",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.openTimesheet",
           "when": "mwnn-kanban.hasProLicense"
         },
         {

@@ -185,6 +185,7 @@ function fakeResolver(
       env: { PATH: 'C:\\Tools' },
       canExecute: async (candidate) =>
         available.some((path) => path.toLowerCase() === candidate.toLowerCase()),
+      probeGhCopilot: async () => ({ supported: true }),
     });
 }
 
@@ -291,6 +292,44 @@ suite('Run with AI agent CLI dispatch', () => {
     assert.equal(launchedExecutable, configuredPath);
   });
 
+  test('runs a configured gh copilot launcher and parks successful work exactly like standalone Copilot', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const configuredPath = 'C:\\Program Files\\GitHub CLI\\gh.exe';
+    const prompt = 'Implement the card\nthen append exact completion evidence.';
+    const harness = dispatchHarness(board, {
+      configuredPaths: { copilot: `"${configuredPath}"` },
+      resolveTarget: fakeResolver([configuredPath]),
+      runHandoff: realHandoffWith(async (invocation) => {
+        assert.equal(invocation.command, configuredPath);
+        assert.deepEqual(invocation.args, [
+          'copilot',
+          '--',
+          '--allow-all-tools',
+          '--no-ask-user',
+          '--silent',
+        ]);
+        assert.equal(invocation.stdin, prompt);
+        assert.equal(invocation.cwd, 'E:\\workspace');
+        board.mutate((current) =>
+          appendActivity(current, cardId, 'Implemented through gh.\nSTATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(
+      request('copilot', cardId, prompt),
+      harness.deps,
+    );
+
+    assert.equal(completed, true);
+    assert.equal(board.columnOf(cardId).title, 'Verify');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'human' });
+    assert.equal(board.card(cardId).acceptanceCriteria, '- [x] The CLI completes the work');
+    assert.match(board.card(cardId).activity ?? '', /Run with AI parked in Verify/);
+    assert.equal(harness.warnings.length, 0);
+  });
+
   for (const provider of AGENT_CLI_PROVIDER_IDS) {
     test(`a missing ${provider} executable warns with the attempted command and records no Activity`, async () => {
       const { state, cardId } = boardWithCard();
@@ -306,8 +345,13 @@ suite('Run with AI agent CLI dispatch', () => {
       assert.equal(board.card(cardId).activity ?? '', activityBefore);
       const warning = harness.warnings[0] ?? '';
       assert.match(warning, new RegExp(AGENT_CLI_LABELS[provider]));
-      assert.match(warning, /command "[^"]+" on PATH/);
-      assert.match(warning, /was not found or is not executable/);
+      if (provider === 'copilot') {
+        assert.match(warning, /neither standalone command "copilot" nor GitHub CLI command "gh"/);
+        assert.match(warning, /modern `gh copilot` passthrough/);
+      } else {
+        assert.match(warning, /command "[^"]+" on PATH/);
+        assert.match(warning, /was not found or is not executable/);
+      }
       assert.ok(warning.includes(`agentCliPaths["${provider}"]`));
     });
   }

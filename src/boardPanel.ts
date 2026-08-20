@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import type { BoardStore } from './boardStore';
 import type { BoardPanelStatus } from './boardButton';
+import { BoardPanelLifecycle } from './boardPanelLifecycle';
 import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { copyCardPathToClipboard } from './cardPath';
@@ -42,7 +43,7 @@ export class BoardPanel {
   /** The webview panel view type, used for creation and serializer registration. */
   static readonly viewType = VIEW_TYPE;
 
-  private static current: BoardPanel | undefined;
+  private static readonly lifecycle = new BoardPanelLifecycle<BoardPanel>((board) => board.panel.reveal());
 
   private static readonly onDidChangeStateEmitter = new vscode.EventEmitter<void>();
 
@@ -87,35 +88,37 @@ export class BoardPanel {
 
   /** The current open/focused status of the board panel singleton. */
   static status(): BoardPanelStatus {
+    const current = BoardPanel.lifecycle.current;
     return {
-      open: BoardPanel.current !== undefined,
-      focused: BoardPanel.current?.panel.active ?? false,
+      open: current !== undefined,
+      focused: current?.panel.active ?? false,
     };
   }
 
   static show(deps: BoardPanelDeps): BoardPanel {
-    const current = BoardPanel.current;
+    const current = BoardPanel.lifecycle.current;
     const placement = resolveBoardPanelPlacement(
       current !== undefined,
       vscode.window.tabGroups.activeTabGroup.viewColumn,
     );
-    if (placement.kind === 'reveal') {
-      if (!current) {
+    const board = BoardPanel.lifecycle.show(() => {
+      if (placement.kind !== 'create') {
         throw new Error('Board panel placement lost its current panel state.');
       }
-      // Revealing an already-open panel fires onDidChangeViewState, which
-      // notifies observers on its own.
-      current.panel.reveal();
-      return current;
-    }
-    const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'MWNN Kanban', placement.column, {
-      enableScripts: true,
-      retainContextWhenHidden: true,
-      localResourceRoots: [vscode.Uri.joinPath(deps.extensionUri, 'media')],
+
+      const panel = vscode.window.createWebviewPanel(VIEW_TYPE, 'MWNN Kanban', placement.column, {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(deps.extensionUri, 'media')],
+      });
+      return new BoardPanel(panel, deps);
     });
-    BoardPanel.current = new BoardPanel(panel, deps);
-    BoardPanel.onDidChangeStateEmitter.fire();
-    return BoardPanel.current;
+    if (!current) {
+      BoardPanel.onDidChangeStateEmitter.fire();
+    }
+    // Revealing an already-open panel fires onDidChangeViewState, which
+    // notifies observers on its own.
+    return board;
   }
 
   /**
@@ -134,21 +137,19 @@ export class BoardPanel {
       localResourceRoots: [vscode.Uri.joinPath(deps.extensionUri, 'media')],
     };
 
-    if (BoardPanel.current) {
-      // A board panel already exists; never run two. Reveal the live one and
-      // discard the duplicate VS Code handed us.
-      BoardPanel.current.panel.reveal();
-      panel.dispose();
-      return BoardPanel.current;
+    const current = BoardPanel.lifecycle.current;
+    const board = BoardPanel.lifecycle.restore(
+      () => new BoardPanel(panel, deps),
+      () => panel.dispose(),
+    );
+    if (!current) {
+      BoardPanel.onDidChangeStateEmitter.fire();
     }
-
-    BoardPanel.current = new BoardPanel(panel, deps);
-    BoardPanel.onDidChangeStateEmitter.fire();
-    return BoardPanel.current;
+    return board;
   }
 
   static postStateIfOpen(): void {
-    BoardPanel.current?.postState();
+    BoardPanel.lifecycle.current?.postState();
   }
 
   /**
@@ -157,7 +158,7 @@ export class BoardPanel {
    * panel drains the pending reveal when the webview posts its ready message.
    */
   static revealCard(cardId: string): boolean {
-    const panel = BoardPanel.current;
+    const panel = BoardPanel.lifecycle.current;
     if (!panel || !collectCardIds(panel.deps.store.getState()).includes(cardId)) {
       return false;
     }
@@ -175,7 +176,7 @@ export class BoardPanel {
    * closed; the webview keeps its own per-card status map between pushes.
    */
   static postCliRunStatusIfOpen(status: CliRunStatus): void {
-    const panel = BoardPanel.current;
+    const panel = BoardPanel.lifecycle.current;
     if (!panel) {
       return;
     }
@@ -449,8 +450,9 @@ export class BoardPanel {
   }
 
   private dispose(): void {
-    BoardPanel.current = undefined;
-    BoardPanel.onDidChangeStateEmitter.fire();
+    if (BoardPanel.lifecycle.close(this)) {
+      BoardPanel.onDidChangeStateEmitter.fire();
+    }
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }

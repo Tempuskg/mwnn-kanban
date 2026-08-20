@@ -17,6 +17,8 @@ node_modules/**
 !node_modules/@tempuskg/mwnn-kanban-pro/dist/index.js
 !node_modules/@tempuskg/mwnn-kanban-pro/media/portfolio.js
 !node_modules/@tempuskg/mwnn-kanban-pro/media/portfolio.css
+!node_modules/@tempuskg/mwnn-kanban-pro/media/timesheet.js
+!node_modules/@tempuskg/mwnn-kanban-pro/media/timesheet.css
 package-lock.json
 wiki/**
 raw/**

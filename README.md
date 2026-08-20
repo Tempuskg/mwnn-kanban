@@ -47,7 +47,7 @@ MWNN Kanban never transmits usage, board, or time data. When a Pro license is va
 | `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, or `cursor`; `prompt` asks whether to use a VS Code chat extension or local CLI. |
 | `mwnn-kanban.aiLoopReviewFreshDefinitions` | `false` | Pause newly AI-defined cards in Ready until the next loop run so a human can review the definition first. |
 | `mwnn-kanban.aiLoopVerifyCards` | `false` | Let the AI loop verify AI-assigned cards in the Verify column. When off, the loop assigns those cards to a human for verification. |
-| `mwnn-kanban.agentCliPaths` | `{}` | Optional executable-path overrides for each agent CLI provider, used by both `Run Card with AI` and the AI loop. Full paths containing spaces are supported. |
+| `mwnn-kanban.agentCliPaths` | `{}` | Optional executable-path overrides for each agent CLI provider, used by both `Run Card with AI` and the AI loop. The `copilot` value may point to either `copilot` or `gh`. Full paths containing spaces are supported. |
 | `mwnn-kanban.chatProviderCommands` | `{}` | Optional VS Code command overrides for interactive chat handoffs, including AI Loop chat mode. |
 
 ## AI Loop Providers
@@ -58,14 +58,16 @@ With the default `prompt` setting, the loop first offers both execution channels
 
 The execution channels differ when an agent produces no verdict. A local CLI run is synchronous, so if the process ends without a valid `VERIFY:` marker, the loop hands the card back to a human and records why. A chat handoff is asynchronous: if it never writes a valid `VERIFY:` marker, the loop keeps waiting and shows a live elapsed-time progress line until you stop the loop.
 
-In CLI mode, the loop invokes each provider with the existing MWNN definition, triage, or implementation prompt and the active workspace as its working directory. Executables are discovered on `PATH`, or can be configured as full paths in `mwnn-kanban.agentCliPaths`. The path is never split into a shell command, so paths containing spaces are safe.
+In CLI mode, the loop invokes each provider with the existing MWNN definition, triage, implementation, or verification prompt and the active workspace as its working directory. Executables are discovered on `PATH`, or can be configured as full paths in `mwnn-kanban.agentCliPaths`. The path is never split into a shell command, so paths containing spaces are safe.
 
-| Provider | Default executable | Official non-interactive capability |
+| Provider | Default launcher | Official non-interactive capability |
 | --- | --- | --- |
-| GitHub Copilot CLI | `copilot` | [`-p` programmatic mode](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference) |
+| GitHub Copilot CLI | `copilot` (preferred), then modern `gh copilot` | [`copilot` programmatic mode](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference) and the [`gh copilot` passthrough](https://cli.github.com/manual/gh_copilot) |
 | OpenAI Codex CLI | `codex` | [`codex exec` non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode) |
 | Anthropic Claude Code CLI | `claude` | [`claude -p` print mode](https://code.claude.com/docs/en/cli-usage) |
 | Cursor Agent CLI | `cursor-agent` | [Headless `--print` mode with `--force` file edits](https://docs.cursor.com/en/cli/headless) |
+
+For the Copilot provider, MWNN Kanban prefers an available standalone `copilot` executable and otherwise uses GitHub CLI's modern built-in `gh copilot` passthrough. A `mwnn-kanban.agentCliPaths["copilot"]` override may identify either executable. The archived `github/gh-copilot` extension—which offered only command suggestion and explanation—is not an agentic launcher and is intentionally unsupported.
 
 Cursor was verified against its official headless CLI documentation on 2026-07-24 and supports equivalent non-interactive file-modifying agent execution, so it is a full loop provider rather than an unsupported placeholder.
 
