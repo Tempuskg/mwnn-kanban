@@ -6,6 +6,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Pro: the Portfolio dashboard's Allocation rows now take an inline Target % edit, written straight to the project registry. The bar keeps showing the normalized share, and a "Targets total N%; shares are normalized" hint states the relationship. Requires @tempuskg/mwnn-kanban-pro 0.1.6.
 - The GitHub Copilot CLI provider now prefers standalone `copilot` and falls back to GitHub CLI's modern `gh copilot` passthrough for both AI-loop and per-card runs, while rejecting the retired suggestion/explanation extension.
 - Pro license commands for purchasing, entering, inspecting, and clearing a key, with validated status published through `mwnn-kanban.hasProLicense` for gated UI surfaces.
 - Card Activity can now be edited as multiline Markdown from the card details view, including clearing saved Activity or discarding an unsaved draft, with changes persisted to the card file.
