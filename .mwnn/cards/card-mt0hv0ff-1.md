@@ -1,11 +1,11 @@
 ---
 id: card-mt0hv0ff-1
 title: Don't open multiple MWNN Kanban boards
-column: col-mqxta6ho-4
-position: 1000
+column: col-mqwk2njn-4
+position: -23000
 assignee: { kind: ai }
 createdAt: 1787168298219
-updatedAt: 1787168941289
+updatedAt: 1788104271479
 ---
 
 ## Description

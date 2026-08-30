@@ -4,10 +4,22 @@
  * and the view itself offers a button whose label/visibility reflects the board
  * panel's current state: "Open Board" when closed, "Focus Board" when open but
  * unfocused, and hidden when the board is already open and focused.
+ *
+ * A Pro-only "Portfolio" button sits alongside the secondary buttons. It is
+ * rendered only while a Pro license (or live trial) is active, and appears or
+ * disappears live as a key is entered or cleared.
  */
 
 import * as vscode from 'vscode';
 import { boardButtonMode, boardButtonLabel, type BoardButtonMode, type BoardPanelStatus } from './boardButton';
+import {
+  portfolioButtonMode,
+  PORTFOLIO_BUTTON_LABEL,
+  PORTFOLIO_BUTTON_TOOLTIP,
+  type PortfolioButtonMode,
+  type ProLicenseStatus,
+} from './portfolioButton';
+import { routeSidebarMessage } from './sidebarMessages';
 
 export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'mwnn-kanban.sidebar';
@@ -19,8 +31,11 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     private readonly openBoard: () => void,
     private readonly importPlan: () => void,
     private readonly runAiLoop: () => void,
+    private readonly openPortfolio: () => void,
     private readonly boardStatus: () => BoardPanelStatus,
+    private readonly proLicenseStatus: () => ProLicenseStatus,
     private readonly onBoardStateChange: vscode.Event<void>,
+    private readonly onProLicenseChange: (listener: () => void) => vscode.Disposable,
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -29,25 +44,32 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
     };
-    webviewView.webview.html = this.renderHtml(webviewView.webview, boardButtonMode(this.boardStatus()));
+    webviewView.webview.html = this.renderHtml(
+      webviewView.webview,
+      boardButtonMode(this.boardStatus()),
+      portfolioButtonMode(this.proLicenseStatus()),
+    );
 
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
-      if (isSidebarMessage(message, 'openBoard')) {
+      routeSidebarMessage(message, {
         // Routes through the singleton openBoard() path in every button state,
         // so an existing panel is revealed rather than duplicated.
-        this.openBoard();
-      } else if (isSidebarMessage(message, 'importPlan')) {
-        this.importPlan();
-      } else if (isSidebarMessage(message, 'runAiLoop')) {
-        this.runAiLoop();
-      }
+        openBoard: () => this.openBoard(),
+        importPlan: () => this.importPlan(),
+        runAiLoop: () => this.runAiLoop(),
+        openPortfolio: () => this.openPortfolio(),
+      });
     });
 
     // Keep the button in sync as the board panel opens, closes, and gains or
     // loses focus, without needing the sidebar to reload.
     const stateSubscription = this.onBoardStateChange(() => this.postButtonState());
+    // Entering or clearing a license key flips the Portfolio button in the
+    // already-open sidebar; no window reload or view re-open needed.
+    const licenseSubscription = this.onProLicenseChange(() => this.postPortfolioButtonState());
     webviewView.onDidDispose(() => {
       stateSubscription.dispose();
+      licenseSubscription.dispose();
       if (this.view === webviewView) {
         this.view = undefined;
       }
@@ -67,10 +89,25 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     void this.view?.webview.postMessage({
       type: 'boardButton',
       mode: boardButtonMode(this.boardStatus()),
-    } satisfies SidebarButtonMessage);
+    } satisfies SidebarBoardButtonMessage);
   }
 
-  private renderHtml(webview: vscode.Webview, mode: BoardButtonMode): string {
+  /**
+   * Push the current Portfolio button visibility into the sidebar webview. Only
+   * the derived mode crosses the boundary — never the license key or payload.
+   */
+  private postPortfolioButtonState(): void {
+    void this.view?.webview.postMessage({
+      type: 'portfolioButton',
+      mode: portfolioButtonMode(this.proLicenseStatus()),
+    } satisfies SidebarPortfolioButtonMessage);
+  }
+
+  private renderHtml(
+    webview: vscode.Webview,
+    mode: BoardButtonMode,
+    portfolioMode: PortfolioButtonMode,
+  ): string {
     const nonce = makeNonce();
     const csp = [
       `default-src 'none'`,
@@ -116,6 +153,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   <button id="open" type="button"${mode === 'hidden' ? ' hidden' : ''}>${boardButtonLabel(mode)}</button>
   <button id="import" type="button" class="secondary" title="Hand a written plan to AI to import as Backlog cards">Import plan</button>
   <button id="run-loop" type="button" class="secondary" title="Automatically triage and run AI-assigned and unassigned cards, parking finished work in Verify for human sign-off">Run AI loop</button>
+  <button id="portfolio" type="button" class="secondary" title="${PORTFOLIO_BUTTON_TOOLTIP}"${portfolioMode === 'hidden' ? ' hidden' : ''}>${PORTFOLIO_BUTTON_LABEL}</button>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const openButton = document.getElementById('open');
@@ -127,6 +165,10 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     });
     document.getElementById('run-loop').addEventListener('click', () => {
       vscode.postMessage({ type: 'runAiLoop' });
+    });
+    const portfolioButton = document.getElementById('portfolio');
+    portfolioButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'openPortfolio' });
     });
 
     function applyButtonMode(mode) {
@@ -142,6 +184,8 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       const message = event.data;
       if (message && message.type === 'boardButton') {
         applyButtonMode(message.mode);
+      } else if (message && message.type === 'portfolioButton') {
+        portfolioButton.hidden = message.mode === 'hidden';
       }
     });
   </script>
@@ -150,14 +194,16 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
-/** Host → sidebar-webview message carrying the button presentation to render. */
-interface SidebarButtonMessage {
+/** Host → sidebar-webview message carrying the board button presentation. */
+interface SidebarBoardButtonMessage {
   readonly type: 'boardButton';
   readonly mode: BoardButtonMode;
 }
 
-function isSidebarMessage<T extends string>(message: unknown, type: T): message is { type: T } {
-  return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === type;
+/** Host → sidebar-webview message carrying the Portfolio button presentation. */
+interface SidebarPortfolioButtonMessage {
+  readonly type: 'portfolioButton';
+  readonly mode: PortfolioButtonMode;
 }
 
 function makeNonce(): string {

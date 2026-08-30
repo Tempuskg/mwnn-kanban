@@ -329,7 +329,7 @@
         },
         "mwnn-kanban-pro.polar.benefitId": {
           "type": "string",
-          "default": "",
+          "default": "e03272a8-e66c-463b-8ba5-3cf82e0279da",
           "description": "Polar License Keys benefit id required for MWNN Kanban Pro license validation. Leave empty only for sandbox testing without a configured benefit.",
           "scope": "application"
         },

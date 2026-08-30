@@ -7,7 +7,7 @@ import {
 
 // The landing page carries the checkout links, so every in-editor purchase
 // surface points here rather than at the source repository.
-export const PRO_PURCHASE_URL = 'https://mwnnkanban.dev/#pro';
+export const PRO_PURCHASE_URL = 'https://mwnnkanban.dev/#purchase';
 export const PRO_UPGRADE_PROMPT_LABEL = 'Get Pro';
 export const PRO_ACTIVATE_PROMPT_LABEL = 'Enter License Key';
 export const ENTER_PRO_LICENSE_KEY_COMMAND = 'mwnn-kanban.enterProLicenseKey';
@@ -71,6 +71,35 @@ interface OpenProPurchasePageDeps {
 
 let activeLicenseManager: ProLicenseManager | undefined;
 let activeUpgradeDeps: ProUpgradeDeps | undefined;
+/** The last value published to {@link PRO_LICENSE_CONTEXT_KEY}. */
+let publishedProLicense = false;
+
+type ProLicenseListener = (licensed: boolean) => void;
+const proLicenseListeners = new Set<ProLicenseListener>();
+
+/**
+ * The licence state currently published to the `mwnn-kanban.hasProLicense`
+ * context key, readable synchronously. UI that has to decide what to render
+ * right now (the sidebar's Portfolio button) reads this so it can never
+ * disagree with the palette and menu `when` clauses.
+ */
+export function isProLicenseActive(): boolean {
+  return publishedProLicense;
+}
+
+/**
+ * Subscribe to changes of the published licence state. Fires only when the
+ * value actually changes, so entering or clearing a key updates live UI without
+ * a reload.
+ */
+export function onDidChangeProLicense(listener: ProLicenseListener): vscode.Disposable {
+  proLicenseListeners.add(listener);
+  return {
+    dispose(): void {
+      proLicenseListeners.delete(listener);
+    },
+  };
+}
 
 export async function openProPurchasePage(
   deps: Partial<OpenProPurchasePageDeps> = {},
@@ -90,6 +119,14 @@ async function publishProLicenseContext(licensed: boolean): Promise<void> {
     PRO_LICENSE_CONTEXT_KEY,
     licensed,
   );
+
+  if (publishedProLicense === licensed) {
+    return;
+  }
+  publishedProLicense = licensed;
+  for (const listener of [...proLicenseListeners]) {
+    listener(licensed);
+  }
 }
 
 export function initializeProLicenseCommands(

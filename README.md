@@ -14,6 +14,7 @@ An in-editor Kanban board for VS Code built around the [Methodology With No Name
 - A cancellable AI board loop that runs definition and implementation handoffs through a supported VS Code chat extension or a locally installed Copilot, Codex, Claude Code, or Cursor Agent CLI.
 - AI definition fill for undefined cards: dragging a card without a Description into the Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel exposes a `Fill in with AI` button whenever both are empty. Definition fills can target a VS Code chat extension or a local agent CLI.
 - Drag-and-drop card movement plus direct column add, rename, delete, limit, and reorder flows from the board UI.
+- A Pro-only `Portfolio` button in the MWNN Kanban sidebar that opens the Pro Portfolio dashboard. It is shown only while a Pro license or live trial is active, appears or disappears as soon as a license key is entered or cleared, and is absent entirely otherwise.
 
 ## Privacy and network access
 

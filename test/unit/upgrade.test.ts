@@ -198,7 +198,7 @@ suite('Pro upgrade commands', () => {
 
     await harness.invokeCommand(UPGRADE_TO_PRO_COMMAND);
     assert.deepEqual(harness.openedUrls, [PRO_PURCHASE_URL]);
-    assert.match(PRO_PURCHASE_URL, /^https:\/\/mwnnkanban\.dev\/#pro$/);
+    assert.match(PRO_PURCHASE_URL, /^https:\/\/mwnnkanban\.dev\/#purchase$/);
   });
 
   test('upgrade prompt activates a key and publishes the licensed context', async () => {

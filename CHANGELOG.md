@@ -6,6 +6,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Pro: a `Portfolio` button in the MWNN Kanban sidebar view opens the Pro Portfolio dashboard, alongside the existing `Open Board`, `Import plan`, and `Run AI loop` buttons. It is rendered only while a Pro license or live trial is active — the same signal behind `mwnn-kanban.hasProLicense` — and appears or disappears in the open sidebar as a license key is entered or cleared. Unlicensed users see the sidebar unchanged, with no button and no upsell.
 - Pro: the Portfolio dashboard's Allocation rows now take an inline Target % edit, written straight to the project registry. The bar keeps showing the normalized share, and a "Targets total N%; shares are normalized" hint states the relationship. Requires @tempuskg/mwnn-kanban-pro 0.1.6.
 - The GitHub Copilot CLI provider now prefers standalone `copilot` and falls back to GitHub CLI's modern `gh copilot` passthrough for both AI-loop and per-card runs, while rejecting the retired suggestion/explanation extension.
 - Pro license commands for purchasing, entering, inspecting, and clearing a key, with validated status published through `mwnn-kanban.hasProLicense` for gated UI surfaces.

@@ -58,6 +58,8 @@ import {
   createBoardChangeEvent,
   hasProLicense,
   initializeProLicenseCommands,
+  isProLicenseActive,
+  onDidChangeProLicense,
   showUpgradePrompt,
   type BoardChangeEvent,
 } from './pro';
@@ -73,6 +75,7 @@ import {
 } from './boardLoop';
 import { BoardPanel } from './boardPanel';
 import { BoardSidebarViewProvider } from './sidebarView';
+import { openProPortfolio } from './portfolioButton';
 import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from './boardStore';
 import {
   parseSkillDocument,
@@ -162,6 +165,23 @@ function getImplicitWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   }
 
   return vscode.workspace.workspaceFolders?.[0];
+}
+
+/**
+ * Run the Pro Portfolio command for the sidebar button. The command only exists
+ * while the Pro package is loaded, so a missing registration surfaces as a
+ * message instead of an unhandled rejection.
+ */
+function openPortfolioDashboard(): void {
+  void openProPortfolio({
+    executeCommand: (command, ...args) => vscode.commands.executeCommand(command, ...args),
+    showInformationMessage: (message) => vscode.window.showInformationMessage(message),
+  });
+}
+
+/** The license signal backing `mwnn-kanban.hasProLicense`, read synchronously. */
+function proLicenseStatus(): { readonly licensed: boolean } {
+  return { licensed: isProLicenseActive() };
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -664,8 +684,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         openBoard,
         () => void importPlan(),
         () => void runBoardLoopCommand(),
+        openPortfolioDashboard,
         () => BoardPanel.status(),
+        proLicenseStatus,
         BoardPanel.onDidChangeState,
+        onDidChangeProLicense,
       ),
     ),
   );
@@ -892,10 +915,15 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
         () => void showWorkspaceMessage(),
         () => void showWorkspaceMessage(),
         () => void showWorkspaceMessage(),
+        // The Portfolio dashboard is workspace-independent, so it stays wired
+        // even without a folder open; license gating still decides visibility.
+        openPortfolioDashboard,
         // No workspace means no board can open; the button stays in its default
         // "Open Board" state and never changes.
         () => ({ open: false, focused: false }),
+        proLicenseStatus,
         BoardPanel.onDidChangeState,
+        onDidChangeProLicense,
       ),
     ),
     vscode.commands.registerCommand('mwnn-kanban.openBoard', showWorkspaceMessage),
