@@ -13,6 +13,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card details now offer an accessible copy-path action that copies the card's absolute Markdown file path and reports clipboard success or failure in the dialog.
 
 ### Changed
+- Pro background activity tracking is now enabled by default, so registered-project work performed by agents and other processes continues to accrue while VS Code is unfocused. Set `mwnn-kanban-pro.trackWhenUnfocused` to `false` to opt out. Requires @tempuskg/mwnn-kanban-pro 0.1.7.
 - The extension now activates after VS Code startup without creating `.mwnn` board files in an untouched workspace; board storage is created on the first board mutation.
 
 - Cursor Agent CLI handoffs now deliver the full prompt on Windows: the `cursor-agent.cmd` PowerShell shim is unwrapped to `node.exe` so stdin is not dropped, and a temp prompt-file pointer is used only when that layout is unavailable.
