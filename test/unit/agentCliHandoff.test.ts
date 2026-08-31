@@ -391,7 +391,9 @@ async function fakeCursorWindowsInstall(versionNames: readonly string[]): Promis
 }
 
 suite('Cursor Agent CLI prompt delivery', () => {
-  test('unwraps the Windows cmd shim to node.exe so the full prompt reaches stdin', async () => {
+  test('unwraps the Windows cmd shim to node.exe so the full prompt reaches stdin', {
+    skip: process.platform !== 'win32',
+  }, async () => {
     const install = await fakeCursorWindowsInstall(['2026.08.01-aaaaaaa', '2026.08.11-e8db854']);
     const prompt = 'Existing MWNN implementation handoff\nwith multiple lines & symbols';
     try {
@@ -442,7 +444,9 @@ suite('Cursor Agent CLI prompt delivery', () => {
     }
   });
 
-  test('a Cursor cmd shim handoff launches the unwrapped node entrypoint', async () => {
+  test('a Cursor cmd shim handoff launches the unwrapped node entrypoint', {
+    skip: process.platform !== 'win32',
+  }, async () => {
     const install = await fakeCursorWindowsInstall(['2026.08.11-e8db854']);
     const { state, cardId } = boardWithCard();
     const board = fakeStore(state);
