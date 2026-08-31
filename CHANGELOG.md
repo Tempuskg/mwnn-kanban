@@ -3,7 +3,7 @@
 All notable changes to MWNN Kanban are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.0.8] - 2026-08-30
 
 ### Added
 - Pro: a `Portfolio` button in the MWNN Kanban sidebar view opens the Pro Portfolio dashboard, alongside the existing `Open Board`, `Import plan`, and `Run AI loop` buttons. It is rendered only while a Pro license or live trial is active — the same signal behind `mwnn-kanban.hasProLicense` — and appears or disappears in the open sidebar as a license key is entered or cleared. Unlicensed users see the sidebar unchanged, with no button and no upsell.
@@ -40,5 +40,6 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
 
-[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.8
 [0.0.1]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.1

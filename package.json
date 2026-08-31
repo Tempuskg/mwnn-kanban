@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. Pro license validation sends the license key to Polar; no usage, board, or time data is transmitted.",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
