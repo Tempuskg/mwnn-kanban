@@ -3,6 +3,14 @@
 All notable changes to MWNN Kanban are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.0.9] - 2026-09-01
+
+### Added
+- Pro: Portfolio Allocation and Timesheet now count eligible work outside VS Code from external project-file changes and Claude Code transcript heartbeats, including read-heavy Claude sessions that do not continuously modify workspace files. Requires @tempuskg/mwnn-kanban-pro 0.1.8.
+
+### Fixed
+- Pro: open Portfolio and Timesheet dashboards now refresh after local writes and cross-window Pro store changes. Requires @tempuskg/mwnn-kanban-pro 0.1.8.
+
 ## [0.0.8] - 2026-08-30
 
 ### Added
@@ -40,6 +48,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
 
-[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.9
 [0.0.8]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.8
 [0.0.1]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.1
