@@ -5,7 +5,7 @@ Marketplace and Open VSX. It covers the one-time account setup, release
 preparation, the automated GitHub Actions path, a local fallback, verification,
 and recovery from common failures.
 
-Last verified: 2026-08-08
+Last verified: 2026-08-31
 
 ## Release identity
 
@@ -18,7 +18,7 @@ and both registries:
 | Publisher / namespace   | `darrenjmcleod`                 |
 | Extension name          | `mwnn-kanban`                   |
 | Display name            | `MWNN Kanban`                   |
-| Current release version | `0.0.1`                         |
+| Current release version | `0.0.9`                         |
 | VSIX filename           | `mwnn-kanban.vsix`              |
 | Minimum VS Code version | `1.93.0`                        |
 | Release workflow        | `.github/workflows/release.yml` |
@@ -127,13 +127,146 @@ installations of `@vscode/vsce` and `ovsx` are not required.
 1. Open the GitHub repository.
 2. Go to **Settings → Secrets and variables → Actions**.
 3. Select **New repository secret**.
-4. Create `VSCE_PAT` with the Visual Studio Marketplace token.
-5. Create `OVSX_PAT` with the Open VSX token.
-6. Confirm the names exactly. GitHub secret names are case-sensitive in the
+4. Create or update `GH_PACKAGES_TOKEN` with the GitHub Packages token described
+   below. This secret is needed by both PR CI and the release package job so
+   `npm ci` can install `@tempuskg/mwnn-kanban-pro`.
+5. Create `VSCE_PAT` with the Visual Studio Marketplace token.
+6. Create `OVSX_PAT` with the Open VSX token.
+7. Confirm the names exactly. GitHub secret names are case-sensitive in the
    workflow.
 
-Do not put either token in repository variables, workflow YAML, `.env` files,
+Do not put any token in repository variables, workflow YAML, `.env` files,
 issues, logs, or release notes. Rotate a token immediately if it is exposed.
+
+### Update `GH_PACKAGES_TOKEN`
+
+`GH_PACKAGES_TOKEN` is a repository Actions secret used by
+`.github/workflows/ci.yml` and `.github/workflows/release.yml`. Those workflows
+write a temporary npm configuration containing the secret and then run
+`npm ci` against `https://npm.pkg.github.com` to download
+`@tempuskg/mwnn-kanban-pro`. The secret is never needed by the extension at
+runtime and must not be added to the repository's `.npmrc`.
+
+#### Create a replacement token
+
+GitHub Packages currently requires a **personal access token (classic)** for
+this registry. Create a replacement before revoking the old token so a failed
+rotation does not interrupt CI:
+
+1. Sign in to the GitHub account that has read access to the
+   `@tempuskg/mwnn-kanban-pro` package.
+2. Open **Profile → Settings → Developer settings → Personal access tokens →
+   Tokens (classic)** and select **Generate new token (classic)**.
+3. Give it a descriptive name such as `mwnn-kanban GitHub Packages read` and
+   set an expiration that the maintainer can monitor.
+4. Select the least privilege required:
+   - `read:packages` is required to download package metadata and tarballs.
+   - Add `repo` only when the package is private or its access is inherited
+     from a private repository and GitHub requires repository-scoped access.
+     Do not grant `write:packages` or `delete:packages` to this install-only
+     token.
+5. Generate the token and copy it once into a password manager or other
+   approved secret store. Never put the value in a file, issue, chat message,
+   shell history, or workflow log.
+6. If the `Tempuskg` organization requires SAML SSO, use **Configure SSO** on
+   the new classic token and authorize it for that organization before testing
+   it. A token can have the correct scope and still receive an authorization
+   failure until SSO is approved.
+
+#### Replace the repository secret
+
+GitHub does not reveal the existing secret value. Updating the secret replaces
+it atomically; it does not require, and should not involve, reading the old
+value:
+
+1. Open **Settings → Secrets and variables → Actions → Secrets** for
+   `Tempuskg/mwnn-kanban`.
+2. Select the repository secret named exactly `GH_PACKAGES_TOKEN`. If it does
+   not exist, select **New repository secret**.
+3. Enter `GH_PACKAGES_TOKEN` as the name and paste the replacement token as the
+   value. Do not add quotes or whitespace.
+4. Save the secret. Keep it at the **repository** level; the current workflows
+   reference `secrets.GH_PACKAGES_TOKEN`, not a variable or a differently named
+   environment secret.
+
+With GitHub CLI, this updates the secret without putting its value in the
+command line or shell history:
+
+```powershell
+$secureToken = Read-Host 'GitHub Packages token' -AsSecureString
+$token = [System.Net.NetworkCredential]::new('', $secureToken).Password
+try {
+  $token | gh secret set GH_PACKAGES_TOKEN --repo Tempuskg/mwnn-kanban
+} finally {
+  Remove-Variable token, secureToken -ErrorAction SilentlyContinue
+}
+```
+
+Confirm only that the name exists; GitHub will never print the value:
+
+```powershell
+gh secret list --repo Tempuskg/mwnn-kanban | Select-String 'GH_PACKAGES_TOKEN'
+```
+
+#### Validate the replacement without changing the repository
+
+The following check uses a temporary npm configuration outside the repository.
+The token is supplied through an environment variable referenced by that file,
+then both are removed in `finally`. Run it from the repository root:
+
+```powershell
+$secureToken = Read-Host 'GitHub Packages token' -AsSecureString
+$token = [System.Net.NetworkCredential]::new('', $secureToken).Password
+$tempNpmrc = (New-TemporaryFile).FullName
+try {
+  Set-Content -LiteralPath $tempNpmrc -Value @'
+@tempuskg:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+'@
+  $env:NODE_AUTH_TOKEN = $token
+  $env:NPM_CONFIG_USERCONFIG = $tempNpmrc
+  npm view '@tempuskg/mwnn-kanban-pro' version --registry=https://npm.pkg.github.com
+} finally {
+  Remove-Item Env:NODE_AUTH_TOKEN -ErrorAction SilentlyContinue
+  Remove-Item Env:NPM_CONFIG_USERCONFIG -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $tempNpmrc -Force -ErrorAction SilentlyContinue
+  Remove-Variable token, secureToken, tempNpmrc -ErrorAction SilentlyContinue
+}
+```
+
+Expected output is an accessible package version. An `E401` means the token is
+invalid, expired, revoked, not a classic PAT, or not authorized for the
+organization. An `E403` usually means the account or token cannot read the
+package. An `E404` can mean the package name, scope, registry URL, or package
+permissions are wrong. A successful `npm view` proves the token can read the
+registry; it does not publish anything.
+
+#### Rerun CI or a failed release
+
+After replacing the secret, use a non-publishing PR workflow or rerun the
+failed release workflow. If the release's **Validate and package** job failed,
+rerun the whole workflow because both registry jobs were skipped:
+
+```powershell
+gh run rerun <run-id> --repo Tempuskg/mwnn-kanban
+gh run watch <run-id> --repo Tempuskg/mwnn-kanban --exit-status
+```
+
+Do not create a new version or move the release tag just to recover a token
+failure. Wait for **Validate and package** to pass before considering either
+registry publish job. If only one registry job failed after packaging passed,
+rerun only that failed job and keep the original VSIX unchanged; see
+[One registry succeeded and the other failed](#one-registry-succeeded-and-the-other-failed).
+
+#### Rotate or respond to exposure
+
+For planned rotation, create and validate the replacement, update
+`GH_PACKAGES_TOKEN`, rerun the relevant workflow successfully, and only then
+revoke the old token from **Developer settings → Personal access tokens**.
+For suspected exposure, revoke the old token immediately, create a replacement,
+update the secret, and review workflow logs and repository history for the
+exposure. Never paste the replacement token into an issue or ask an agent to
+echo it.
 
 ## Prepare a release
 
@@ -466,6 +599,31 @@ The pushed tag and `package.json` disagree. Do not force-move a public release
 tag casually. Correct the release commit/version, create the intended tag, and
 push only after confirming the manifest.
 
+### GitHub Packages returns `401` during `npm ci`
+
+If the **Authenticate to GitHub Packages** step passes but **Install
+dependencies** fails with `401 Unauthorized`, the secret exists but GitHub
+rejected its value. Replace `GH_PACKAGES_TOKEN` and run the non-destructive
+validation above, then rerun the complete release workflow when the package job
+failed. Do not rerun a publish job whose package artifact was never created.
+
+Check each of the following:
+
+- The token is a personal access token (classic), not a fine-grained token.
+- The token includes `read:packages` and has not expired or been revoked.
+- The token's account can read `@tempuskg/mwnn-kanban-pro`.
+- The package's access settings grant the workflow account or repository access.
+- `repo` was added when GitHub requires access to a private repository-linked
+  package.
+- The token was authorized for `Tempuskg` through **Configure SSO** when the
+  organization requires SAML SSO.
+- The repository secret is named exactly `GH_PACKAGES_TOKEN`, contains no
+  quotes or trailing whitespace, and is stored under **Actions → Secrets**, not
+  repository variables.
+
+The workflow's non-empty-secret check cannot validate a token. The `npm ci`
+step is the actual package-access check.
+
 ### `VSCE_PAT` or `OVSX_PAT` is not configured
 
 The workflow intentionally fails before calling a registry when a secret is
@@ -580,6 +738,8 @@ second-registry publish.
 - [ ] `CHANGELOG.md` contains the dated version entry.
 - [ ] The Marketplace publisher exists and the publishing identity is allowed.
 - [ ] The Open VSX agreement is signed and namespace exists.
+- [ ] `GH_PACKAGES_TOKEN` is a current, unexposed classic PAT with package-read
+      access, and a non-destructive package access check succeeds.
 - [ ] `VSCE_PAT` and `OVSX_PAT` are configured, current, and unexposed.
 - [ ] `npm ci` succeeds.
 - [ ] Test compilation and extension compilation succeed.
@@ -608,3 +768,7 @@ second-registry publish.
 - [Open VSX: Publishing
   Extensions](https://github.com/EclipseFdn/open-vsx.org/wiki/Publishing-Extensions)
 - [Open VSX registry](https://open-vsx.org/)
+- [GitHub Packages: About permissions](https://docs.github.com/en/packages/learn-github-packages/about-permissions-for-github-packages)
+- [GitHub Packages: Working with the npm registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry)
+- [GitHub: Managing personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- [GitHub Actions: Using secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions)
