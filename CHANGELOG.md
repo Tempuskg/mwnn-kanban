@@ -3,6 +3,14 @@
 All notable changes to MWNN Kanban are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.0.10] - 2026-09-06
+
+### Added
+- Pro: cycle-time charts now show readable logarithmic duration gridlines, mark approximate timings, and call out thin sample coverage. Requires `@tempuskg/mwnn-kanban-pro` 0.1.9.
+
+### Fixed
+- Pro: cycle-time history now distinguishes cards that were never observed entering In Progress from out-of-order histories, so excluded-card reporting explains the actual data gap. Requires `@tempuskg/mwnn-kanban-pro` 0.1.9.
+
 ## [0.0.9] - 2026-09-01
 
 ### Added
@@ -48,7 +56,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
 
-[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.10
 [0.0.9]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.9
 [0.0.8]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.8
 [0.0.1]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.1
