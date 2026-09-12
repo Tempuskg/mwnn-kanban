@@ -5,7 +5,7 @@ Marketplace and Open VSX. It covers the one-time account setup, release
 preparation, the automated GitHub Actions path, a local fallback, verification,
 and recovery from common failures.
 
-Last verified: 2026-08-31
+Last verified: 2026-09-12
 
 ## Release identity
 
@@ -18,7 +18,7 @@ and both registries:
 | Publisher / namespace   | `darrenjmcleod`                 |
 | Extension name          | `mwnn-kanban`                   |
 | Display name            | `MWNN Kanban`                   |
-| Current release version | `0.0.9`                         |
+| Current release version | `0.0.11`                        |
 | VSIX filename           | `mwnn-kanban.vsix`              |
 | Minimum VS Code version | `1.93.0`                        |
 | Release workflow        | `.github/workflows/release.yml` |
