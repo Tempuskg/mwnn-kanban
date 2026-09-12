@@ -3,6 +3,15 @@
 All notable changes to MWNN Kanban are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.0.11] - 2026-09-12
+
+### Added
+- Pro: the Portfolio Flow section now charts aging work in progress. Cards currently in an in-progress column are plotted by how long they have been there, with p50 and p85 markers over today's ages. Cards first observed already in progress are reported as explicit unknown-age coverage rather than dated from the first event that mentions them, and backfilled events and column re-roles no longer reset an age. Requires `@tempuskg/mwnn-kanban-pro` 0.1.10.
+- Pro: the My Work queue now ranks in-progress cards by age within each project and shows that age beside debt hours, marking any card at or past the p85 of today's in-progress ages. Project order still follows debt. Requires `@tempuskg/mwnn-kanban-pro` 0.1.10.
+
+### Changed
+- The marketplace description no longer describes Pro license validation, which does not apply to the free extension: "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted."
+
 ## [0.0.10] - 2026-09-06
 
 ### Added
