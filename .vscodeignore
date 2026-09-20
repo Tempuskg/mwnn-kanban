@@ -1,6 +1,7 @@
 .vscode/**
 .github/**
 .claude/**
+.coderabbit.yaml
 .chat/**
 .mwnn/**
 mwnn-kanban-pro/**

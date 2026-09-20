@@ -4,10 +4,14 @@
  */
 
 import {
+  AGENT_CLI_PROVIDER_IDS,
   BOARD_STATE_VERSION,
+  isAgentCliProviderId,
+  type AgentCliProviderId,
   type Assignee,
   type BoardState,
   type Card,
+  type CardPreferredModels,
   type Column,
   type ColumnRole,
 } from './types';
@@ -145,6 +149,10 @@ function cloneCard(card: Card): Card {
   if (card.dependsOn !== undefined) {
     clone.dependsOn = [...card.dependsOn];
   }
+  const preferredModels = clonePreferredModels(card.preferredModels);
+  if (preferredModels !== undefined) {
+    clone.preferredModels = preferredModels;
+  }
   return clone;
 }
 
@@ -184,6 +192,18 @@ function assigneesEqual(left: Assignee | undefined, right: Assignee | undefined)
   return left.kind === right.kind && left.name === right.name;
 }
 
+/**
+ * Compared entry by entry over the fixed provider list rather than by key
+ * count, so a map that gained or lost one provider is detected and the edit
+ * actually publishes to the webview.
+ */
+function preferredModelsEqual(
+  left: CardPreferredModels | undefined,
+  right: CardPreferredModels | undefined,
+): boolean {
+  return AGENT_CLI_PROVIDER_IDS.every((provider) => left?.[provider] === right?.[provider]);
+}
+
 function dependenciesEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   if (left === undefined || right === undefined) {
     return left === right;
@@ -200,6 +220,7 @@ function cardsEqual(left: Card, right: Card): boolean {
     left.description === right.description &&
     left.acceptanceCriteria === right.acceptanceCriteria &&
     left.activity === right.activity &&
+    preferredModelsEqual(left.preferredModels, right.preferredModels) &&
     assigneesEqual(left.assignee, right.assignee) &&
     dependenciesEqual(left.dependsOn, right.dependsOn)
   );
@@ -288,6 +309,10 @@ export function duplicateCard(state: BoardState, cardId: string): BoardState {
     if (original.dependsOn !== undefined) {
       copy.dependsOn = [...original.dependsOn];
     }
+    const copiedModels = clonePreferredModels(original.preferredModels);
+    if (copiedModels !== undefined) {
+      copy.preferredModels = copiedModels;
+    }
 
     column.cards.splice(index + 1, 0, copy);
     break;
@@ -323,6 +348,139 @@ export function setAssignee(state: BoardState, cardId: string, assignee: Assigne
         card.assignee = normalized;
       } else {
         delete card.assignee;
+      }
+      card.updatedAt = Date.now();
+      break;
+    }
+  }
+  return next;
+}
+
+/**
+ * Control characters cannot reach a CLI as one literal argument - a newline in
+ * particular is silently truncated by a cmd.exe shim - so a value containing
+ * one is unusable. Checked by code point rather than by a regular expression so
+ * this source file stays free of control characters itself.
+ */
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Shared normalization for the card's preferred model, used by both the parser
+ * and the board mutations so a value that survives an edit also survives a
+ * reload. Returns undefined for anything that cannot be passed to a CLI as a
+ * single argument.
+ */
+export function normalizePreferredModel(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || hasControlCharacter(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+/**
+ * Validate a whole per-provider model map: unknown provider keys and values
+ * that are blank, whitespace-only, or otherwise unusable as a single spawn
+ * argument are dropped rather than stored, and a map left with no entries
+ * becomes undefined so the property is omitted entirely.
+ *
+ * Shared by the card-file parser, the board mutations, and the store so a value
+ * that survives an edit also survives a reload.
+ */
+export function normalizeCardPreferredModels(
+  value: CardPreferredModels | undefined,
+): CardPreferredModels | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized: CardPreferredModels = {};
+  let count = 0;
+  for (const [provider, model] of Object.entries(value)) {
+    // Only known providers are read, which is what makes an unknown key a no-op
+    // rather than an error: a stale or misspelled key simply never matches.
+    if (!isAgentCliProviderId(provider)) {
+      continue;
+    }
+    const usable = normalizePreferredModel(typeof model === 'string' ? model : undefined);
+    if (usable === undefined) {
+      continue;
+    }
+    normalized[provider] = usable;
+    count += 1;
+  }
+  return count > 0 ? normalized : undefined;
+}
+
+function clonePreferredModels(
+  value: CardPreferredModels | undefined,
+): CardPreferredModels | undefined {
+  return normalizeCardPreferredModels(value);
+}
+
+/**
+ * The model this card names for the provider a dispatch is actually running
+ * on, or undefined when it names none for that CLI.
+ *
+ * Every dispatch path reads the card through here, so a provider the card says
+ * nothing about falls through to the workspace layers and then to that CLI's
+ * own default — and a provider the credit fallback swapped in picks up its own
+ * entry instead of inheriting the exhausted CLI's model, which it would reject.
+ */
+export function cardPreferredModelFor(
+  card: Pick<Card, 'preferredModels'>,
+  provider: AgentCliProviderId,
+): string | undefined {
+  return normalizePreferredModel(card.preferredModels?.[provider]);
+}
+
+/**
+ * Set (or clear) the AI model a card should be run with **on one provider**.
+ * The value is free-form and passed straight through to that agent CLI, so it
+ * is only normalized here: anything unusable as a single spawn argument clears
+ * that provider's entry, a cleared entry is removed rather than written as an
+ * empty value, and a card left with no entries loses the property entirely.
+ *
+ * Scoped to one provider so editing the model for one CLI never disturbs what
+ * the card names for the other three.
+ */
+export function setPreferredModel(
+  state: BoardState,
+  cardId: string,
+  provider: AgentCliProviderId,
+  preferredModel: string | undefined,
+): BoardState {
+  const next = cloneBoard(state);
+  const normalized = normalizePreferredModel(preferredModel);
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      // Rebuilt over the fixed provider list rather than mutated in place, so
+      // the only entry this edit can touch is the one it names.
+      const models: CardPreferredModels = {};
+      for (const known of AGENT_CLI_PROVIDER_IDS) {
+        const model = known === provider ? normalized : card.preferredModels?.[known];
+        if (model !== undefined) {
+          models[known] = model;
+        }
+      }
+      const remaining = normalizeCardPreferredModels(models);
+      if (remaining !== undefined) {
+        card.preferredModels = remaining;
+      } else {
+        delete card.preferredModels;
       }
       card.updatedAt = Date.now();
       break;

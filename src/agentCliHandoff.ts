@@ -3,15 +3,38 @@ import { constants as fsConstants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { detectCreditExhaustion, redactSecrets, type CreditExhaustionSignal } from './agentCliCredit';
+import {
+  AGENT_CLI_ESCALATION_LADDER_SETTING,
+  AGENT_CLI_MODELS_SETTING,
+  AGENT_CLI_STAGE_MODELS_SETTING,
+  EMPTY_AGENT_CLI_MODEL_CATALOG,
+  EMPTY_AGENT_CLI_STAGE_MODELS,
+  agentCliModelSourceLabel,
+  describeAgentCliModelSource,
+  resolveAgentCliModel,
+  type AgentCliModelCatalog,
+  type AgentCliModelSource,
+  type AgentCliStageModels,
+} from './agentCliModels';
+import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
+import type { AgentCliHandoffKind } from './agentCliStages';
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
 import type { BoardState, Card } from './types';
+import { cardPreferredModelFor } from './utils';
 
-export const AGENT_CLI_PROVIDER_IDS = ['copilot', 'codex', 'claude-code', 'cursor'] as const;
+// The provider identity lives in its own module so the model catalog can depend
+// on it without importing the spawn machinery; re-exported here so callers keep
+// a single import site.
+export { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId } from './agentCliProviders';
+export type { AgentCliProviderId } from './agentCliProviders';
+// Stage ids live beside the provider ids, for the same reason: the model
+// settings reader keys on them and must not import the spawn machinery.
+export { AGENT_CLI_HANDOFF_KINDS, isAgentCliHandoffKind } from './agentCliStages';
+export type { AgentCliHandoffKind } from './agentCliStages';
 
-export type AgentCliProviderId = (typeof AGENT_CLI_PROVIDER_IDS)[number];
 export type AgentCliPathOverrides = Partial<Record<AgentCliProviderId, string>>;
-export type AgentCliHandoffKind = 'implementation' | 'definition' | 'triage' | 'verification';
 export type AgentCliLauncher = 'standalone' | 'gh-copilot';
 
 export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
@@ -21,10 +44,27 @@ export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
   cursor: 'Cursor Agent CLI',
 };
 
+/**
+ * How one provider names a model on its own command line. A provider that
+ * offers no model selection simply omits `model`, and a card that names one is
+ * then run on that CLI's default model instead of failing.
+ */
+interface AgentCliModelSpec {
+  /** The CLI's own model flag, e.g. `--model`. */
+  readonly flag: string;
+  /**
+   * Index in the provider's fixed `args` at which `[flag, model]` is spliced
+   * in. Defaults to the end, which is wrong only for a CLI whose fixed argv
+   * ends in a positional argument (Codex's stdin `-`).
+   */
+  readonly insertAt?: number;
+}
+
 interface AgentCliProviderSpec {
   readonly defaultCommands: readonly string[];
   /** Fixed, single-line argv. The prompt itself always travels over stdin. */
   readonly args: readonly string[];
+  readonly model?: AgentCliModelSpec;
 }
 
 /**
@@ -50,25 +90,177 @@ interface AgentCliProviderSpec {
  *   to that install's `node.exe` + `index.js` when present. If unwrap is
  *   unavailable, the prompt is written to a temp file and a single-line
  *   `-p` pointer names that file (cmd.exe-safe).
+ *
+ * The model a dispatch runs on — the model the card names for this provider,
+ * else the stage's rule from `agentCliStageModels`, else the active provider's
+ * workspace default from `agentCliModels` — is turned into its model argument here
+ * and nowhere else. The value is never validated against a list of model names
+ * — each CLI owns its vocabulary and it changes faster than this extension
+ * ships — and it is never interpolated into a command string: it is spliced in
+ * as one further spawn argument, so spaces, quotes, and shell metacharacters
+ * stay data. A card with no model, a stage with no rule, and a provider with no
+ * configured workspace default produce exactly the argv below.
  */
 const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   copilot: {
     defaultCommands: ['copilot'],
     args: ['--allow-all-tools', '--no-ask-user', '--silent'],
+    model: { flag: '--model' },
   },
   codex: {
     defaultCommands: ['codex'],
     args: ['exec', '--sandbox', 'workspace-write', '-'],
+    // After `exec`, and before the trailing `-` that names stdin as the prompt.
+    model: { flag: '--model', insertAt: 1 },
   },
   'claude-code': {
     defaultCommands: ['claude'],
     args: ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
+    model: { flag: '--model' },
   },
   cursor: {
     defaultCommands: ['cursor-agent'],
     args: ['-p', '--force', '--output-format', 'text'],
+    model: { flag: '--model' },
   },
 };
+
+/**
+ * The model flag each provider accepts, or undefined for a provider that takes
+ * no model selection. Exported as data so callers (and tests) can reason about
+ * model support without reaching into the spawn logic.
+ */
+export const AGENT_CLI_MODEL_FLAGS: Readonly<Record<AgentCliProviderId, string | undefined>> =
+  Object.freeze(
+    Object.fromEntries(
+      AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, PROVIDER_SPECS[provider].model?.flag]),
+    ) as Record<AgentCliProviderId, string | undefined>,
+  );
+
+/**
+ * The outcome of turning a resolved model into CLI arguments for one provider.
+ * `applied: false` is not a failure: the run continues on the provider's own
+ * default model, and `reason` explains to the user why the requested model was
+ * skipped so it never happens silently.
+ */
+export interface AgentCliModelSelection {
+  /** The resolved value, exactly as it will reach the CLI. */
+  readonly requested: string;
+  /** Which layer supplied this model: the card, the stage rule, or the workspace. */
+  readonly source: AgentCliModelSource;
+  /** The stage this selection was resolved for, when one was in hand. */
+  readonly stage?: AgentCliHandoffKind;
+  readonly applied: boolean;
+  /** `[flag, model]` when applied; empty otherwise. Always separate argv entries. */
+  readonly args: readonly string[];
+  readonly reason?: string;
+}
+
+export interface AgentCliModelResolutionOptions {
+  /** Workspace model lists; defaults to "nothing configured". */
+  readonly catalog?: AgentCliModelCatalog;
+  /**
+   * The AI-loop stage being dispatched. Omitting it skips the stage layer
+   * entirely, which is what a caller with no stage in hand wants.
+   */
+  readonly stage?: AgentCliHandoffKind;
+  /** Per-stage model rules; defaults to "no rules configured". */
+  readonly stageModels?: AgentCliStageModels;
+  /**
+   * A model the AI loop's escalation ladder picked for this retry. Supersedes
+   * every configured layer, because it exists to replace a model an attempt
+   * already failed on.
+   */
+  readonly escalatedModel?: string;
+  /**
+   * Injectable so the "provider takes no model selection" path is exercisable
+   * without waiting for a CLI to drop its `--model` support.
+   */
+  readonly flags?: Readonly<Record<AgentCliProviderId, string | undefined>>;
+}
+
+/**
+ * Turn the resolved model for one card on one provider at one stage into that
+ * provider's CLI arguments. The resolution order itself lives in
+ * `agentCliModels`; this only shapes the result for the command line. Returns
+ * undefined when no layer names a usable model, which is what keeps an
+ * unconfigured dispatch producing byte-identical arguments to the behavior
+ * before per-card, per-stage, and workspace models existed.
+ */
+export function resolveAgentCliModelSelection(
+  provider: AgentCliProviderId,
+  preferredModel: string | undefined,
+  options: AgentCliModelResolutionOptions = {},
+): AgentCliModelSelection | undefined {
+  const stage = options.stage;
+  const resolved = resolveAgentCliModel(
+    provider,
+    preferredModel,
+    options.catalog ?? EMPTY_AGENT_CLI_MODEL_CATALOG,
+    stage !== undefined
+      ? { stage, stageModels: options.stageModels ?? EMPTY_AGENT_CLI_STAGE_MODELS }
+      : undefined,
+    options.escalatedModel,
+  );
+  if (resolved === undefined) {
+    return undefined;
+  }
+
+  const requested = resolved.model;
+  const source = resolved.source;
+  // Carried on every selection, not just stage-sourced ones, so a failure
+  // message can always say which stage the run belonged to.
+  const stageField = stage !== undefined ? { stage } : {};
+  const flag = (options.flags ?? AGENT_CLI_MODEL_FLAGS)[provider];
+  if (flag === undefined) {
+    return {
+      requested,
+      source,
+      ...stageField,
+      applied: false,
+      args: [],
+      reason: `${AGENT_CLI_LABELS[provider]} does not accept a model selection, so ${describeAgentCliModelSource(source)}${describeStageSuffix(source, stage)} "${requested}" was not applied and the run used that CLI's default model.`,
+    };
+  }
+  return { requested, source, ...stageField, applied: true, args: [flag, requested] };
+}
+
+/**
+ * ` for the definition stage`, but only for a stage-sourced model: naming the
+ * stage is what points the user at the right key in the settings object, and it
+ * would be noise on a card or workspace model that applies to every stage.
+ */
+function describeStageSuffix(
+  source: AgentCliModelSource,
+  stage: AgentCliHandoffKind | undefined,
+): string {
+  // An escalation model is chosen for one retry of one stage, so naming the
+  // stage points at the attempt that triggered it, exactly as it points a
+  // stage rule at the key to edit.
+  return (source === 'stage-rule' || source === 'escalation') && stage !== undefined
+    ? ` for the ${stage} stage`
+    : '';
+}
+
+/**
+ * The provider's fixed argv with the resolved model arguments spliced in. The
+ * model value stays one argument, so a name containing spaces, quotes, or shell
+ * metacharacters can never become a second argument or a command.
+ */
+function providerArgs(
+  provider: AgentCliProviderId,
+  selection: AgentCliModelSelection | undefined,
+): string[] {
+  const spec = PROVIDER_SPECS[provider];
+  const args = [...spec.args];
+  if (selection === undefined || !selection.applied || selection.args.length === 0) {
+    return args;
+  }
+
+  const insertAt = Math.min(Math.max(spec.model?.insertAt ?? args.length, 0), args.length);
+  args.splice(insertAt, 0, ...selection.args);
+  return args;
+}
 
 export interface AgentCliTarget {
   readonly provider: AgentCliProviderId;
@@ -432,24 +624,26 @@ export interface AgentCliInvocation {
   /** Hand-off prompt, written to the process's stdin; argv stays single-line. */
   readonly stdin: string;
   readonly cwd: string;
+  /** Present only when the card named a model; describes how it was handled. */
+  readonly modelSelection?: AgentCliModelSelection;
 }
 
 export function buildAgentCliInvocation(
   target: AgentCliTarget,
   prompt: string,
   cwd: string,
+  modelSelection?: AgentCliModelSelection,
 ): AgentCliInvocation {
-  const providerArgs = [...PROVIDER_SPECS[target.provider].args];
-  return {
+  const args = providerArgs(target.provider, modelSelection);
+  const invocation: AgentCliInvocation = {
     provider: target.provider,
     label: target.label,
     command: target.executable,
-    args: target.launcher === 'gh-copilot'
-      ? ['copilot', '--', ...providerArgs]
-      : providerArgs,
+    args: target.launcher === 'gh-copilot' ? ['copilot', '--', ...args] : args,
     stdin: prompt,
     cwd,
   };
+  return modelSelection ? { ...invocation, modelSelection } : invocation;
 }
 
 export interface PreparedAgentCliInvocation {
@@ -459,6 +653,8 @@ export interface PreparedAgentCliInvocation {
 
 export interface PrepareAgentCliInvocationOptions {
   readonly platform?: NodeJS.Platform;
+  /** Already-resolved card model; omitted when the card names none. */
+  readonly modelSelection?: AgentCliModelSelection;
 }
 
 /**
@@ -472,11 +668,12 @@ export async function prepareAgentCliInvocation(
   cwd: string,
   options: PrepareAgentCliInvocationOptions = {},
 ): Promise<PreparedAgentCliInvocation> {
-  const invocation = buildAgentCliInvocation(target, prompt, cwd);
+  const invocation = buildAgentCliInvocation(target, prompt, cwd, options.modelSelection);
   if (target.provider !== 'cursor') {
     return { invocation };
   }
 
+  const cursorArgs = providerArgs('cursor', options.modelSelection);
   const platform = options.platform ?? process.platform;
   const unwrapped = await resolveCursorWindowsLaunch(target.executable, platform);
   if (unwrapped) {
@@ -484,7 +681,7 @@ export async function prepareAgentCliInvocation(
       invocation: {
         ...invocation,
         command: unwrapped.command,
-        args: [unwrapped.script, ...PROVIDER_SPECS.cursor.args],
+        args: [unwrapped.script, ...cursorArgs],
       },
     };
   }
@@ -494,7 +691,8 @@ export async function prepareAgentCliInvocation(
     return {
       invocation: {
         ...invocation,
-        args: [...PROVIDER_SPECS.cursor.args, pointer.pointer],
+        // The pointer is Cursor's positional prompt and must stay last.
+        args: [...cursorArgs, pointer.pointer],
       },
       cleanup: pointer.cleanup,
     };
@@ -852,7 +1050,46 @@ export interface AgentCliCardHandoff {
   readonly cwd: string;
   readonly store: AgentCliHandoffStore;
   readonly signal: AbortSignal;
+  /**
+   * Workspace model lists, already validated. Omitted means "nothing
+   * configured", so the card's own model is the only one that can apply.
+   */
+  readonly modelCatalog?: AgentCliModelCatalog;
+  /**
+   * Per-stage model rules, already validated. Resolved against this handoff's
+   * own `kind`, so each stage of one loop run can run on its own model.
+   */
+  readonly stageModels?: AgentCliStageModels;
+  /**
+   * A model the AI loop's escalation ladder picked for this retry, replacing
+   * the one the previous attempt failed on. Supersedes every configured layer
+   * for this dispatch only; nothing is written back to the card or settings.
+   */
+  readonly escalatedModel?: string;
 }
+
+/**
+ * Why one hand-off did not complete, as a value rather than as prose.
+ *
+ * The `reason` string is written for the user and is free to change; policy
+ * that has to tell these cases apart - the loop's model escalation, which
+ * retries only an inconclusive attempt and never an authentication, network,
+ * or model-name failure - keys on this instead of matching that prose.
+ *
+ * - `card-missing`: the card was deleted around the dispatch.
+ * - `model-rejected`: the CLI refused the model name it was given.
+ * - `credit-exhausted`: the CLI's credits or usage allowance are spent.
+ * - `process-failed`: the CLI failed to start, errored, or exited nonzero -
+ *   authentication and network failures both land here.
+ * - `missing-evidence`: the CLI exited cleanly but the card file does not carry
+ *   this stage's required completion evidence.
+ */
+export type AgentCliHandoffFailure =
+  | 'card-missing'
+  | 'model-rejected'
+  | 'credit-exhausted'
+  | 'process-failed'
+  | 'missing-evidence';
 
 export interface AgentCliCardHandoffResult {
   readonly completed: boolean;
@@ -860,7 +1097,22 @@ export interface AgentCliCardHandoffResult {
   /** Activity length after the loop's start entry and before the agent ran. */
   readonly activityBaseline: number;
   readonly reason?: string;
+  /** Set exactly when the hand-off failed for a classified reason. */
+  readonly failure?: AgentCliHandoffFailure;
   readonly terminalStatus?: TerminalCardStatus;
+  /**
+   * Set when the CLI failed because its credits or usage/session allowance are
+   * spent. Only this failure is eligible for the loop's CLI fallback; every
+   * other failure keeps the existing single-CLI behavior.
+   */
+  readonly creditExhaustion?: CreditExhaustionSignal;
+  /**
+   * How the resolved model — the model the card names for this provider, else
+   * this stage's rule, else the provider's workspace default — was handled for this
+   * dispatch. Absent when none named one. Callers surface `applied: false` so a
+   * model that could not be honored is never dropped silently.
+   */
+  readonly modelSelection?: AgentCliModelSelection;
 }
 
 export interface AgentCliCardHandoffOptions {
@@ -888,6 +1140,7 @@ export async function runAgentCliCardHandoff(
       completed: false,
       cancelled: false,
       activityBaseline: 0,
+      failure: 'card-missing',
       reason: `Card ${handoff.cardId} no longer exists, so ${handoff.target.label} was not started.`,
     };
   }
@@ -895,18 +1148,35 @@ export async function runAgentCliCardHandoff(
     return { completed: false, cancelled: true, activityBaseline: (before.activity ?? '').length };
   }
 
+  // Resolved per dispatch from the card as it is on disk right now, against the
+  // provider running *this* attempt, and for *this* handoff's stage. A model
+  // edited mid-run is picked up by the next stage, each stage of one loop run
+  // picks up its own rule, and a provider the credit fallback swapped in
+  // resolves against its own flags and its own workspace default rather than
+  // inheriting the exhausted CLI's.
+  const modelSelection = resolveAgentCliModelSelection(
+    handoff.target.provider,
+    cardPreferredModelFor(before, handoff.target.provider),
+    {
+      stage: handoff.kind,
+      ...(handoff.modelCatalog !== undefined ? { catalog: handoff.modelCatalog } : {}),
+      ...(handoff.stageModels !== undefined ? { stageModels: handoff.stageModels } : {}),
+      ...(handoff.escalatedModel !== undefined ? { escalatedModel: handoff.escalatedModel } : {}),
+    },
+  );
+  const withModel = (result: AgentCliCardHandoffResult): AgentCliCardHandoffResult =>
+    modelSelection ? { ...result, modelSelection } : result;
+
   await handoff.store.appendActivity(
     handoff.cardId,
-    formatAgentCliStartEntry(handoff.target.label, handoff.kind, now()),
+    formatAgentCliStartEntry(handoff.target.label, handoff.kind, now(), modelSelection),
   );
   const afterStart = findCard(await handoff.store.reload(), handoff.cardId);
   const activityBaseline = (afterStart?.activity ?? before.activity ?? '').length;
-  const prepared = await prepareAgentCliInvocation(
-    handoff.target,
-    handoff.prompt,
-    handoff.cwd,
-    options.platform !== undefined ? { platform: options.platform } : {},
-  );
+  const prepared = await prepareAgentCliInvocation(handoff.target, handoff.prompt, handoff.cwd, {
+    ...(options.platform !== undefined ? { platform: options.platform } : {}),
+    ...(modelSelection !== undefined ? { modelSelection } : {}),
+  });
   let processResult: AgentCliProcessResult;
   try {
     processResult = await runProcess(prepared.invocation, handoff.signal, options.observer);
@@ -920,32 +1190,57 @@ export async function runAgentCliCardHandoff(
       handoff.cardId,
       formatAgentCliCancellationEntry(handoff.target.label, handoff.kind, now()),
     );
-    return { completed: false, cancelled: true, activityBaseline };
+    return withModel({ completed: false, cancelled: true, activityBaseline });
   }
 
-  const processFailure = describeProcessFailure(handoff.target, processResult);
+  // A CLI that refuses the card's model has a working allowance; treating that
+  // as exhaustion would burn a fallback provider on a card-authoring mistake,
+  // so the rejection is classified first and never reported as exhaustion.
+  const modelRejection = detectModelRejection(processResult, modelSelection);
+  const creditExhaustion = modelRejection ? undefined : detectCreditExhaustion(processResult);
+  const processFailure = modelRejection
+    ? describeModelRejection(handoff.target, modelRejection)
+    : creditExhaustion
+      ? describeCreditExhaustion(handoff.target, creditExhaustion)
+      : describeProcessFailure(handoff.target, processResult, modelSelection);
   if (processFailure) {
     await appendIfCardExists(
       handoff.store,
       handoff.cardId,
       formatAgentCliFailureEntry(handoff.target.label, handoff.kind, processFailure, now()),
     );
-    return {
-      completed: false,
-      cancelled: false,
-      activityBaseline,
-      reason: processFailure,
-    };
+    return withModel(
+      creditExhaustion
+        ? {
+            completed: false,
+            cancelled: false,
+            activityBaseline,
+            failure: 'credit-exhausted',
+            reason: processFailure,
+            creditExhaustion,
+          }
+        : {
+            completed: false,
+            cancelled: false,
+            activityBaseline,
+            // A refused model name is its own failure: the CLI is healthy and
+            // the fix is to edit whichever layer supplied that name, so it must
+            // never be mistaken for an inconclusive attempt.
+            failure: modelRejection ? 'model-rejected' : 'process-failed',
+            reason: processFailure,
+          },
+    );
   }
 
   const after = findCard(await handoff.store.reload(), handoff.cardId);
   if (!after) {
-    return {
+    return withModel({
       completed: false,
       cancelled: false,
       activityBaseline,
+      failure: 'card-missing',
       reason: `${handoff.target.label} exited successfully, but card ${handoff.cardId} no longer exists.`,
-    };
+    });
   }
 
   const evidence = validateCompletionEvidence(handoff.kind, after, activityBaseline);
@@ -955,37 +1250,143 @@ export async function runAgentCliCardHandoff(
       handoff.cardId,
       formatAgentCliFailureEntry(handoff.target.label, handoff.kind, reason, now()),
     );
-    return {
+    return withModel({
       completed: false,
       cancelled: false,
       activityBaseline,
+      failure: 'missing-evidence',
       reason,
-    };
+    });
   }
 
   const baseResult = { completed: true, cancelled: false, activityBaseline } as const;
-  return evidence.terminalStatus
-    ? { ...baseResult, terminalStatus: evidence.terminalStatus }
-    : baseResult;
+  return withModel(
+    evidence.terminalStatus ? { ...baseResult, terminalStatus: evidence.terminalStatus } : baseResult,
+  );
+}
+
+/**
+ * A failure that names the model the card asked for. Only a run that actually
+ * passed a model can produce one, and only the CLI's own "I don't know that
+ * model" vocabulary matches, so an unrelated failure keeps its normal message.
+ */
+export interface AgentCliModelRejection {
+  readonly model: string;
+  /** Where the refused model came from, so the fix can name the right place. */
+  readonly source: AgentCliModelSource;
+  /** The stage the refused run belonged to, when the dispatch had one. */
+  readonly stage?: AgentCliHandoffKind;
+  /** The matched CLI output line, trimmed and stripped of anything secret. */
+  readonly detail: string;
+}
+
+const MODEL_REJECTION_PATTERNS: readonly RegExp[] = [
+  /\b(?:unknown|invalid|unsupported|unrecognized|unrecognised|unavailable)\b[^.\n]{0,20}\bmodels?\b/i,
+  /\bmodels?\b[^.\n]{0,40}\b(?:not found|not recognized|not recognised|not supported|not available|does not exist|doesn't exist|is invalid|is unknown)\b/i,
+  /\b(?:model_not_found|invalid_model|unknown_model|unsupported_model)\b/i,
+  /\bno such model\b/i,
+];
+
+const MAX_MODEL_REJECTION_DETAIL = 300;
+
+/**
+ * Classify a finished CLI process as "this model name was refused". Returns
+ * undefined unless a model was actually applied and the run failed, so the
+ * normal failure path is untouched for every other card.
+ */
+export function detectModelRejection(
+  result: AgentCliProcessResult,
+  selection: AgentCliModelSelection | undefined,
+): AgentCliModelRejection | undefined {
+  if (!selection?.applied || !result.started || result.cancelled) {
+    return undefined;
+  }
+  if (result.exitCode === 0 && !result.error) {
+    return undefined;
+  }
+
+  const lines = `${result.stderr}\n${result.stdout}\n${result.error ?? ''}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (const line of lines) {
+    if (MODEL_REJECTION_PATTERNS.some((pattern) => pattern.test(line))) {
+      return {
+        model: selection.requested,
+        source: selection.source,
+        ...(selection.stage !== undefined ? { stage: selection.stage } : {}),
+        detail: redactSecrets(line).slice(0, MAX_MODEL_REJECTION_DETAIL),
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The offending value and the CLI that refused it are both named, because the
+ * fix is to edit whichever layer supplied the model rather than to re-check the
+ * CLI installation or its allowance. A stage rule is treated exactly like a
+ * card model here - same classification, same "not advanced" outcome, never
+ * credit exhaustion - and differs only in naming the setting key to fix.
+ */
+function describeModelRejection(target: AgentCliTarget, rejection: AgentCliModelRejection): string {
+  const fix = describeModelRejectionFix(target, rejection);
+  return `${target.label} rejected ${describeAgentCliModelSource(rejection.source)}${describeStageSuffix(rejection.source, rejection.stage)} "${rejection.model}": ${rejection.detail}. The card was not advanced; ${fix}.`;
+}
+
+function describeModelRejectionFix(
+  target: AgentCliTarget,
+  rejection: AgentCliModelRejection,
+): string {
+  switch (rejection.source) {
+    case 'card':
+      return `set a model name ${target.label} accepts on the card, or clear the card's preferred model to use that CLI's default`;
+    case 'stage-rule': {
+      const stage = rejection.stage ?? 'affected';
+      return `set a model name ${target.label} accepts for "${stage}" in ${AGENT_CLI_STAGE_MODELS_SETTING}, or remove that stage's entry to fall back to ${AGENT_CLI_MODELS_SETTING} and the CLI's default`;
+    }
+    case 'escalation':
+      return `set a model name ${target.label} accepts in ${AGENT_CLI_ESCALATION_LADDER_SETTING} for that CLI, or remove that entry so the loop stops escalating to it`;
+    default:
+      return `set a model name ${target.label} accepts as its first entry in ${AGENT_CLI_MODELS_SETTING}, or remove that entry to use the CLI's default`;
+  }
+}
+
+/**
+ * A spent allowance is reported as its own failure: the CLI itself is fine, so
+ * the advice is to restore credits or let the loop continue on another CLI
+ * rather than to re-check the installation.
+ */
+function describeCreditExhaustion(
+  target: AgentCliTarget,
+  exhaustion: CreditExhaustionSignal,
+): string {
+  return `${target.label} ran out of credits or hit its usage limit: ${exhaustion.detail}. The card was not advanced; restore the CLI's allowance or configure an AI loop CLI fallback, then rerun the loop.`;
 }
 
 function describeProcessFailure(
   target: AgentCliTarget,
   result: AgentCliProcessResult,
+  modelSelection?: AgentCliModelSelection,
 ): string | undefined {
+  // Any failure of a run that carried a model is worth attributing: the model
+  // is the newest variable in the dispatch and the likeliest suspect.
+  const modelNote = modelSelection?.applied
+    ? ` The run used ${describeAgentCliModelSource(modelSelection.source)}${describeStageSuffix(modelSelection.source, modelSelection.stage)} "${modelSelection.requested}".`
+    : '';
   if (!result.started) {
     const detail = result.error?.trim() || 'the operating system rejected the process start';
     return `Could not start ${target.label} at "${target.executable}": ${detail}. Verify the configured executable path and CLI installation, then rerun the loop.`;
   }
   if (result.error) {
-    return `${target.label} failed while running: ${result.error}. The card was not advanced; fix the CLI and rerun the loop.`;
+    return `${target.label} failed while running: ${result.error}. The card was not advanced; fix the CLI and rerun the loop.${modelNote}`;
   }
   if (result.exitCode !== 0) {
     const status = result.signal
       ? `signal ${result.signal}`
       : `exit code ${result.exitCode === null ? 'unknown' : result.exitCode}`;
     const output = conciseProcessOutput(result.stderr || result.stdout);
-    return `${target.label} ended with ${status}${output ? `: ${output}` : ''}. The card was not advanced; verify CLI authentication/configuration and rerun the loop.`;
+    return `${target.label} ended with ${status}${output ? `: ${output}` : ''}. The card was not advanced; verify CLI authentication/configuration and rerun the loop.${modelNote}`;
   }
   return undefined;
 }
@@ -1109,10 +1510,21 @@ export function formatAgentCliStartEntry(
   providerLabel: string,
   kind: AgentCliHandoffKind,
   timestamp: Date = new Date(),
+  modelSelection?: AgentCliModelSelection,
 ): string {
   return [
     `### ${timestamp.toISOString()} - ${providerLabel} ${kind} handoff started`,
     `Started ${providerLabel} in the active workspace and waiting for card-file completion evidence.`,
+    // Which model a dispatch actually ran on belongs in the durable record, so
+    // a card that silently fell back to the provider default is explainable
+    // later without re-reading the run's notifications.
+    ...(modelSelection
+      ? [
+          modelSelection.applied
+            ? `${agentCliModelSourceLabel(modelSelection.source)}${describeStageSuffix(modelSelection.source, modelSelection.stage)}: ${modelSelection.requested}.`
+            : `${agentCliModelSourceLabel(modelSelection.source)}${describeStageSuffix(modelSelection.source, modelSelection.stage)} "${modelSelection.requested}" was not applied: ${modelSelection.reason ?? `${providerLabel} does not accept a model selection.`}`,
+        ]
+      : []),
   ].join('\n');
 }
 

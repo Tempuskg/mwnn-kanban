@@ -71,6 +71,35 @@ export function buildCardHandoffPrompt(card: BoardCard, cardFilePath: string): s
   ].join('\n');
 }
 
+/**
+ * State the card's preferred model inside the prompt itself.
+ *
+ * A CLI dispatch selects the model with the provider's own argument, but a chat
+ * hand-off has no argv to put it on: whichever way the prompt is delivered —
+ * straight into the chat input, via the clipboard, or through the file-mediated
+ * fallback that hands the receiving agent a path to read — the text is all the
+ * agent gets, so the model has to be stated in it.
+ *
+ * Takes one already-resolved model rather than the card's whole per-provider
+ * map: the prompt goes to exactly one agent, so the caller passes the entry for
+ * that hand-off's provider and the models the card names for the other CLIs
+ * stay out of a prompt that could not act on them. A card that names no model
+ * for this provider leaves the prompt byte-for-byte unchanged.
+ */
+export function withPreferredModelNote(prompt: string, preferredModel: string | undefined): string {
+  const model = preferredModel?.trim();
+  if (!model) {
+    return prompt;
+  }
+
+  return [
+    prompt,
+    '',
+    '## Preferred model',
+    `This card asks to be worked on with the AI model \`${model}\`. Switch to that model before starting if you can; if it is unavailable to you, say so explicitly in the card Activity entry and name the model you used instead.`,
+  ].join('\n');
+}
+
 export function buildCardVerificationPrompt(card: BoardCard, cardFilePath: string): string {
   return [
     'You are an AI coding agent verifying a finished Methodology With No Name (MWNN) Kanban card.',

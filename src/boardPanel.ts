@@ -10,6 +10,7 @@ import { BoardPanelLifecycle } from './boardPanelLifecycle';
 import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { copyCardPathToClipboard } from './cardPath';
+import { agentCliModelSuggestions, readAgentCliModelCatalog } from './agentCliModels';
 import { canMoveCardToColumn } from './utils';
 import { isWebviewToHostMessage, type CliRunStatus, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
 
@@ -186,14 +187,21 @@ export class BoardPanel {
 
   /** Push the current store state into the webview. */
   postState(): void {
-    const enableRunWithAI = vscode.workspace
-      .getConfiguration('mwnn-kanban')
-      .get<boolean>('enableRunWithAI', true);
+    const config = vscode.workspace.getConfiguration('mwnn-kanban');
+    const enableRunWithAI = config.get<boolean>('enableRunWithAI', true);
+    // The webview has no `vscode` API, so the card UI's model suggestions are
+    // read and validated here and travel with the board. They are re-read on
+    // every push, which is what lets an edit to `agentCliModels` reach an
+    // already-open board (see the configuration listener in src/extension.ts).
+    const modelSuggestions = agentCliModelSuggestions(
+      readAgentCliModelCatalog(config.get<unknown>('agentCliModels', {})),
+    );
     const message: HostToWebviewMessage = {
       type: 'state',
       board: this.deps.store.getState(),
       enableRunWithAI,
       zoom: clampZoom(this.deps.zoomMemento.get<number>(ZOOM_MEMENTO_KEY, ZOOM_DEFAULT)),
+      modelSuggestions,
     };
     void this.panel.webview.postMessage(message);
 
@@ -346,6 +354,9 @@ export class BoardPanel {
         break;
       case 'setDependencies':
         await this.deps.store.setDependencies(message.cardId, message.dependsOn);
+        break;
+      case 'setPreferredModel':
+        await this.deps.store.setPreferredModel(message.cardId, message.provider, message.preferredModel);
         break;
       case 'runCardWithAI':
         await this.deps.runCardWithAI(message.cardId);

@@ -1,4 +1,39 @@
-import { BOARD_STATE_VERSION, type Assignee, type Card, type Column, type ColumnRole, isAssignee } from './types';
+import {
+  AGENT_CLI_PROVIDER_IDS,
+  BOARD_STATE_VERSION,
+  type Assignee,
+  type Card,
+  type CardPreferredModels,
+  type Column,
+  type ColumnRole,
+  isAssignee,
+} from './types';
+import { normalizeCardPreferredModels, normalizePreferredModel } from './utils';
+
+/**
+ * The frontmatter key prefix for a card's per-provider models.
+ *
+ * Shape decision: one scalar line per provider, `preferredModel.<provider>`,
+ * rather than a nested block or an inline object. The card file is the board's
+ * public integration surface and its parser is line-based with no nested
+ * structure, so a flat repeated key needs no new parsing machinery, keeps every
+ * value independently quotable under the one existing scalar rule, and stays
+ * readable — and diffable — when only one provider's model changes. It is also
+ * still valid YAML for anything else reading these files, as a key that happens
+ * to contain a dot.
+ */
+const PREFERRED_MODEL_KEY_PREFIX = 'preferredModel.';
+
+/**
+ * The pre-scoping key: one bare `preferredModel` scalar for the whole card.
+ *
+ * Migration rule, implemented in {@link parseCard} and documented in the
+ * card-file contract: a bare `preferredModel` is read as that card's model for
+ * *every* provider that has no scoped key of its own, so an existing card keeps
+ * dispatching exactly as it did. Nothing writes the bare key again, so the next
+ * time the extension saves that card the file is migrated to the scoped keys.
+ */
+const LEGACY_PREFERRED_MODEL_KEY = 'preferredModel';
 
 export const BOARD_FILE_VERSION = BOARD_STATE_VERSION;
 
@@ -23,6 +58,7 @@ export function serializeCard(document: CardDocument): string {
     `column: ${serializeScalar(document.columnId)}`,
     `position: ${document.position}`,
     ...(document.card.assignee ? [`assignee: ${serializeAssignee(document.card.assignee)}`] : []),
+    ...serializePreferredModels(document.card.preferredModels),
     `createdAt: ${document.card.createdAt}`,
     ...(document.card.updatedAt !== undefined ? [`updatedAt: ${document.card.updatedAt}`] : []),
     ...(document.card.dependsOn && document.card.dependsOn.length > 0
@@ -64,6 +100,7 @@ export function parseCard(text: string): CardDocument {
   const updatedAt = optionalNumber(frontmatter, 'updatedAt');
   const assignee = optionalAssignee(frontmatter, 'assignee');
   const dependsOn = optionalStringArray(frontmatter, 'dependsOn');
+  const preferredModels = optionalPreferredModels(frontmatter);
 
   const card: Card = { id, title, createdAt };
   if (updatedAt !== undefined) {
@@ -83,6 +120,9 @@ export function parseCard(text: string): CardDocument {
   }
   if (dependsOn !== undefined) {
     card.dependsOn = dependsOn;
+  }
+  if (preferredModels !== undefined) {
+    card.preferredModels = preferredModels;
   }
 
   return { columnId, position, card };
@@ -264,6 +304,67 @@ function optionalAssignee(frontmatter: Record<string, string>, key: string): Ass
     throw new Error('Invalid assignee value.');
   }
   return assignee;
+}
+
+/**
+ * One `preferredModel.<provider>` line per provider that names a model, in the
+ * fixed provider order so the file is stable across writes. A card with no
+ * entries writes no key at all.
+ */
+function serializePreferredModels(models: CardPreferredModels | undefined): string[] {
+  const normalized = normalizeCardPreferredModels(models);
+  if (normalized === undefined) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const model = normalized[provider];
+    if (model !== undefined) {
+      lines.push(`${PREFERRED_MODEL_KEY_PREFIX}${provider}: ${serializeScalar(model)}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * The card's per-provider models, plus the pre-scoping bare key applied to
+ * every provider it does not already name (see
+ * {@link LEGACY_PREFERRED_MODEL_KEY}).
+ *
+ * A free-form model name that is blank, whitespace-only, or contains a control
+ * character is unusable as a spawn argument, so it is treated as "no preferred
+ * model for that provider" rather than thrown — and a key naming an unknown
+ * provider is simply never read. An odd value must never make the whole card
+ * file unreadable and drop the card off the board on reload.
+ */
+function optionalPreferredModels(
+  frontmatter: Record<string, string>,
+): CardPreferredModels | undefined {
+  const legacy = readPreferredModelScalar(frontmatter[LEGACY_PREFERRED_MODEL_KEY]);
+  const models: CardPreferredModels = {};
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const scoped = readPreferredModelScalar(frontmatter[`${PREFERRED_MODEL_KEY_PREFIX}${provider}`]);
+    const model = scoped ?? legacy;
+    if (model !== undefined) {
+      models[provider] = model;
+    }
+  }
+  return normalizeCardPreferredModels(models);
+}
+
+function readPreferredModelScalar(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  let parsed: string;
+  try {
+    parsed = parseScalar(value);
+  } catch {
+    return undefined;
+  }
+  return normalizePreferredModel(parsed);
 }
 
 function optionalStringArray(frontmatter: Record<string, string>, key: string): string[] | undefined {

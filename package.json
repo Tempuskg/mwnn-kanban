@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -282,6 +282,94 @@
           "description": "Let the AI board loop verify cards in the Verify column and move them to Done when every acceptance criterion is confirmed, handing anything it cannot confirm back to a human. When off, every card reaching Verify is assigned to a human for verification.",
           "scope": "resource"
         },
+        "mwnn-kanban.aiLoopCliFallbackEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let the AI board loop continue automatically on another agent CLI when the active CLI reports exhausted credits or a spent usage/session limit. The interrupted card stage is retried with the replacement CLI against the current card and workspace state. When off, an exhausted CLI stops the loop exactly as before.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.aiLoopCliFallbackOrder": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "enum": [
+              "copilot",
+              "codex",
+              "claude-code",
+              "cursor"
+            ],
+            "enumDescriptions": [
+              "GitHub Copilot CLI.",
+              "OpenAI Codex CLI.",
+              "Anthropic Claude Code CLI.",
+              "Cursor Agent CLI."
+            ]
+          },
+          "uniqueItems": true,
+          "markdownDescription": "Ordered agent CLIs the AI board loop falls back to when `#mwnn-kanban.aiLoopCliFallbackEnabled#` is on and the active CLI runs out of credits. Duplicates, the exhausted CLI itself, and CLIs whose executable is unavailable are skipped. Each CLI is tried at most once per loop run; when none is left, the loop pauses without advancing the interrupted card.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.aiLoopModelEscalationEnabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let the AI board loop retry a card stage on a stronger model when the attempt reports `STATUS: BLOCKED` or exits without the stage's required completion evidence. The retry uses the next model in `#mwnn-kanban.aiLoopModelEscalationLadder#` for the CLI that is running, against the same card and workspace state. Spent credits, authentication failures, network failures, cancellation, and a model name the CLI rejects never escalate, because a stronger model cannot fix any of them. An escalation never advances the card by itself: the stronger model still has to satisfy the same completion evidence rules. When off, an inconclusive attempt stops the card exactly as before.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.aiLoopModelEscalationLadder": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Ordered model names the AI board loop escalates through for each agent CLI when `#mwnn-kanban.aiLoopModelEscalationEnabled#` is on, cheapest first. After an inconclusive attempt the loop retries the same stage on the next entry above the model that just ran. Each entry is tried at most once per card per loop run, so a card walks the ladder once and then stops; when the ladder runs out, the original failure stands. Model names are CLI-specific and are passed through unchanged, so spell each one the way that CLI accepts it. Leave a CLI out to never escalate on it.",
+          "properties": {
+            "copilot": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Models to escalate through for GitHub Copilot CLI, weakest first, as that CLI spells them. The loop moves to the next entry after an inconclusive attempt."
+            },
+            "codex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Models to escalate through for OpenAI Codex CLI, weakest first, as that CLI spells them. The loop moves to the next entry after an inconclusive attempt."
+            },
+            "claude-code": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Models to escalate through for Anthropic Claude Code CLI, weakest first, as that CLI spells them. The loop moves to the next entry after an inconclusive attempt."
+            },
+            "cursor": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Models to escalate through for Cursor Agent CLI, weakest first, as that CLI spells them. The loop moves to the next entry after an inconclusive attempt."
+            }
+          },
+          "additionalProperties": false,
+          "scope": "resource"
+        },
+        "mwnn-kanban.aiLoopModelEscalationOverridesCardModel": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let model escalation replace a model a card names for the active CLI in its own `preferredModel.<provider>`. Off by default: a card-level model is an explicit choice for that card's work, so the loop leaves it alone and reports the failure instead of escalating. Turn this on to let `#mwnn-kanban.aiLoopModelEscalationLadder#` override a card's own model after an inconclusive attempt; cards that name no model are escalated either way.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.aiLoopMaxDispatches": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Maximum number of agent handoffs a single AI board loop run may dispatch before it stops on its own. Every launched handoff counts, including credit-fallback replacements and model-escalation retries. `0` (the default) disables the cap: run length and behavior are unchanged. When the cap is reached the loop stops *before* starting the next handoff, so no CLI is left running and the in-flight card is not advanced; the reason is recorded in that card's Activity. This is a count of dispatches, not a spend limit — the extension has no price table and never estimates cost. Any monetary or token figure in the end-of-run report is a line the CLI printed itself, quoted and attributed to that CLI.",
+          "scope": "resource"
+        },
         "mwnn-kanban.agentCliPaths": {
           "type": "object",
           "default": {},
@@ -304,6 +392,72 @@
               "description": "Path to the Cursor Agent CLI executable."
             }
           },
+          "scope": "resource"
+        },
+        "mwnn-kanban.agentCliModels": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Model names for each agent CLI used by 'Run Card with AI' and the AI board loop. The **first** entry for a CLI is the model that CLI runs when a card names no model for that CLI; the remaining entries are that CLI's other known models, offered when choosing a card's model. Model names are CLI-specific and are passed through to the CLI unchanged, so spell each one the way that CLI accepts it. Leave a CLI out to let it run its own default model.",
+          "properties": {
+            "copilot": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Model names GitHub Copilot CLI accepts, as it spells them. The first entry is the default used when a card names no preferred model."
+            },
+            "codex": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Model names OpenAI Codex CLI accepts, as it spells them. The first entry is the default used when a card names no preferred model."
+            },
+            "claude-code": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Model names Anthropic Claude Code CLI accepts, as it spells them. The first entry is the default used when a card names no preferred model."
+            },
+            "cursor": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Model names Cursor Agent CLI accepts, as it spells them. The first entry is the default used when a card names no preferred model."
+            }
+          },
+          "additionalProperties": false,
+          "scope": "resource"
+        },
+        "mwnn-kanban.agentCliStageModels": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Model name to use for each AI board loop stage, overriding `#mwnn-kanban.agentCliModels#` for that stage only. Useful when the short reasoning stages do not need the model the workspace runs implementation on. The model a card names for the active CLI still wins, then this setting, then the first entry in `#mwnn-kanban.agentCliModels#` for the active CLI, then whatever model that CLI runs by default. Model names are CLI-specific and are passed through unchanged, so spell each one the way the CLI you run accepts it. Leave a stage out to fall back to the workspace default; leave the whole setting empty for unchanged behavior.",
+          "properties": {
+            "definition": {
+              "type": "string",
+              "description": "Model for the definition stage, which fills in a card's Description and acceptance criteria. A short reasoning task that does not edit the workspace."
+            },
+            "triage": {
+              "type": "string",
+              "description": "Model for the triage stage, which decides whether a card is doable as written. A short reasoning task that does not edit the workspace."
+            },
+            "implementation": {
+              "type": "string",
+              "description": "Model for the implementation stage, which does the card's actual work in the workspace. Also used by the Run Card with AI command."
+            },
+            "verification": {
+              "type": "string",
+              "description": "Model for the verification stage, which checks a finished card's acceptance evidence against the workspace."
+            }
+          },
+          "additionalProperties": false,
           "scope": "resource"
         },
         "mwnn-kanban.defaultColumns": {
@@ -612,6 +766,14 @@
     "test": "node ./scripts/run-unit-tests.cjs",
     "presmoke:agent-cli": "npm run compile-tests",
     "smoke:agent-cli": "node ./scripts/smoke-agent-cli.cjs",
+    "presmoke:cli-fallback": "npm run compile-tests",
+    "smoke:cli-fallback": "node ./scripts/smoke-cli-fallback.cjs",
+    "presmoke:card-model": "npm run compile-tests",
+    "smoke:card-model": "node ./scripts/smoke-card-model.cjs",
+    "presmoke:card-model-picker": "npm run compile-tests",
+    "smoke:card-model-picker": "node ./scripts/smoke-card-model-picker.cjs",
+    "presmoke:workspace-model": "npm run compile-tests",
+    "smoke:workspace-model": "node ./scripts/smoke-workspace-model-default.cjs",
     "version:build": "node ./scripts/bump-package-version.cjs",
     "lint": "eslint src --ext ts"
   },

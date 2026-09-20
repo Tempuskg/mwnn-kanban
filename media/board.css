@@ -825,6 +825,66 @@ body {
   gap: 8px;
 }
 
+/* One model field per agent CLI: the CLI name is the row label. */
+/* The model box and the button that opens that CLI's configured list. */
+.card-model-combo {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+.card-model-combo .card-field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card-model-suggest {
+  flex: 0 0 auto;
+  width: 28px;
+  padding: 0;
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.card-model-suggest:hover:not(:disabled),
+.card-model-suggest:focus-visible {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
+.card-model-suggest:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.model-picker {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.model-picker-empty {
+  margin: 0;
+  padding: 6px 10px;
+  max-width: 260px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85rem;
+}
+
+/* Provider selector beside the model combo box: pick the CLI, then the model. */
+.card-model-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
 .card-activity {
   display: flex;
   flex-direction: column;
@@ -892,5 +952,16 @@ body {
 
   .card-assignee-row {
     grid-template-columns: 1fr;
+  }
+
+  /*
+   * Stacked, the two-column gap becomes vertical and would sit between a label
+   * and its own input, so it must be tighter than the gap between rows -
+   * otherwise each label reads as belonging to the field above it.
+   */
+  .card-model-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 4px;
   }
 }

@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Rabbit (CodeRabbit) owns GitHub PR review requests for this repository.
+# Intake: open a PR, mark a draft ready, or comment @coderabbitai review.
+# Requires the CodeRabbit GitHub App to be enabled for Tempuskg/mwnn-kanban.
+language: en-US
+reviews:
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_status: true
+  review_details: true
+  review_progress: true
+  commit_status: true
+  fail_commit_status: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+    base_branches:
+      - ".*"
+    ignore_title_keywords: []
+    labels: []
+    ignore_usernames: []
+chat:
+  auto_reply: true
+# Keep existing non-PR issue workflows unchanged.
+issue_enrichment:
+  auto_enrich:
+    enabled: false
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
+  labeling:
+    auto_apply_labels: false

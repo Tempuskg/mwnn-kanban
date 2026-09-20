@@ -14,7 +14,14 @@ import {
   type ColumnConfig,
   type ColumnsDocument,
 } from './serialization';
-import { BOARD_STATE_VERSION, type BoardState, type Card, type Column, type ColumnRole } from './types';
+import {
+  BOARD_STATE_VERSION,
+  type AgentCliProviderId,
+  type BoardState,
+  type Card,
+  type Column,
+  type ColumnRole,
+} from './types';
 import {
   addCard,
   addColumn,
@@ -37,6 +44,8 @@ import {
   setColumnConfig,
   setDependencies,
   setDescription,
+  setPreferredModel,
+  normalizeCardPreferredModels,
   type SetColumnConfig,
 } from './utils';
 
@@ -90,6 +99,11 @@ export interface BoardStore {
   moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<BoardState>;
   setAssignee(cardId: string, assignee: Card['assignee']): Promise<BoardState>;
   setDependencies(cardId: string, dependsOn: readonly string[]): Promise<BoardState>;
+  setPreferredModel(
+    cardId: string,
+    provider: AgentCliProviderId,
+    preferredModel: string | undefined,
+  ): Promise<BoardState>;
   setDescription(cardId: string, description: string): Promise<BoardState>;
   setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<BoardState>;
   setActivity(cardId: string, activity: string): Promise<BoardState>;
@@ -174,6 +188,8 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
       runQueued((current) => moveCard(current, cardId, toColumnId, toIndex)),
     setAssignee: (cardId, assignee) => runQueued((current) => setAssignee(current, cardId, assignee)),
     setDependencies: (cardId, dependsOn) => runQueued((current) => setDependencies(current, cardId, dependsOn)),
+    setPreferredModel: (cardId, provider, preferredModel) =>
+      runQueued((current) => setPreferredModel(current, cardId, provider, preferredModel)),
     setDescription: (cardId, description) => runQueued((current) => setDescription(current, cardId, description)),
     setAcceptanceCriteria: (cardId, acceptanceCriteria) =>
       runQueued((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
@@ -655,7 +671,7 @@ function buildBoardReadme(): string {
     '## Files',
     '',
     '- `columns.json` stores the ordered column layout, roles, and WIP or reverse-WIP limits.',
-    '- `cards/<card-id>.md` stores one card per markdown file with frontmatter for column, position, assignee, dependencies (`dependsOn`), and timestamps.',
+    '- `cards/<card-id>.md` stores one card per markdown file with frontmatter for column, position, assignee, dependencies (`dependsOn`), an optional preferred AI model per agent CLI (`preferredModel.<provider>`), and timestamps.',
     '- `README.md` documents the contract for humans and AI agents editing the board directly.',
     '',
     '## Card workflow',
@@ -665,6 +681,15 @@ function buildBoardReadme(): string {
     '3. Update the `## Description` and `## Acceptance criteria` sections as the slice becomes better defined or completes.',
     '4. Move a card by editing its `column` and `position` frontmatter values.',
     '5. Respect column `wipLimit` values and the Ready column `reverseWip` minimum from `columns.json`.',
+    '',
+    '## Card frontmatter',
+    '',
+    '- `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or `{ kind: human, name: Alice }`. Omit the key for unassigned.',
+    '- `dependsOn` (optional) — array of ids of other cards this card is blocked by, e.g. `[card-x, card-y]`. Omit the key when there are none.',
+    '- `preferredModel.<provider>` (optional) — free-form name of the AI model this card should be run with **on that agent CLI**, spelled the way that CLI spells it, e.g. `preferredModel.claude-code: claude-opus-5`. One key per provider, where `<provider>` is one of `copilot`, `codex`, `claude-code`, or `cursor`; an unknown provider key is ignored. A card never chooses its own CLI — the CLI is picked per dispatch, and the credit fallback can change it mid-run — so the model is scoped to the CLI it is valid for, and the entry for whichever provider actually runs is the one that is used. When a provider has no key (or its value is blank), the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`) is used, else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else the model that CLI runs by default. Omit a key entirely rather than writing an empty value.',
+    '- `preferredModel` (legacy, optional) — a single bare `preferredModel` scalar predates per-provider scoping. It is still read, and applies to every provider that has no `preferredModel.<provider>` key of its own, so an existing card keeps working unchanged. The extension never writes the bare key again: the next time it saves that card, the value is migrated to the per-provider keys.',
+    '',
+    'Frontmatter values are bare YAML-ish scalars: JSON-quote any value that is empty, starts or ends with whitespace, or contains `:` `{` `}` `[` `]` `"` or `#` — for example `preferredModel.copilot: "openai/gpt-5: preview"`.',
     '',
     'The extension watches this folder and reloads the board after external edits.',
     '',
@@ -696,6 +721,10 @@ function cloneCard(card: Card): Card {
   }
   if (card.dependsOn !== undefined) {
     clone.dependsOn = [...card.dependsOn];
+  }
+  const preferredModels = normalizeCardPreferredModels(card.preferredModels);
+  if (preferredModels !== undefined) {
+    clone.preferredModels = preferredModels;
   }
   return clone;
 }

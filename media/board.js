@@ -42,11 +42,99 @@
     };
   }
 
-  // Loading this script from the Node test runner returns only the pure Activity
-  // draft helper; the VS Code webview has no CommonJS `module` and continues
-  // through the normal browser bootstrap below.
+  /**
+   * The model names to suggest for one agent CLI, taken from the per-provider
+   * list the extension host sends with the board (`modelSuggestions` on the
+   * `state` message). The webview has no access to settings, so this is the
+   * only source the picker has.
+   *
+   * Presentation only: the list never decides what a card may store. A name
+   * absent from it - a model released after the extension, or a BYOK name - is
+   * still shown, saved, and dispatched exactly as typed.
+   * @param {Record<string, readonly string[]> | null | undefined} suggestions
+   * @param {string} providerId
+   * @returns {string[]}
+   */
+  function modelSuggestionsFor(suggestions, providerId) {
+    const models = suggestions ? suggestions[providerId] : undefined;
+    if (!Array.isArray(models)) {
+      return [];
+    }
+    return models
+      .filter((model) => typeof model === 'string' && model.trim().length > 0)
+      .map((model) => model.trim());
+  }
+
+  /**
+   * The card's model per agent CLI while its details form is open.
+   *
+   * The form edits one provider at a time - the provider selector chooses which
+   * entry the combo box shows - so the other providers' values have to live
+   * somewhere other than the visible input, or switching provider would lose
+   * them. Holding all four here also keeps `changes` the single answer to "what
+   * did the user actually alter", so the unsaved-changes check and the save path
+   * cannot disagree, and an untouched provider is never posted and so never
+   * rewritten on the card file.
+   * @param {ReadonlyArray<string>} providerIds
+   * @param {Record<string, string> | null | undefined} preferredModels
+   */
+  function createPreferredModelDrafts(providerIds, preferredModels) {
+    /** @type {Record<string, string>} */
+    const drafts = {};
+    for (const providerId of providerIds) {
+      drafts[providerId] = readStoredModel(preferredModels, providerId);
+    }
+
+    return {
+      /** @param {string} providerId */
+      get: (providerId) => drafts[providerId] || '',
+      /**
+       * @param {string} providerId
+       * @param {string} value
+       */
+      set: (providerId, value) => {
+        if (Object.prototype.hasOwnProperty.call(drafts, providerId)) {
+          drafts[providerId] = typeof value === 'string' ? value.trim() : '';
+        }
+      },
+      /**
+       * Which providers differ from the card, as `{ provider, model }` with an
+       * empty `model` meaning "cleared".
+       * @param {{ preferredModels?: Record<string, string> }} card
+       */
+      changes: (card) => {
+        const changed = [];
+        for (const providerId of providerIds) {
+          const next = drafts[providerId] || '';
+          if (next !== readStoredModel(card ? card.preferredModels : undefined, providerId)) {
+            changed.push({ provider: providerId, model: next });
+          }
+        }
+        return changed;
+      },
+    };
+  }
+
+  /**
+   * @param {Record<string, string> | null | undefined} preferredModels
+   * @param {string} providerId
+   */
+  function readStoredModel(preferredModels, providerId) {
+    const stored = preferredModels ? preferredModels[providerId] : undefined;
+    return typeof stored === 'string' ? stored.trim() : '';
+  }
+
+  // Loading this script from the Node test runner returns only the pure helpers
+  // above; the VS Code webview has no CommonJS `module` and continues through
+  // the normal browser bootstrap below.
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { createActivityDraft, requestCardPathCopy, createCardPathCopyFeedback };
+    module.exports = {
+      createActivityDraft,
+      requestCardPathCopy,
+      createCardPathCopyFeedback,
+      modelSuggestionsFor,
+      createPreferredModelDrafts,
+    };
     return;
   }
 
@@ -63,7 +151,8 @@
    *   acceptanceCriteria?: string,
    *   activity?: string,
    *   assignee?: Assignee,
-   *   dependsOn?: string[]
+   *   dependsOn?: string[],
+   *   preferredModels?: Record<string, string>
    * }} Card
    * @typedef {{
    *   id: string,
@@ -75,9 +164,35 @@
    * }} Column
    */
 
+  /**
+   * The agent CLI providers a card can name a model for, mirroring
+   * `AGENT_CLI_PROVIDER_IDS` and `AGENT_CLI_LABELS` on the host exactly as this
+   * script mirrors the `Card` shape. A card never picks its own CLI, so it
+   * names one model per CLI and a dispatch uses the entry for whichever
+   * provider actually runs.
+   * @type {ReadonlyArray<{ id: string, label: string }>}
+   */
+  const AGENT_CLI_PROVIDERS = [
+    { id: 'copilot', label: 'GitHub Copilot CLI' },
+    { id: 'codex', label: 'OpenAI Codex CLI' },
+    { id: 'claude-code', label: 'Anthropic Claude Code CLI' },
+    { id: 'cursor', label: 'Cursor Agent CLI' },
+  ];
+
+  /** Just the provider ids, in the same order, for the per-provider drafts. */
+  const AGENT_CLI_PROVIDER_IDS = AGENT_CLI_PROVIDERS.map((provider) => provider.id);
+
   /** @type {{ version: number, columns: Column[] } | null} */
   let board = null;
   let enableRunWithAI = true;
+  /**
+   * Model names to offer per agent CLI, pushed with every board state. The
+   * webview cannot read settings, so this mirrors `mwnn-kanban.agentCliModels`
+   * as the host validated it. Empty until the first state arrives, which simply
+   * means the model picker offers no suggestions yet.
+   * @type {Record<string, readonly string[]>}
+   */
+  let modelSuggestions = {};
   let draggedCardId = null;
   let openCardId = null;
   let openColumnId = null;
@@ -115,6 +230,12 @@
     if (message && message.type === 'state') {
       board = message.board;
       enableRunWithAI = message.enableRunWithAI !== false;
+      // Re-read on every push, so editing the configured model list in settings
+      // updates an open board's picker without reloading the window.
+      modelSuggestions =
+        message.modelSuggestions && typeof message.modelSuggestions === 'object'
+          ? message.modelSuggestions
+          : {};
       // Adopt the host's persisted zoom on the first state push only; after that
       // the webview owns the zoom and merely persists changes back, so later
       // state pushes never clobber an in-flight local change.
@@ -171,6 +292,7 @@
 
   function render() {
     closeAssignPicker();
+    closeModelPicker();
     const previousColumns = root.querySelector('.board-columns');
     const savedScrollLeft = previousColumns ? previousColumns.scrollLeft : 0;
     const savedScrollTop = previousColumns ? previousColumns.scrollTop : 0;
@@ -902,12 +1024,14 @@
     const activityInput = renderTextArea('Activity', activityDraft.initialValue, 8);
     activityInput.input.placeholder = 'No activity yet. Add notes or Markdown.';
     const assigneeControls = renderAssigneeControls(record.card.assignee);
+    const preferredModelControls = renderPreferredModelControls(record.card.preferredModels);
     const dependencyControls = renderDependencyControls(record.card);
 
     form.append(
       titleInput.wrapper,
       columnSelector.wrapper,
       assigneeControls.wrapper,
+      preferredModelControls.wrapper,
       descriptionInput.wrapper,
       acceptanceInput.wrapper,
       dependencyControls.wrapper,
@@ -967,6 +1091,7 @@
       activityDraft,
       assigneeKind: assigneeControls.kind,
       assigneeName: assigneeControls.name,
+      preferredModels: preferredModelControls.read(),
       getDependencies: dependencyControls.getDependencies,
       currentColumnId: record.column.id,
       columnSelect: columnSelector.select,
@@ -1064,6 +1189,10 @@
 
     const nextDependencies = fields.getDependencies();
     if (!dependenciesEqual(Array.isArray(card.dependsOn) ? card.dependsOn : [], nextDependencies)) {
+      return true;
+    }
+
+    if (fields.preferredModels.changes(card).length > 0) {
       return true;
     }
 
@@ -1190,6 +1319,345 @@
 
     wrapper.append(label, select);
     return { wrapper, select };
+  }
+
+  /** @type {{ cleanup: () => void } | null} */
+  let activeModelPicker = null;
+
+  function closeModelPicker() {
+    if (activeModelPicker) {
+      activeModelPicker.cleanup();
+      activeModelPicker = null;
+    }
+  }
+
+  /**
+   * Opens the model suggestion menu for one agent CLI, anchored to the card's
+   * model box.
+   *
+   * A menu we draw ourselves rather than a `<datalist>`: the browser filters a
+   * datalist's options against whatever is already in the input, so a card that
+   * already names a model - exactly the card most likely to be edited - opens an
+   * empty popup and cannot browse the list at all. This menu always offers the
+   * whole configured list, and narrows it only while the user is actively
+   * typing, so the list is reachable whatever the field holds. It never changes
+   * the value on its own: the field stays free-form, and picking is a shortcut,
+   * not a constraint.
+   * @param {HTMLInputElement} input
+   * @param {{ id: string, label: string }} provider
+   * @param {string[]} models
+   * @param {(model: string) => void} onPick
+   */
+  function openModelPicker(input, provider, models, onPick) {
+    closeModelPicker();
+
+    const menu = document.createElement('div');
+    menu.className = 'assign-picker model-picker';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Models configured for ' + provider.label);
+
+    /** @type {HTMLButtonElement[]} */
+    let options = [];
+    /**
+     * Narrowing text. Empty at open, and only ever set from what the user types
+     * *after* opening: filtering on the value already in the field is exactly
+     * the datalist behavior this menu exists to avoid, where a card that
+     * already names a model opens an empty list.
+     */
+    let filter = '';
+
+    /**
+     * @param {string} model
+     * @param {string} text
+     */
+    const makeOption = (model, text) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'assign-picker-option';
+      option.setAttribute('role', 'menuitemradio');
+      option.setAttribute('aria-checked', String(model === normalizeText(input.value)));
+      option.textContent = text;
+      option.addEventListener('click', (event) => {
+        event.stopPropagation();
+        onPick(model);
+        closeModelPicker();
+        input.focus();
+      });
+      return option;
+    };
+
+    const fillMenu = () => {
+      const matches = models.filter(
+        (model) => filter.length === 0 || model.toLowerCase().includes(filter),
+      );
+      menu.textContent = '';
+      options = matches.map((model) => makeOption(model, model));
+      if (normalizeText(input.value).length > 0) {
+        // Clearing is a real choice - it hands the card back to the CLI's own
+        // default - so it belongs in the menu beside the names.
+        options.push(makeOption('', "Use " + provider.label + "'s default"));
+      }
+      if (options.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'model-picker-empty';
+        empty.textContent = 'No configured model matches what you typed; it is still saved as typed.';
+        menu.appendChild(empty);
+        return;
+      }
+      menu.append(...options);
+    };
+
+    fillMenu();
+    document.body.appendChild(menu);
+
+    const rect = input.getBoundingClientRect();
+    menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    menu.style.left = `${rect.left + window.scrollX}px`;
+    menu.style.minWidth = `${rect.width}px`;
+
+    const dismiss = () => {
+      closeModelPicker();
+      input.focus();
+    };
+
+    menu.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        dismiss();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (options.length === 0) {
+          return;
+        }
+        const current = options.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        const next = (current + delta + options.length) % options.length;
+        options[next].focus();
+      }
+    });
+
+    // Typing with the menu open narrows it, so the list behaves the way the
+    // datalist did when its filtering happened to help.
+    const onTyping = () => {
+      filter = normalizeText(input.value).toLowerCase();
+      fillMenu();
+    };
+    input.addEventListener('input', onTyping);
+
+    const onPointerDown = (event) => {
+      const target = /** @type {Node} */ (event.target);
+      if (!menu.contains(target) && target !== input) {
+        closeModelPicker();
+      }
+    };
+    const onDocKeydown = (event) => {
+      if (event.key === 'Escape') {
+        dismiss();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown, true);
+    document.addEventListener('keydown', onDocKeydown);
+
+    activeModelPicker = {
+      cleanup() {
+        document.removeEventListener('mousedown', onPointerDown, true);
+        document.removeEventListener('keydown', onDocKeydown);
+        input.removeEventListener('input', onTyping);
+        menu.remove();
+      },
+    };
+
+    const checked = options.find((option) => option.getAttribute('aria-checked') === 'true');
+    (checked ?? options[0])?.focus();
+  }
+
+  /**
+   * Renders the card's preferred AI model as "pick the CLI, then pick the
+   * model": a provider selector followed by a combo box for that provider.
+   *
+   * Per provider because the card does not choose the CLI it runs on - the
+   * provider is picked at dispatch and can be swapped again by the credit
+   * fallback - and model names are CLI-specific, so one name would be rejected
+   * by every CLI but the one its author had in mind. The selector edits one
+   * entry at a time; the others are kept in the drafts and posted only if the
+   * user actually changed them.
+   *
+   * A combo box - a free-form text input with a list beside it - never a
+   * `<select>`: the suggestions are a curated setting, not the set of valid
+   * names. The CLIs cannot be asked what they accept, so a closed list would
+   * make a model released after the extension - or a BYOK name - unusable until
+   * the next release. Typing wins over the list; the list is only a shortcut
+   * past remembering each CLI's spelling. Leaving a field blank is a real
+   * state, not a missing value, so the placeholder and help text say what blank
+   * means.
+   * @param {Record<string, string> | undefined} preferredModels
+   */
+  function renderPreferredModelControls(preferredModels) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = 'Preferred AI model per CLI';
+
+    const row = document.createElement('div');
+    row.className = 'card-model-row';
+
+    const providerSelect = document.createElement('select');
+    providerSelect.className = 'card-field-select';
+    providerSelect.setAttribute('aria-label', 'Agent CLI this model applies to');
+    for (const provider of AGENT_CLI_PROVIDERS) {
+      providerSelect.appendChild(createOption(provider.id, provider.label));
+    }
+
+    const combo = document.createElement('div');
+    combo.className = 'card-model-combo';
+
+    const input = document.createElement('input');
+    input.className = 'card-field-input';
+    input.type = 'text';
+    input.setAttribute('aria-label', 'Model name for the selected agent CLI');
+
+    const suggest = document.createElement('button');
+    suggest.className = 'card-model-suggest';
+    suggest.type = 'button';
+    suggest.textContent = '▾';
+    suggest.setAttribute('aria-haspopup', 'menu');
+
+    const help = document.createElement('span');
+    help.className = 'card-field-help';
+
+    const drafts = createPreferredModelDrafts(AGENT_CLI_PROVIDER_IDS, preferredModels);
+
+    const selectedProvider = () =>
+      AGENT_CLI_PROVIDERS.find((provider) => provider.id === providerSelect.value) ||
+      AGENT_CLI_PROVIDERS[0];
+
+    // The selector doubles as the overview of the other three entries, since
+    // only one is visible at a time.
+    const syncProviderOptions = () => {
+      for (const provider of AGENT_CLI_PROVIDERS) {
+        const option = providerSelect.querySelector('option[value="' + CSS.escape(provider.id) + '"]');
+        if (!option) {
+          continue;
+        }
+        const model = drafts.get(provider.id);
+        option.textContent = model.length > 0 ? provider.label + ' — ' + model : provider.label;
+      }
+    };
+
+    // The button is the only affordance that opens the list, so it says which
+    // CLI's list it would open, and disables itself when that CLI has none.
+    const syncSuggestions = () => {
+      const provider = selectedProvider();
+      const suggested = modelSuggestionsFor(modelSuggestions, provider.id).length;
+      suggest.disabled = suggested === 0;
+      suggest.title = suggested > 0
+        ? 'Show the ' + suggested + ' models configured for ' + provider.label
+        : 'No models are configured for ' + provider.label;
+      suggest.setAttribute('aria-label', suggest.title);
+      input.placeholder = 'Uses ' + provider.label + "'s default model";
+    };
+
+    const syncHelp = () => {
+      const provider = selectedProvider();
+      const suggested = modelSuggestionsFor(modelSuggestions, provider.id).length;
+      const named = AGENT_CLI_PROVIDERS.filter(
+        (candidate) => drafts.get(candidate.id).length > 0,
+      ).length;
+      const blankNote = drafts.get(provider.id).length > 0
+        ? ''
+        : 'Blank: ' + provider.label + ' runs this card on its own default model. ';
+      const listNote = suggested > 0
+        ? 'Pick one of the ' + suggested + ' models configured for this CLI in mwnn-kanban.agentCliModels, or type any other name - it is saved as typed.'
+        : 'No models are configured for this CLI in mwnn-kanban.agentCliModels, so type the name it uses.';
+      const setNote = named > 0
+        ? ' ' + named + ' of ' + AGENT_CLI_PROVIDERS.length + ' CLIs have a model set on this card.'
+        : ' No CLI has a model set on this card.';
+      help.textContent = blankNote + listNote + setNote;
+    };
+
+    providerSelect.addEventListener('change', () => {
+      closeModelPicker();
+      input.value = drafts.get(providerSelect.value);
+      syncSuggestions();
+      syncHelp();
+    });
+
+    /** @param {string} model */
+    const applyPick = (model) => {
+      input.value = model;
+      captureInput();
+    };
+
+    const toggleModelPicker = () => {
+      if (activeModelPicker) {
+        closeModelPicker();
+        return;
+      }
+      const provider = selectedProvider();
+      const models = modelSuggestionsFor(modelSuggestions, provider.id);
+      if (models.length === 0) {
+        return;
+      }
+      openModelPicker(input, provider, models, applyPick);
+    };
+
+    suggest.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleModelPicker();
+    });
+
+    // Down-arrow from the field opens the list, the way a combo box is expected
+    // to behave; every other key just edits the text.
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' && !activeModelPicker) {
+        event.preventDefault();
+        toggleModelPicker();
+      }
+    });
+
+    // `input` covers typing and picking from the list; `change` covers a commit
+    // the browser reports only on blur. Both write straight through - nothing
+    // here checks the value against the suggestions.
+    const captureInput = () => {
+      drafts.set(providerSelect.value, input.value);
+      syncProviderOptions();
+      syncHelp();
+    };
+    input.addEventListener('input', captureInput);
+    input.addEventListener('change', captureInput);
+
+    // Open on a provider the card already names, so an existing model is
+    // visible without hunting through the selector for it.
+    const initialProvider =
+      AGENT_CLI_PROVIDERS.find((provider) => drafts.get(provider.id).length > 0) ||
+      AGENT_CLI_PROVIDERS[0];
+    providerSelect.value = initialProvider.id;
+    input.value = drafts.get(initialProvider.id);
+
+    syncProviderOptions();
+    syncSuggestions();
+    syncHelp();
+
+    combo.append(input, suggest);
+    row.append(providerSelect, combo);
+    wrapper.append(label, row, help);
+    return {
+      wrapper,
+      providerSelect,
+      input,
+      /**
+       * The drafts, with the visible field folded in first so a value the
+       * browser never reported through an event still reaches the save.
+       */
+      read: () => {
+        drafts.set(providerSelect.value, input.value);
+        return drafts;
+      },
+    };
   }
 
   /**
@@ -1599,6 +2067,21 @@
     const nextDependencies = fields.getDependencies();
     if (!dependenciesEqual(Array.isArray(card.dependsOn) ? card.dependsOn : [], nextDependencies)) {
       post({ type: 'setDependencies', cardId: card.id, dependsOn: nextDependencies });
+    }
+
+    for (const change of fields.preferredModels.changes(card)) {
+      // An emptied field clears that CLI model rather than storing a blank one:
+      // the host removes the frontmatter key entirely. Only the providers that
+      // actually changed are posted, so editing one CLI model never rewrites
+      // what the card names for the other three.
+      post(change.model.length > 0
+        ? {
+            type: 'setPreferredModel',
+            cardId: card.id,
+            provider: change.provider,
+            preferredModel: change.model,
+          }
+        : { type: 'setPreferredModel', cardId: card.id, provider: change.provider });
     }
 
     if (fields.columnSelect && fields.currentColumnId) {

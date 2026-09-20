@@ -10,6 +10,7 @@ import {
   type AgentCliProcessResult,
   type AgentCliProviderId,
 } from '../../src/agentCliHandoff';
+import { readAgentCliModelCatalog } from '../../src/agentCliModels';
 import {
   CHAT_PROVIDER_LABELS,
   createChatHandoffInFlight,
@@ -245,6 +246,42 @@ suite('Run with AI provider selection', () => {
 });
 
 suite('Run with AI agent CLI dispatch', () => {
+  test('runs a card with no model of its own on the workspace default for that CLI', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    let launchedArgs: readonly string[] = [];
+    const harness = dispatchHarness(board, {
+      // Both CLIs are configured; only the one actually dispatched applies.
+      modelCatalog: readAgentCliModelCatalog({
+        'claude-code': ['claude-sonnet-5', 'claude-opus-5'],
+        codex: ['gpt-5-codex'],
+      }),
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async (invocation) => {
+        launchedArgs = invocation.args;
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.deepEqual(launchedArgs, [
+      '-p',
+      '--permission-mode',
+      'bypassPermissions',
+      '--output-format',
+      'text',
+      '--model',
+      'claude-sonnet-5',
+    ]);
+    assert.match(board.card(cardId).activity ?? '', /Workspace default model: claude-sonnet-5\./);
+    // The default is not written back into the card.
+    assert.equal(board.card(cardId).preferredModels, undefined);
+    assert.equal(harness.warnings.length, 0);
+  });
+
   test('a successful run sends the card prompt, appends the handoff Activity entry, and refreshes the board', async () => {
     const { state, cardId } = boardWithCard();
     const board = fakeStore(state);

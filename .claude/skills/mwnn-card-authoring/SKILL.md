@@ -53,6 +53,8 @@ title: Add login form
 column: col-ready
 position: 1000
 assignee: { kind: ai }
+preferredModel.claude-code: claude-opus-5
+preferredModel.codex: gpt-5-codex
 createdAt: 1719360000000
 updatedAt: 1719360000000
 ---
@@ -87,13 +89,26 @@ What the slice of work is.
   a `done` column, and a blocked card cannot advance past the Ready column.
   Reference only ids that exist (or that you are creating in the same batch);
   never list the card's own id or form a cycle. Omit the key when empty.
+- `preferredModel` (optional) — free-form name of the AI model this card
+  should be run with, as the chosen agent CLI names it, e.g.
+  `preferredModel: claude-opus-5`. The extension passes it straight through
+  to that CLI as its model argument and never validates it against a list of
+  model names, so use the exact spelling that CLI accepts. JSON-quote it when
+  it contains any of the characters listed under scalar quoting, e.g.
+  `preferredModel: "openai/gpt-5: preview"`. Omit the key entirely rather than
+  writing an empty value; a card without it uses the rule for the AI loop
+  stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace
+  default for the active CLI (`mwnn-kanban.agentCliModels`), else whichever
+  model that CLI runs by default when none is set.
 
 ### Scalar quoting (match the extension's parser)
 
 Values are bare YAML-ish scalars. JSON-quote a `title` or any scalar when it is
 empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 `"` `#`. Example: `title: "Refactor: split the store"`. Plain values need no
-quotes: `title: Add login form`.
+quotes: `title: Add login form`. The rule applies per line, so each
+`preferredModel.<provider>` value is quoted on its own: the key itself is never
+quoted.
 
 ### Body sections
 

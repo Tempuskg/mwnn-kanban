@@ -6,6 +6,8 @@
  * same contract. The webview script (media/board.js) mirrors these shapes.
  */
 
+import { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId, type AgentCliProviderId } from './agentCliProviders';
+
 export const BOARD_STATE_VERSION = 2 as const;
 
 export type AssigneeKind = 'human' | 'ai';
@@ -27,7 +29,32 @@ export interface Card {
   assignee?: Assignee;
   /** Ids of other cards this card depends on; it is blocked until they are done. */
   dependsOn?: string[];
+  /**
+   * AI model this card should be run with, **per agent CLI provider**.
+   *
+   * Scoped per provider rather than held as one name because a card never
+   * chooses the CLI it runs on: the provider is picked per dispatch by the
+   * `Run Card with AI` picker or `mwnn-kanban.aiLoopProvider`, and the credit
+   * fallback can swap it again mid-run. Model names are CLI-specific, so a
+   * single name would be valid for exactly one of the four providers and
+   * rejected by the other three the moment the active provider is not the one
+   * the card's author had in mind.
+   *
+   * Each value is free-form on purpose: model names change faster than the
+   * extension ships, so a value is passed through to its provider rather than
+   * validated against a list. A provider absent from the map simply uses its
+   * own default, so the property is omitted entirely rather than stored with an
+   * empty map or blank values.
+   */
+  preferredModels?: CardPreferredModels;
 }
+
+/**
+ * One model name per agent CLI provider. A provider is absent rather than
+ * present with a blank value, so `preferredModels[provider]` being undefined
+ * always means "this card names no model for that CLI".
+ */
+export type CardPreferredModels = { [K in AgentCliProviderId]?: string };
 
 export interface Column {
   readonly id: string;
@@ -67,11 +94,33 @@ export type WebviewToHostMessage =
   | { readonly type: 'setActivity'; readonly cardId: string; readonly activity: string }
   | { readonly type: 'setAssignee'; readonly cardId: string; readonly assignee?: Assignee }
   | { readonly type: 'setDependencies'; readonly cardId: string; readonly dependsOn: readonly string[] }
+  | {
+      readonly type: 'setPreferredModel';
+      readonly cardId: string;
+      /** Which CLI the model is for; a card names one model per provider. */
+      readonly provider: AgentCliProviderId;
+      readonly preferredModel?: string;
+    }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
   | { readonly type: 'fillCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
   | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number }
   | { readonly type: 'setZoom'; readonly zoom: number };
+
+/**
+ * Model names to *suggest* for each agent CLI, sent to the webview with the
+ * board so the card UI's model combo box can offer a list.
+ *
+ * Structurally the workspace model catalog (`AgentCliModelCatalog`), declared
+ * here because it crosses the extension-host ⇄ webview boundary and every
+ * message shape is declared in this module. Suggestions are presentation only:
+ * the card's model stays free-form and pass-through, so a name absent from a
+ * provider's list is still shown, saved, and dispatched unchanged. A provider
+ * with nothing configured is absent rather than present with an empty list, so
+ * `modelSuggestions[provider]` being undefined always means "no suggestions for
+ * this CLI" and the field is simply offered without a list.
+ */
+export type AgentCliModelSuggestions = { readonly [K in AgentCliProviderId]?: readonly string[] };
 
 /** Live status of an agent CLI run so the board can badge the card. */
 export interface CliRunStatus {
@@ -83,7 +132,18 @@ export interface CliRunStatus {
 
 /** Messages sent from the extension host to the webview. */
 export type HostToWebviewMessage =
-  | { readonly type: 'state'; readonly board: BoardState; readonly enableRunWithAI: boolean; readonly zoom: number }
+  | {
+      readonly type: 'state';
+      readonly board: BoardState;
+      readonly enableRunWithAI: boolean;
+      readonly zoom: number;
+      /**
+       * Per-provider model names to offer in the card UI's model picker. The
+       * webview has no `vscode` API, so the configured list has to travel with
+       * the board rather than be read from settings on the webview side.
+       */
+      readonly modelSuggestions: AgentCliModelSuggestions;
+    }
   | { readonly type: 'openCard'; readonly cardId: string }
   | {
       readonly type: 'cardPathCopyResult';
@@ -166,6 +226,12 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         Array.isArray(value['dependsOn']) &&
         value['dependsOn'].every((id) => typeof id === 'string')
       );
+    case 'setPreferredModel':
+      return (
+        typeof value['cardId'] === 'string' &&
+        isAgentCliProviderId(value['provider']) &&
+        (value['preferredModel'] === undefined || typeof value['preferredModel'] === 'string')
+      );
     case 'runCardWithAI':
       return typeof value['cardId'] === 'string';
     case 'fillCardDefinition':
@@ -227,9 +293,37 @@ function isCard(value: unknown): value is Card {
     (candidate['activity'] === undefined || typeof candidate['activity'] === 'string') &&
     (candidate['assignee'] === undefined || isAssignee(candidate['assignee'])) &&
     (candidate['dependsOn'] === undefined ||
-      (Array.isArray(candidate['dependsOn']) && candidate['dependsOn'].every((id) => typeof id === 'string')))
+      (Array.isArray(candidate['dependsOn']) && candidate['dependsOn'].every((id) => typeof id === 'string'))) &&
+    (candidate['preferredModels'] === undefined || isCardPreferredModels(candidate['preferredModels']))
   );
 }
+
+/**
+ * Runtime type guard for a card's per-provider model map.
+ *
+ * Deliberately strict: an unknown provider key or a blank value is rejected
+ * rather than accepted-and-ignored, so nothing unusable is ever stored in board
+ * state. The card-file parser and the board mutations drop such entries before
+ * they reach state, which is what keeps a hand-edited card file readable while
+ * this guard stays the hard boundary for posted and persisted data.
+ */
+export function isCardPreferredModels(value: unknown): value is CardPreferredModels {
+  if (!isRecord(value) || Array.isArray(value)) {
+    return false;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    return false;
+  }
+  return entries.every(
+    ([provider, model]) =>
+      isAgentCliProviderId(provider) && typeof model === 'string' && model.trim().length > 0,
+  );
+}
+
+/** Every provider id, re-exported so board code need not reach past the model. */
+export { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId, type AgentCliProviderId };
 
 function isAssigneeKind(value: unknown): value is AssigneeKind {
   return value === 'human' || value === 'ai';

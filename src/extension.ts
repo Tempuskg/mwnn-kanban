@@ -6,17 +6,39 @@ import {
   formatCliRunStart,
 } from './agentCliFeedback';
 import {
+  readAgentCliModelCatalog,
+  readAgentCliStageModels,
+  type AgentCliModelCatalog,
+  type AgentCliStageModels,
+} from './agentCliModels';
+import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
   resolveAgentCliTarget,
   resolveAllAgentCliTargets,
-  runAgentCliCardHandoff,
   type AgentCliHandoffKind,
   type AgentCliPathOverrides,
   type AgentCliProcessObserver,
   type AgentCliProviderId,
   type AgentCliTarget,
 } from './agentCliHandoff';
+import {
+  createAgentCliFallbackRunner,
+  readAgentCliFallbackOrder,
+  type AgentCliFallbackSettings,
+} from './agentCliFallback';
+import {
+  readAgentCliEscalationLadders,
+  type AgentCliEscalationSettings,
+} from './agentCliEscalation';
+import {
+  createAiLoopBudget,
+  formatAiLoopBudgetStopEntry,
+  formatAiLoopBudgetStopMessage,
+  formatAiLoopBudgetTally,
+  readAiLoopMaxDispatches,
+  type AiLoopRunOutcome,
+} from './aiLoopBudget';
 import {
   isAgentCliPreference,
   listAiLoopExecutionModeChoices,
@@ -32,8 +54,10 @@ import {
   formatHandoffEntry,
   listAiCardSelections,
   summarizeCardDescription,
+  withPreferredModelNote,
   type PlanImportSource,
 } from './aiCards';
+import { cardPreferredModelFor } from './utils';
 import {
   CHAT_PROVIDER_LABELS,
   createChatHandoffInFlight,
@@ -149,10 +173,67 @@ function readAiLoopVerifyCards(): boolean {
     .get<boolean>('aiLoopVerifyCards', false);
 }
 
+/**
+ * The per-run dispatch cap, validated in `aiLoopBudget`. Undefined means no
+ * cap, which is the default: a run that has never been capped must behave
+ * exactly as it did before this setting existed.
+ */
+function readAiLoopMaxDispatchesSetting(): number | undefined {
+  return readAiLoopMaxDispatches(
+    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('aiLoopMaxDispatches', 0),
+  );
+}
+
+function readAiLoopCliFallback(): AgentCliFallbackSettings {
+  const config = vscode.workspace.getConfiguration('mwnn-kanban');
+  return {
+    enabled: config.get<boolean>('aiLoopCliFallbackEnabled', false),
+    providers: readAgentCliFallbackOrder(config.get<unknown>('aiLoopCliFallbackOrder', [])),
+  };
+}
+
+/**
+ * Model escalation policy for one loop run. Validated in `agentCliEscalation`,
+ * so a malformed ladder degrades to "no escalation for that CLI" instead of
+ * breaking a dispatch, and every consumer sees the same already-checked value.
+ */
+function readAiLoopModelEscalation(): AgentCliEscalationSettings {
+  const config = vscode.workspace.getConfiguration('mwnn-kanban');
+  return {
+    enabled: config.get<boolean>('aiLoopModelEscalationEnabled', false),
+    ladders: readAgentCliEscalationLadders(
+      config.get<unknown>('aiLoopModelEscalationLadder', {}),
+    ),
+    overrideCardModel: config.get<boolean>('aiLoopModelEscalationOverridesCardModel', false),
+  };
+}
+
 function readAgentCliPaths(): AgentCliPathOverrides {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
     .get<AgentCliPathOverrides>('agentCliPaths', {});
+}
+
+/**
+ * Workspace model lists per agent CLI. Validated in `agentCliModels`, so a
+ * malformed setting degrades to "no default configured" instead of breaking a
+ * dispatch, and every consumer sees the same already-checked value.
+ */
+function readAgentCliModels(): AgentCliModelCatalog {
+  return readAgentCliModelCatalog(
+    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('agentCliModels', {}),
+  );
+}
+
+/**
+ * Per-stage model rules. Validated in `agentCliModels` for the same reason as
+ * the model lists: an unknown stage key or a blank value degrades to "no rule"
+ * for that stage instead of breaking a dispatch.
+ */
+function readAgentCliStageModelRules(): AgentCliStageModels {
+  return readAgentCliStageModels(
+    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('agentCliStageModels', {}),
+  );
 }
 
 function getImplicitWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
@@ -325,6 +406,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const agentCliRunDeps = (): RunCardWithAgentCliDeps => ({
     configuredPaths: readAgentCliPaths(),
+    modelCatalog: readAgentCliModels(),
+    stageModels: readAgentCliStageModelRules(),
     cwd: workspaceRoot.fsPath,
     store,
     runWithProgress: runAgentCliWithStatusBarProgress,
@@ -362,13 +445,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
 
       if (choice.kind === 'cli') {
+        // The CLI path selects the model with the provider's own argument, so
+        // the prompt it receives is the unchanged one.
         return runCardWithAgentCli(
           { provider: choice.provider, kind: 'implementation', card: selection.card, prompt },
           agentCliRunDeps(),
         );
       }
 
-      const handedOff = await handOffPromptToChat(choice.target, prompt, `"${selection.card.title}"`);
+      // Only the model this card names for the CLI behind the chosen chat
+      // target: the prompt is delivered to one agent, so naming the other
+      // providers' models would be noise it cannot act on.
+      const handedOff = await handOffPromptToChat(
+        choice.target,
+        withPreferredModelNote(prompt, cardPreferredModelFor(selection.card, choice.target.provider)),
+        `"${selection.card.title}"`,
+      );
       if (!handedOff) {
         return false;
       }
@@ -407,7 +499,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
       }
 
-      const handedOff = await handOffPromptToChat(choice.target, prompt, `"${card.title}"`);
+      const handedOff = await handOffPromptToChat(
+        choice.target,
+        withPreferredModelNote(prompt, cardPreferredModelFor(card, choice.target.provider)),
+        `"${card.title}"`,
+      );
       if (!handedOff) {
         return false;
       }
@@ -495,6 +591,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const loop = { cancelled: false, abortController: new AbortController() };
     activeLoop = loop;
 
+    // One ledger per run: it counts every handoff this run launches and, when
+    // the user configured a cap, refuses the one that would exceed it. Read
+    // once per run like the CLI paths and fallback order, so changing the
+    // setting mid-run cannot move the goalposts underneath a running loop.
+    const maxDispatches = readAiLoopMaxDispatchesSetting();
+    const budget = createAiLoopBudget(
+      maxDispatches !== undefined ? { maxDispatches } : {},
+    );
+    // Set when the credit fallback pauses, so the closing report can tell a
+    // spent allowance apart from a budget stop and from a plain cancellation.
+    let cliPaused = false;
+
+    /**
+     * Stop the run because the cap refused a handoff. The refused dispatch was
+     * never launched, so the in-flight card is untouched: it keeps its column
+     * and its assignee, and only gains an Activity entry saying why the loop
+     * stopped short of it. Cancelling the loop here is what guarantees no
+     * further handoffs follow; the ledger's latched stop refuses them anyway.
+     */
+    const stopOnBudget = async (cardId: string): Promise<void> => {
+      const stop = budget.stop();
+      if (!stop) {
+        return;
+      }
+      loop.cancelled = true;
+      try {
+        await store.appendActivity(cardId, formatAiLoopBudgetStopEntry(stop));
+      } catch {
+        // The card was deleted around the stop; the run still stops, and the
+        // notification still explains why.
+      }
+      BoardPanel.postStateIfOpen();
+    };
+
     // Rebound to the live progress reporter once the loop's withProgress
     // starts; CLI handoffs stream their latest output line through it.
     let reportLoopProgress: (message: string) => void = () => {};
@@ -503,88 +633,175 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (selectedTarget.kind === 'chat') {
       const chatTarget = selectedTarget.target;
       const providerLabel = CHAT_PROVIDER_LABELS[chatTarget.provider];
+      /**
+       * Chat handoffs are counted and capped like CLI ones, but they settle
+       * with no model: the chat extension picks the model inside its own UI,
+       * so there is nothing the extension observed and nothing it may invent.
+       * The reservation is taken before the handoff rather than after, because
+       * only a pre-launch check can keep the cap from being overshot.
+       */
+      const reserveChatDispatch = async (
+        kind: AgentCliHandoffKind,
+        card: BoardCard,
+      ): Promise<boolean> => {
+        const reservation = budget.reserve({
+          stage: kind,
+          provider: `chat:${chatTarget.provider}`,
+          providerLabel,
+          cardId: card.id,
+          cardTitle: card.title,
+        });
+        if (!reservation.allowed) {
+          await stopOnBudget(card.id);
+          return false;
+        }
+        budget.settle();
+        return true;
+      };
+      /**
+       * Every chat stage has the same shape - claim a dispatch, build the
+       * prompt, hand it to chat, record the handoff - so they share one body
+       * and differ only in the stage, the prompt, and the Activity entry. That
+       * also means the budget is applied identically to all four.
+       */
+      const runChatHandoff = async (
+        kind: AgentCliHandoffKind,
+        card: BoardCard,
+        buildPrompt: (current: BoardCard) => string,
+        formatEntry: (label: string) => string,
+      ): Promise<boolean> => {
+        if (!(await reserveChatDispatch(kind, card))) {
+          return false;
+        }
+        return runCardHandoff(card.id, async () => {
+          const handedOff = await handOffPromptToChat(
+            chatTarget,
+            withPreferredModelNote(buildPrompt(card), cardPreferredModelFor(card, chatTarget.provider)),
+            `"${card.title}"`,
+          );
+          if (handedOff) {
+            await store.appendActivity(card.id, formatEntry(providerLabel));
+            BoardPanel.postStateIfOpen();
+          }
+          return handedOff;
+        });
+      };
+
       gateways = {
-        dispatchCard: async (card) =>
-          runCardHandoff(card.id, async () => {
-            const handedOff = await handOffPromptToChat(
-              chatTarget,
-              buildCardHandoffPrompt(card, cardFilePath(card)),
-              `"${card.title}"`,
-            );
-            if (handedOff) {
-              await store.appendActivity(card.id, formatHandoffEntry(providerLabel));
-              BoardPanel.postStateIfOpen();
-            }
-            return handedOff;
-          }),
-        requestDefinition: async (card) =>
-          runCardHandoff(card.id, async () => {
-            const handedOff = await handOffPromptToChat(
-              chatTarget,
-              buildCardDefinitionPrompt(card, cardFilePath(card)),
-              `"${card.title}"`,
-            );
-            if (handedOff) {
-              await store.appendActivity(card.id, formatDefinitionHandoffEntry(providerLabel));
-              BoardPanel.postStateIfOpen();
-            }
-            return handedOff;
-          }),
+        dispatchCard: (card) =>
+          runChatHandoff(
+            'implementation',
+            card,
+            (current) => buildCardHandoffPrompt(current, cardFilePath(current)),
+            formatHandoffEntry,
+          ),
+        requestDefinition: (card) =>
+          runChatHandoff(
+            'definition',
+            card,
+            (current) => buildCardDefinitionPrompt(current, cardFilePath(current)),
+            formatDefinitionHandoffEntry,
+          ),
         decideDoability: decideCardDoability,
-        requestTriage: async (card) =>
-          runCardHandoff(card.id, async () => {
-            const handedOff = await handOffPromptToChat(
-              chatTarget,
-              buildTriagePrompt(card, cardFilePath(card)),
-              `"${card.title}"`,
-            );
-            if (handedOff) {
-              await store.appendActivity(card.id, formatTriageHandoffEntry(providerLabel));
-              BoardPanel.postStateIfOpen();
-            }
-            return handedOff;
-          }),
-        verifyCard: async (card) =>
-          runCardHandoff(card.id, async () => {
-            const handedOff = await handOffPromptToChat(
-              chatTarget,
-              buildCardVerificationPrompt(card, cardFilePath(card)),
-              `"${card.title}"`,
-            );
-            if (handedOff) {
-              await store.appendActivity(card.id, formatVerificationHandoffEntry(providerLabel));
-              BoardPanel.postStateIfOpen();
-            }
-            return handedOff;
-          }),
+        requestTriage: (card) =>
+          runChatHandoff(
+            'triage',
+            card,
+            (current) => buildTriagePrompt(current, cardFilePath(current)),
+            formatTriageHandoffEntry,
+          ),
+        verifyCard: (card) =>
+          runChatHandoff(
+            'verification',
+            card,
+            (current) => buildCardVerificationPrompt(current, cardFilePath(current)),
+            formatVerificationHandoffEntry,
+          ),
       };
     } else {
       const cliTarget = selectedTarget.target;
+      // One fallback runner per loop run: it owns the active CLI, the
+      // providers whose allowance is already spent, and the single-handoff
+      // guard. The user's saved provider preference is never written to.
+      const fallbackRunner = createAgentCliFallbackRunner({
+        initialTarget: cliTarget,
+        settings: readAiLoopCliFallback(),
+        configuredPaths: readAgentCliPaths(),
+        // Read once per loop run, like the CLI paths and fallback order.
+        modelCatalog: readAgentCliModels(),
+        stageModels: readAgentCliStageModelRules(),
+        escalation: readAiLoopModelEscalation(),
+        cwd: workspaceRoot.fsPath,
+        store,
+        signal: loop.abortController.signal,
+        isCancelled: () => loop.cancelled,
+        onProgress: (message) => {
+          reportLoopProgress(message);
+          cliOutputChannel.info(message);
+        },
+        onSwitch: (record) => {
+          void vscode.window.showInformationMessage(
+            `${record.from.label} ran out of credits during the ${record.kind} stage. Continuing the same card with ${record.to.label}.`,
+          );
+        },
+        onEscalate: (record) => {
+          void vscode.window.showInformationMessage(
+            `${record.target.label} did not complete the ${record.kind} stage on ${record.from ? `model "${record.from}"` : 'its default model'}. Retrying the same card on "${record.to}".`,
+          );
+        },
+        onPause: (reason) => {
+          // No eligible CLI is left: stop dispatching instead of cycling
+          // providers, leaving the interrupted card where it is.
+          loop.cancelled = true;
+          cliPaused = true;
+          showCliWarning(reason);
+        },
+        // Consulted before every process, including credit-fallback
+        // replacements and escalation retries, so the cap bounds the run's
+        // real dispatch count rather than only its stage count.
+        beforeDispatch: ({ kind, target, card }) => {
+          const reservation = budget.reserve({
+            stage: kind,
+            provider: target.provider,
+            providerLabel: target.label,
+            cardId: card.id,
+            cardTitle: card.title,
+          });
+          return reservation.allowed
+            ? { allowed: true }
+            : { allowed: false, reason: formatAiLoopBudgetStopMessage(reservation.stop) };
+        },
+        // The model a dispatch actually ran on, which is what the tally groups
+        // by; a rejected or unconfigured model settles as the CLI's own default.
+        afterDispatch: (settlement) => budget.settle(settlement.model),
+        createObserver: (target, request) => {
+          const observer = createCliRunObserver(
+            request.card,
+            request.kind,
+            target.label,
+            (message) => reportLoopProgress(message),
+          );
+          return {
+            ...observer,
+            onExit: (result) => {
+              // The only source of usage or cost figures is what this CLI
+              // printed itself; the ledger copies matching lines verbatim and
+              // attributes them to this provider, and invents nothing when the
+              // CLI reports nothing.
+              budget.recordUsage(target.label, `${result.stdout}\n${result.stderr}`);
+              observer.onExit?.(result);
+            },
+          };
+        },
+      });
+
       const runCliHandoff = async (
         kind: AgentCliHandoffKind,
         card: BoardCard,
-        prompt: string,
+        buildPrompt: (current: BoardCard) => string,
       ): Promise<{ readonly started: boolean; readonly activityBaseline?: number }> => {
         const attempt = await inFlightCardHandoffs.run(card.id, () =>
-          runAgentCliCardHandoff(
-            {
-              kind,
-              target: cliTarget,
-              cardId: card.id,
-              prompt,
-              cwd: workspaceRoot.fsPath,
-              store,
-              signal: loop.abortController.signal,
-            },
-            {
-              observer: createCliRunObserver(
-                card,
-                kind,
-                cliTarget.label,
-                (message) => reportLoopProgress(message),
-              ),
-            },
-          ));
+          fallbackRunner.run({ kind, card, buildPrompt }));
         if (!attempt.started) {
           void vscode.window.showInformationMessage(
             'A handoff for this card is already in progress. Stop it or wait for it to finish.',
@@ -593,8 +810,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         BoardPanel.postStateIfOpen();
-        const result = attempt.value;
-        if (!result.completed && !result.cancelled && result.reason) {
+        const outcome = attempt.value;
+        if (outcome.kind === 'busy') {
+          void vscode.window.showInformationMessage(
+            'A CLI handoff is already running for this loop. Stop it or wait for it to finish.',
+          );
+          return { started: false };
+        }
+        if (outcome.kind === 'paused') {
+          return { started: false };
+        }
+        if (outcome.kind === 'stopped') {
+          // The dispatch budget refused this handoff before anything was
+          // spawned, so the card is untouched and the run ends here.
+          await stopOnBudget(card.id);
+          return { started: false };
+        }
+
+        const result = outcome.result;
+        // A card model the CLI that actually ran cannot accept is a silent
+        // downgrade otherwise: the stage still runs, just on the default model.
+        if (result.modelSelection && !result.modelSelection.applied && result.modelSelection.reason) {
+          showCliWarning(result.modelSelection.reason);
+        }
+        if (!result.completed && !result.cancelled && result.reason && !outcome.exhaustedWithoutFallback) {
           showCliWarning(result.reason);
         }
         return {
@@ -605,14 +844,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       gateways = {
         dispatchCard: (card) =>
-          runCliHandoff('implementation', card, buildCardHandoffPrompt(card, cardFilePath(card))),
+          runCliHandoff('implementation', card, (current) =>
+            buildCardHandoffPrompt(current, cardFilePath(current))),
         requestDefinition: (card) =>
-          runCliHandoff('definition', card, buildCardDefinitionPrompt(card, cardFilePath(card))),
+          runCliHandoff('definition', card, (current) =>
+            buildCardDefinitionPrompt(current, cardFilePath(current))),
         decideDoability: decideCardDoability,
         requestTriage: (card) =>
-          runCliHandoff('triage', card, buildTriagePrompt(card, cardFilePath(card))),
+          runCliHandoff('triage', card, (current) =>
+            buildTriagePrompt(current, cardFilePath(current))),
         verifyCard: (card) =>
-          runCliHandoff('verification', card, buildCardVerificationPrompt(card, cardFilePath(card))),
+          runCliHandoff('verification', card, (current) =>
+            buildCardVerificationPrompt(current, cardFilePath(current))),
       };
     }
 
@@ -638,7 +881,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
       );
       BoardPanel.postStateIfOpen();
-      void vscode.window.showInformationMessage(summarizeLoopRun(summary));
+      // The tally is reported however the run ended - finished, cancelled,
+      // paused on spent credits, or stopped on budget - and each of those
+      // says which it was, so a budget stop is never mistaken for a CLI that
+      // ran out of allowance or for a loop that simply had nothing left to do.
+      const budgetStop = budget.stop();
+      const outcome: AiLoopRunOutcome = budgetStop
+        ? 'budget'
+        : cliPaused
+          ? 'paused'
+          : summary.cancelled
+            ? 'cancelled'
+            : 'finished';
+      const headline = budgetStop
+        ? formatAiLoopBudgetStopMessage(budgetStop)
+        : summarizeLoopRun(summary);
+      void vscode.window.showInformationMessage(
+        `${headline} ${formatAiLoopBudgetTally(budget.tally(), outcome)}`,
+      );
     } finally {
       activeLoop = undefined;
     }
@@ -665,6 +925,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openBoard = (): BoardPanel => BoardPanel.show(boardPanelDeps);
 
   context.subscriptions.push(registerBoardWatcher(workspaceRoot, boardFolder, store));
+  context.subscriptions.push(
+    // The webview renders from the state message, and two of that message's
+    // fields come from settings rather than the store: the card UI's model
+    // suggestions and whether Run with AI is offered. Re-push on a change to
+    // either so an edited model list reaches an already-open board instead of
+    // waiting for a window reload or the next board edit.
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration('mwnn-kanban.agentCliModels') ||
+        event.affectsConfiguration('mwnn-kanban.enableRunWithAI')
+      ) {
+        BoardPanel.postStateIfOpen();
+      }
+    }),
+  );
   context.subscriptions.push(
     // Reopen the board automatically when VS Code restores a session in which
     // the board panel was open (restart or window reload). Restoration routes

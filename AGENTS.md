@@ -73,6 +73,8 @@ title: Add login form
 column: col-ready
 position: 1000
 assignee: { kind: ai, name: Codex }
+preferredModel.claude-code: claude-opus-5
+preferredModel.codex: gpt-5-codex
 createdAt: 1719360000000
 updatedAt: 1719363600000
 ---
@@ -95,6 +97,8 @@ Rules for direct board edits:
 - Respect `wipLimit` on flow columns and `reverseWip` on the Ready column when claiming or moving work.
 - Prefer appending dated entries to `## Activity` when claiming, handing off, or reporting progress.
 - AI agents should usually select work where `assignee.kind === 'ai'`, keep acceptance criteria current, and leave the board in a consistent state after edits.
+- `preferredModel.<provider>` is optional and free-form: the name of the AI model the card should be run with **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. The model is scoped per provider because a card never chooses its own CLI — the CLI is picked per dispatch and the credit fallback can change it mid-run — so the entry for whichever provider actually runs is the one passed to that CLI as its model argument, without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else that CLI's own default model when none is set.
+- A single bare `preferredModel` scalar is the legacy, pre-scoping shape. It is still read and applies to every provider the card does not scope explicitly, so existing cards keep working; the extension never writes it again and migrates the card to the per-provider keys on its next write.
 
 ---
 
@@ -401,6 +405,8 @@ title: Add login form
 column: col-ready
 position: 1000
 assignee: { kind: ai }
+preferredModel.claude-code: claude-opus-5
+preferredModel.codex: gpt-5-codex
 createdAt: 1719360000000
 updatedAt: 1719360000000
 ---
@@ -435,13 +441,37 @@ What the slice of work is.
   a `done` column, and a blocked card cannot advance past the Ready column.
   Reference only ids that exist (or that you are creating in the same batch);
   never list the card's own id or form a cycle. Omit the key when empty.
+- `preferredModel.<provider>` (optional) — free-form name of the AI model this
+  card should be run with **on that agent CLI**, one key per provider, where
+  `<provider>` is one of `copilot`, `codex`, `claude-code`, or `cursor`, e.g.
+  `preferredModel.claude-code: claude-opus-5`. Scoped per provider because a
+  card never chooses its own CLI: the CLI is picked at dispatch and the credit
+  fallback can change it mid-run, and model names are CLI-specific. The
+  extension passes the entry for whichever provider actually runs straight
+  through to that CLI as its model argument and never validates it against a
+  list of model names, so use the exact spelling that CLI accepts. JSON-quote a
+  value when it contains any of the characters listed under scalar quoting, e.g.
+  `preferredModel.codex: "openai/gpt-5: preview"`. An unknown provider key, and
+  a value that is blank or whitespace-only, is ignored rather than stored. Omit
+  a key entirely rather than writing an empty value; a provider the card names
+  no model for uses the AI loop stage rule (`mwnn-kanban.agentCliStageModels`),
+  else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else
+  whichever model that CLI runs by default.
+- `preferredModel` (legacy, optional) — a single bare `preferredModel` scalar
+  predates per-provider scoping. It is still read and applies to every provider
+  that has no `preferredModel.<provider>` key of its own, so an existing card
+  keeps working unchanged. The extension never writes the bare key again: the
+  next time it saves that card, the value is migrated to the per-provider keys.
+  Write the per-provider keys for new cards.
 
 ### Scalar quoting (match the extension's parser)
 
 Values are bare YAML-ish scalars. JSON-quote a `title` or any scalar when it is
 empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 `"` `#`. Example: `title: "Refactor: split the store"`. Plain values need no
-quotes: `title: Add login form`.
+quotes: `title: Add login form`. The rule applies per line, so each
+`preferredModel.<provider>` value is quoted on its own: the key itself is never
+quoted.
 
 ### Body sections
 

@@ -1,3 +1,4 @@
+import type { AgentCliModelCatalog, AgentCliStageModels } from './agentCliModels';
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
@@ -99,6 +100,18 @@ export interface RunWithAiBoardStore extends AgentCliHandoffStore {
 
 export interface RunCardWithAgentCliDeps {
   readonly configuredPaths: AgentCliPathOverrides;
+  /**
+   * Validated workspace model lists. Supplies the model when the card names
+   * none and no stage rule applies; omitting it leaves the CLI on its own
+   * default model.
+   */
+  readonly modelCatalog?: AgentCliModelCatalog;
+  /**
+   * Validated per-stage model rules. The request's own `kind` selects the rule,
+   * so running a card's work uses the `implementation` rule and filling in its
+   * definition uses the `definition` rule - the same keys the AI loop uses.
+   */
+  readonly stageModels?: AgentCliStageModels;
   /** Workspace root the CLI runs in. */
   readonly cwd: string;
   readonly store: RunWithAiBoardStore;
@@ -177,11 +190,19 @@ export async function runCardWithAgentCli(
           cwd: deps.cwd,
           store: deps.store,
           signal,
+          ...(deps.modelCatalog !== undefined ? { modelCatalog: deps.modelCatalog } : {}),
+          ...(deps.stageModels !== undefined ? { stageModels: deps.stageModels } : {}),
         },
         observer ? { observer } : {},
       );
     },
   );
+  // Reported separately from the run's own outcome: the card still ran, just
+  // not on the requested model, and that must not pass unnoticed.
+  if (result.modelSelection && !result.modelSelection.applied && result.modelSelection.reason) {
+    deps.showWarning(result.modelSelection.reason);
+  }
+
   let parkedColumnTitle: string | undefined;
   if (request.kind === 'implementation' && result.completed && result.terminalStatus?.kind === 'done') {
     parkedColumnTitle = await parkFinishedCardInVerify(deps.store, request.card.id);
