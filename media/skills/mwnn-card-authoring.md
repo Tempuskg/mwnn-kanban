@@ -58,6 +58,7 @@ position: 1000
 assignee: { kind: ai }
 preferredModel.claude-code: claude-opus-5
 preferredModel.codex: gpt-5-codex
+thinkingLevel.codex: high
 createdAt: 1719360000000
 updatedAt: 1719360000000
 ---
@@ -103,6 +104,30 @@ What the slice of work is.
   stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace
   default for the active CLI (`mwnn-kanban.agentCliModels`), else whichever
   model that CLI runs by default when none is set.
+- `thinkingLevel.<provider>` (optional) — free-form name of the *thinking
+  level* (reasoning effort) this card should be run at **on that agent CLI**,
+  one key per provider, where `<provider>` is one of `copilot`, `codex`,
+  `claude-code`, or `cursor`, e.g. `thinkingLevel.codex: high`.
+
+  A second axis of the same selection, independent of the model: it answers
+  "how hard should it think", not "which model runs". Scoped per provider for
+  the same reason the model is — a card never chooses its own CLI, the CLI is
+  picked at dispatch, the credit fallback can change it mid-run, and effort
+  names are CLI-specific. The extension passes the entry for whichever provider
+  actually runs straight through to that CLI and never validates it against a
+  list of level names, so use the exact spelling that CLI accepts. JSON-quote a
+  value when it contains any of the characters listed under scalar quoting. An
+  unknown provider key, and a value that is blank or whitespace-only, is
+  ignored rather than stored.
+
+  Omit a key entirely rather than writing an empty value. Fallback order for a
+  provider the card names no level for: the AI loop stage rule
+  (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for
+  that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default
+  effort. Only a CLI that exposes reasoning effort on its command line can
+  honor a level; on one that does not, the level is reported on the card as not
+  applied and the run proceeds at that CLI's default effort — it never fails
+  the run.
 
 ### Scalar quoting (match the extension's parser)
 
@@ -110,8 +135,8 @@ Values are bare YAML-ish scalars. JSON-quote a `title` or any scalar when it is
 empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 `"` `#`. Example: `title: "Refactor: split the store"`. Plain values need no
 quotes: `title: Add login form`. The rule applies per line, so each
-`preferredModel.<provider>` value is quoted on its own: the key itself is never
-quoted.
+`preferredModel.<provider>` and `thinkingLevel.<provider>` value is quoted on
+its own: the key itself is never quoted.
 
 ### Body sections
 

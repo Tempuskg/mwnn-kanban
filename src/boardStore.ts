@@ -45,7 +45,9 @@ import {
   setDependencies,
   setDescription,
   setPreferredModel,
+  setThinkingLevel,
   normalizeCardPreferredModels,
+  normalizeCardThinkingLevels,
   type SetColumnConfig,
 } from './utils';
 
@@ -103,6 +105,11 @@ export interface BoardStore {
     cardId: string,
     provider: AgentCliProviderId,
     preferredModel: string | undefined,
+  ): Promise<BoardState>;
+  setThinkingLevel(
+    cardId: string,
+    provider: AgentCliProviderId,
+    thinkingLevel: string | undefined,
   ): Promise<BoardState>;
   setDescription(cardId: string, description: string): Promise<BoardState>;
   setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<BoardState>;
@@ -190,6 +197,8 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     setDependencies: (cardId, dependsOn) => runQueued((current) => setDependencies(current, cardId, dependsOn)),
     setPreferredModel: (cardId, provider, preferredModel) =>
       runQueued((current) => setPreferredModel(current, cardId, provider, preferredModel)),
+    setThinkingLevel: (cardId, provider, thinkingLevel) =>
+      runQueued((current) => setThinkingLevel(current, cardId, provider, thinkingLevel)),
     setDescription: (cardId, description) => runQueued((current) => setDescription(current, cardId, description)),
     setAcceptanceCriteria: (cardId, acceptanceCriteria) =>
       runQueued((current) => setAcceptanceCriteria(current, cardId, acceptanceCriteria)),
@@ -207,13 +216,14 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
 async function loadOrInitializeState(deps: BoardStoreDeps): Promise<BoardState> {
   const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
   if (await deps.fileSystem.exists(columnsPath)) {
-    try {
-      return await readBoardState(deps);
-    } catch {
-      const fallback = await migrateOrCreateDefaultState(deps);
-      await writeBoardState(deps, fallback);
-      return fallback;
+    // Existing file-backed boards are authoritative. A malformed card must
+    // surface as a load error, never trigger a fresh set of column ids that can
+    // orphan every pre-existing card from its original column.
+    const loaded = await readBoardSnapshot(deps);
+    if (loaded.recoveredColumnIds) {
+      await writeBoardState(deps, loaded.state);
     }
+    return loaded.state;
   }
 
   if (deps.legacyMemento?.get<unknown>(STORAGE_KEY) === undefined) {
@@ -256,8 +266,18 @@ export async function readBoardStateIfPresent(deps: BoardReaderDeps): Promise<Bo
 }
 
 async function readBoardState(deps: BoardReaderDeps): Promise<BoardState> {
+  return (await readBoardSnapshot(deps)).state;
+}
+
+interface BoardReadSnapshot {
+  readonly state: BoardState;
+  readonly recoveredColumnIds: boolean;
+}
+
+async function readBoardSnapshot(deps: BoardReaderDeps): Promise<BoardReadSnapshot> {
   const columnsDocument = parseColumns(await deps.fileSystem.readFile(boardPath(deps.boardFolder, COLUMNS_FILE)));
-  const cardDocuments = await readCardDocuments(deps);
+  const reconciled = reconcileGeneratedColumnIds(columnsDocument, await readCardDocuments(deps));
+  const cardDocuments = reconciled.documents;
 
   const cardsByColumn = new Map<string, CardDocument[]>();
   for (const document of cardDocuments) {
@@ -284,8 +304,11 @@ async function readBoardState(deps: BoardReaderDeps): Promise<BoardState> {
   }
 
   return {
-    version: BOARD_STATE_VERSION,
-    columns,
+    state: {
+      version: BOARD_STATE_VERSION,
+      columns,
+    },
+    recoveredColumnIds: reconciled.recovered,
   };
 }
 
@@ -317,14 +340,21 @@ async function writeBoardState(deps: BoardStoreDeps, state: BoardState): Promise
     version: BOARD_FILE_VERSION,
     columns: state.columns.map((column) => toColumnConfig(column)),
   };
+
+  // Read the existing cards before replacing columns.json. If a hand-edited
+  // card is malformed, fail without leaving a partially migrated board whose
+  // columns no longer match the card files.
+  const existingCardNames = await deps.fileSystem.readDirectory(boardPath(deps.boardFolder, CARDS_DIR));
+  const existingCardFiles = new Set(existingCardNames.filter((name) => name.endsWith('.md')));
+  const existingDocuments = reconcileGeneratedColumnIds(
+    columnsDocument,
+    await readCardDocuments(deps),
+  ).documents;
   await deps.fileSystem.writeFile(
     boardPath(deps.boardFolder, COLUMNS_FILE),
     serializeColumns(columnsDocument),
   );
 
-  const existingCardNames = await deps.fileSystem.readDirectory(boardPath(deps.boardFolder, CARDS_DIR));
-  const existingCardFiles = new Set(existingCardNames.filter((name) => name.endsWith('.md')));
-  const existingDocuments = await readCardDocuments(deps);
   const nextCardIds = new Set<string>();
   for (const document of buildCardDocuments(state, existingDocuments)) {
     nextCardIds.add(document.card.id);
@@ -351,6 +381,104 @@ async function writeBoardState(deps: BoardStoreDeps, state: BoardState): Promise
       await deps.fileSystem.deleteFile(boardPath(deps.boardFolder, CARDS_DIR, name));
     }
   }
+}
+
+interface GeneratedColumnId {
+  readonly batch: string;
+  readonly ordinal: number;
+}
+
+interface ReconciledCardDocuments {
+  readonly documents: CardDocument[];
+  readonly recovered: boolean;
+}
+
+/**
+ * Recover cards orphaned by the old load fallback, which could replace a valid
+ * default `columns.json` with a newly generated copy after one card failed to
+ * parse. Both copies keep the same logical order, and extension-generated ids
+ * encode that one-based order in their final segment (`col-<batch>-<ordinal>`).
+ *
+ * Recovery is deliberately narrow: the replacement columns must be one
+ * generated batch in ordinal order, every unknown card column must be another
+ * single generated batch, and every old ordinal must name a current column.
+ * Anything else remains an explicit orphan column rather than being guessed.
+ */
+function reconcileGeneratedColumnIds(
+  columnsDocument: ColumnsDocument,
+  documents: readonly CardDocument[],
+): ReconciledCardDocuments {
+  const currentIds = columnsDocument.columns.map((column) => parseGeneratedColumnId(column.id));
+  const currentBatch = currentIds[0]?.batch;
+  if (
+    currentBatch === undefined ||
+    currentIds.some(
+      (identity, index) =>
+        identity === undefined || identity.batch !== currentBatch || identity.ordinal !== index + 1,
+    )
+  ) {
+    return { documents: [...documents], recovered: false };
+  }
+
+  const knownColumnIds = new Set(columnsDocument.columns.map((column) => column.id));
+  const unknownColumnIds = [
+    ...new Set(documents.map((document) => document.columnId).filter((id) => !knownColumnIds.has(id))),
+  ];
+  if (unknownColumnIds.length === 0) {
+    return { documents: [...documents], recovered: false };
+  }
+
+  const unknownIds = unknownColumnIds.map(parseGeneratedColumnId);
+  const sourceBatch = unknownIds[0]?.batch;
+  if (
+    sourceBatch === undefined ||
+    sourceBatch === currentBatch ||
+    unknownIds.some(
+      (identity) =>
+        identity === undefined ||
+        identity.batch !== sourceBatch ||
+        identity.ordinal < 1 ||
+        identity.ordinal > columnsDocument.columns.length,
+    )
+  ) {
+    return { documents: [...documents], recovered: false };
+  }
+
+  const recoveredIds = new Map<string, string>();
+  for (let index = 0; index < unknownColumnIds.length; index += 1) {
+    const oldId = unknownColumnIds[index];
+    const identity = unknownIds[index];
+    if (oldId === undefined || identity === undefined) {
+      continue;
+    }
+    const replacement = columnsDocument.columns[identity.ordinal - 1];
+    if (replacement !== undefined) {
+      recoveredIds.set(oldId, replacement.id);
+    }
+  }
+
+  return {
+    documents: documents.map((document) => {
+      const recoveredColumnId = recoveredIds.get(document.columnId);
+      return recoveredColumnId === undefined ? document : { ...document, columnId: recoveredColumnId };
+    }),
+    recovered: recoveredIds.size > 0,
+  };
+}
+
+function parseGeneratedColumnId(id: string): GeneratedColumnId | undefined {
+  const match = /^col-(.+)-([0-9a-z]+)$/.exec(id);
+  const batch = match?.[1];
+  const rawOrdinal = match?.[2];
+  if (batch === undefined || rawOrdinal === undefined) {
+    return undefined;
+  }
+
+  const ordinal = Number.parseInt(rawOrdinal, 36);
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal.toString(36) !== rawOrdinal) {
+    return undefined;
+  }
+  return { batch, ordinal };
 }
 
 async function ensureBoardReadme(deps: BoardStoreDeps): Promise<void> {
@@ -671,7 +799,7 @@ function buildBoardReadme(): string {
     '## Files',
     '',
     '- `columns.json` stores the ordered column layout, roles, and WIP or reverse-WIP limits.',
-    '- `cards/<card-id>.md` stores one card per markdown file with frontmatter for column, position, assignee, dependencies (`dependsOn`), an optional preferred AI model per agent CLI (`preferredModel.<provider>`), and timestamps.',
+    '- `cards/<card-id>.md` stores one card per markdown file with frontmatter for column, position, assignee, dependencies (`dependsOn`), an optional preferred AI model and thinking level per agent CLI (`preferredModel.<provider>` and `thinkingLevel.<provider>`), and timestamps.',
     '- `README.md` documents the contract for humans and AI agents editing the board directly.',
     '',
     '## Card workflow',
@@ -688,6 +816,7 @@ function buildBoardReadme(): string {
     '- `dependsOn` (optional) — array of ids of other cards this card is blocked by, e.g. `[card-x, card-y]`. Omit the key when there are none.',
     '- `preferredModel.<provider>` (optional) — free-form name of the AI model this card should be run with **on that agent CLI**, spelled the way that CLI spells it, e.g. `preferredModel.claude-code: claude-opus-5`. One key per provider, where `<provider>` is one of `copilot`, `codex`, `claude-code`, or `cursor`; an unknown provider key is ignored. A card never chooses its own CLI — the CLI is picked per dispatch, and the credit fallback can change it mid-run — so the model is scoped to the CLI it is valid for, and the entry for whichever provider actually runs is the one that is used. When a provider has no key (or its value is blank), the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`) is used, else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else the model that CLI runs by default. Omit a key entirely rather than writing an empty value.',
     '- `preferredModel` (legacy, optional) — a single bare `preferredModel` scalar predates per-provider scoping. It is still read, and applies to every provider that has no `preferredModel.<provider>` key of its own, so an existing card keeps working unchanged. The extension never writes the bare key again: the next time it saves that card, the value is migrated to the per-provider keys.',
+    '- `thinkingLevel.<provider>` (optional) — free-form name of the thinking level (reasoning effort) this card should be run at **on that agent CLI**, spelled the way that CLI spells it, e.g. `thinkingLevel.codex: high`. One key per provider, using the same four provider ids; an unknown provider key or a blank value is ignored. A second axis of the same selection and fully independent of the model — how hard the agent thinks, not which model runs — and scoped per provider for the same reason the model is. When a provider has no key, the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageThinkingLevels`) is used, else the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`), else the default effort that CLI runs at. Only a CLI that exposes reasoning effort on its command line can honor a level; on one that does not, the level is recorded on the card as not applied and the run proceeds at the default effort that CLI runs at. Omit a key entirely rather than writing an empty value.',
     '',
     'Frontmatter values are bare YAML-ish scalars: JSON-quote any value that is empty, starts or ends with whitespace, or contains `:` `{` `}` `[` `]` `"` or `#` — for example `preferredModel.copilot: "openai/gpt-5: preview"`.',
     '',
@@ -725,6 +854,10 @@ function cloneCard(card: Card): Card {
   const preferredModels = normalizeCardPreferredModels(card.preferredModels);
   if (preferredModels !== undefined) {
     clone.preferredModels = preferredModels;
+  }
+  const thinkingLevels = normalizeCardThinkingLevels(card.thinkingLevels);
+  if (thinkingLevels !== undefined) {
+    clone.thinkingLevels = thinkingLevels;
   }
   return clone;
 }

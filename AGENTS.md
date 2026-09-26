@@ -75,6 +75,7 @@ position: 1000
 assignee: { kind: ai, name: Codex }
 preferredModel.claude-code: claude-opus-5
 preferredModel.codex: gpt-5-codex
+thinkingLevel.codex: high
 createdAt: 1719360000000
 updatedAt: 1719363600000
 ---
@@ -99,6 +100,8 @@ Rules for direct board edits:
 - AI agents should usually select work where `assignee.kind === 'ai'`, keep acceptance criteria current, and leave the board in a consistent state after edits.
 - `preferredModel.<provider>` is optional and free-form: the name of the AI model the card should be run with **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. The model is scoped per provider because a card never chooses its own CLI — the CLI is picked per dispatch and the credit fallback can change it mid-run — so the entry for whichever provider actually runs is the one passed to that CLI as its model argument, without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else that CLI's own default model when none is set.
 - A single bare `preferredModel` scalar is the legacy, pre-scoping shape. It is still read and applies to every provider the card does not scope explicitly, so existing cards keep working; the extension never writes it again and migrates the card to the per-provider keys on its next write.
+- `thinkingLevel.<provider>` is optional and free-form: the *thinking level* (reasoning effort) the card should be run at **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. It is a second axis of the same selection and fully independent of the model — "how hard should it think", not "which model runs" — and it is scoped per provider for exactly the reasons the model is, since the CLI is picked per dispatch and the credit fallback can change it mid-run. The entry for whichever provider actually runs is passed to that CLI without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default effort. There is no legacy bare `thinkingLevel` scalar: the key was per-provider from the start.
+- Only a CLI that exposes reasoning effort on its command line can honor a thinking level. On one that does not, the level is recorded on the card as not applied and the run proceeds at that CLI's default effort; a level that cannot be applied never fails a run.
 
 ---
 
@@ -407,6 +410,7 @@ position: 1000
 assignee: { kind: ai }
 preferredModel.claude-code: claude-opus-5
 preferredModel.codex: gpt-5-codex
+thinkingLevel.codex: high
 createdAt: 1719360000000
 updatedAt: 1719360000000
 ---
@@ -463,6 +467,22 @@ What the slice of work is.
   keeps working unchanged. The extension never writes the bare key again: the
   next time it saves that card, the value is migrated to the per-provider keys.
   Write the per-provider keys for new cards.
+- `thinkingLevel.<provider>` (optional) — free-form name of the *thinking
+  level* (reasoning effort) this card should be run at **on that agent CLI**,
+  one key per provider, e.g. `thinkingLevel.codex: high`. A second axis of the
+  same selection, independent of the model: it answers "how hard should it
+  think", not "which model runs". Scoped per provider for the same reasons the
+  model is, and passed through to that CLI without validation, so use the exact
+  spelling that CLI accepts. JSON-quote a value when it contains any of the
+  characters listed under scalar quoting. An unknown provider key, and a blank
+  or whitespace-only value, is ignored rather than stored. Omit a key entirely
+  rather than writing an empty value; a provider the card names no level for
+  uses the AI loop stage rule (`mwnn-kanban.agentCliStageThinkingLevels`), else
+  the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`),
+  else that CLI's own default effort. Only a CLI that exposes reasoning effort
+  on its command line can honor a level; on one that does not, the level is
+  reported on the card as not applied and the run proceeds at that CLI's
+  default effort — it never fails the run.
 
 ### Scalar quoting (match the extension's parser)
 
@@ -470,8 +490,8 @@ Values are bare YAML-ish scalars. JSON-quote a `title` or any scalar when it is
 empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 `"` `#`. Example: `title: "Refactor: split the store"`. Plain values need no
 quotes: `title: Add login form`. The rule applies per line, so each
-`preferredModel.<provider>` value is quoted on its own: the key itself is never
-quoted.
+`preferredModel.<provider>` and `thinkingLevel.<provider>` value is quoted on
+its own: the key itself is never quoted.
 
 ### Body sections
 

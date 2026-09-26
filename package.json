@@ -460,6 +460,56 @@
           "additionalProperties": false,
           "scope": "resource"
         },
+        "mwnn-kanban.agentCliThinkingLevels": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Thinking level (reasoning effort) for each agent CLI used by 'Run Card with AI' and the AI board loop. A second, independent axis of model selection: it says how hard the agent should think, not which model runs. Levels are CLI-specific and are passed through unchanged, so spell each one the way that CLI accepts it. A card's own `thinkingLevel.<provider>` wins, then `#mwnn-kanban.agentCliStageThinkingLevels#`, then this setting, then whatever effort that CLI runs at by default. Only CLIs that expose reasoning effort on their command line can honor a level - today that is OpenAI Codex CLI (`minimal`, `low`, `medium`, `high`). A level set for a CLI that accepts none is reported on the card and the run proceeds at that CLI's own default effort; it never fails the run. Leave a CLI out for unchanged behavior.",
+          "properties": {
+            "copilot": {
+              "type": "string",
+              "description": "Thinking level for GitHub Copilot CLI, as it spells it. GitHub Copilot CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
+            },
+            "codex": {
+              "type": "string",
+              "description": "Thinking level for OpenAI Codex CLI, as it spells it - for example `minimal`, `low`, `medium`, or `high`. Passed through as the `model_reasoning_effort` config override."
+            },
+            "claude-code": {
+              "type": "string",
+              "description": "Thinking level for Anthropic Claude Code CLI, as it spells it. Claude Code CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
+            },
+            "cursor": {
+              "type": "string",
+              "description": "Thinking level for Cursor Agent CLI, as it spells it. Cursor Agent CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
+            }
+          },
+          "additionalProperties": false,
+          "scope": "resource"
+        },
+        "mwnn-kanban.agentCliStageThinkingLevels": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Thinking level to use for each AI board loop stage, overriding `#mwnn-kanban.agentCliThinkingLevels#` for that stage only. Useful when the short reasoning stages need less effort than the stage that does the work. The level a card names for the active CLI still wins, then this setting, then `#mwnn-kanban.agentCliThinkingLevels#` for the active CLI, then that CLI's own default effort. Levels are CLI-specific and are passed through unchanged. Leave a stage out to fall back to the workspace default; leave the whole setting empty for unchanged behavior.",
+          "properties": {
+            "definition": {
+              "type": "string",
+              "description": "Thinking level for the definition stage, which fills in a card's Description and acceptance criteria. A short reasoning task that does not edit the workspace."
+            },
+            "triage": {
+              "type": "string",
+              "description": "Thinking level for the triage stage, which decides whether a card is doable as written. A short reasoning task that does not edit the workspace."
+            },
+            "implementation": {
+              "type": "string",
+              "description": "Thinking level for the implementation stage, which does the card's actual work in the workspace. Also used by the Run Card with AI command."
+            },
+            "verification": {
+              "type": "string",
+              "description": "Thinking level for the verification stage, which checks a finished card's acceptance evidence against the workspace."
+            }
+          },
+          "additionalProperties": false,
+          "scope": "resource"
+        },
         "mwnn-kanban.defaultColumns": {
           "type": "array",
           "items": {
@@ -605,6 +655,12 @@
           "type": "number",
           "default": 4,
           "description": "Minimum hours between allocation drift nudges.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.showCardTrackedHours": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show observed tracked hours on board cards. Cards with no tracked time show nothing rather than 0h.",
           "scope": "application"
         },
         "mwnn-kanban-pro.queueDepth": {
@@ -778,7 +834,7 @@
     "lint": "eslint src --ext ts"
   },
   "dependencies": {
-    "@tempuskg/mwnn-kanban-pro": "^0.1.10"
+    "@tempuskg/mwnn-kanban-pro": "^0.1.11"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",

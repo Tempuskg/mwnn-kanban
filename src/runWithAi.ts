@@ -1,4 +1,9 @@
-import type { AgentCliModelCatalog, AgentCliStageModels } from './agentCliModels';
+import type {
+  AgentCliModelCatalog,
+  AgentCliStageModels,
+  AgentCliStageThinkingLevels,
+  AgentCliThinkingLevelDefaults,
+} from './agentCliModels';
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
@@ -112,6 +117,17 @@ export interface RunCardWithAgentCliDeps {
    * definition uses the `definition` rule - the same keys the AI loop uses.
    */
   readonly stageModels?: AgentCliStageModels;
+  /**
+   * Validated per-provider workspace default thinking levels. Supplies the
+   * effort when the card names none and no stage rule applies; omitting it
+   * leaves the CLI at its own default effort.
+   */
+  readonly thinkingLevels?: AgentCliThinkingLevelDefaults;
+  /**
+   * Validated per-stage thinking-level rules, selected by the request's own
+   * `kind` exactly as the stage model rules are.
+   */
+  readonly stageThinkingLevels?: AgentCliStageThinkingLevels;
   /** Workspace root the CLI runs in. */
   readonly cwd: string;
   readonly store: RunWithAiBoardStore;
@@ -192,6 +208,10 @@ export async function runCardWithAgentCli(
           signal,
           ...(deps.modelCatalog !== undefined ? { modelCatalog: deps.modelCatalog } : {}),
           ...(deps.stageModels !== undefined ? { stageModels: deps.stageModels } : {}),
+          ...(deps.thinkingLevels !== undefined ? { thinkingLevels: deps.thinkingLevels } : {}),
+          ...(deps.stageThinkingLevels !== undefined
+            ? { stageThinkingLevels: deps.stageThinkingLevels }
+            : {}),
         },
         observer ? { observer } : {},
       );
@@ -201,6 +221,15 @@ export async function runCardWithAgentCli(
   // not on the requested model, and that must not pass unnoticed.
   if (result.modelSelection && !result.modelSelection.applied && result.modelSelection.reason) {
     deps.showWarning(result.modelSelection.reason);
+  }
+  // Same rule for the effort axis: an unapplied level never fails the run, but
+  // it is never silent either.
+  if (
+    result.thinkingSelection &&
+    !result.thinkingSelection.applied &&
+    result.thinkingSelection.reason
+  ) {
+    deps.showWarning(result.thinkingSelection.reason);
   }
 
   let parkedColumnTitle: string | undefined;

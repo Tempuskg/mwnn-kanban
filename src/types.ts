@@ -47,6 +47,23 @@ export interface Card {
    * empty map or blank values.
    */
   preferredModels?: CardPreferredModels;
+  /**
+   * How hard the agent should think while running this card - the reasoning
+   * effort - **per agent CLI provider**, and independent of which model runs.
+   *
+   * A second axis of the same selection: "which model" and "how hard should it
+   * think" are separate questions, and encoding the second into the first
+   * would mean inventing model names the CLIs do not accept. Scoped per
+   * provider for exactly the reasons `preferredModels` is: the card never
+   * chooses its own CLI, the credit fallback can swap it mid-run, and each CLI
+   * spells its effort levels its own way.
+   *
+   * Free-form, and never validated against a list: a CLI that gains a new
+   * level should be usable the day it ships. A provider absent from the map
+   * runs at whatever effort that CLI defaults to, so the property is omitted
+   * entirely rather than stored with an empty map or blank values.
+   */
+  thinkingLevels?: CardThinkingLevels;
 }
 
 /**
@@ -55,6 +72,14 @@ export interface Card {
  * always means "this card names no model for that CLI".
  */
 export type CardPreferredModels = { [K in AgentCliProviderId]?: string };
+
+/**
+ * One thinking level per agent CLI provider. A provider is absent rather than
+ * present with a blank value, so `thinkingLevels[provider]` being undefined
+ * always means "this card names no thinking level for that CLI" and the run
+ * uses that CLI's own default effort.
+ */
+export type CardThinkingLevels = { [K in AgentCliProviderId]?: string };
 
 export interface Column {
   readonly id: string;
@@ -101,6 +126,13 @@ export type WebviewToHostMessage =
       readonly provider: AgentCliProviderId;
       readonly preferredModel?: string;
     }
+  | {
+      readonly type: 'setThinkingLevel';
+      readonly cardId: string;
+      /** Which CLI the level is for; a card names one level per provider. */
+      readonly provider: AgentCliProviderId;
+      readonly thinkingLevel?: string;
+    }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
   | { readonly type: 'fillCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
@@ -130,6 +162,57 @@ export interface CliRunStatus {
   readonly statusLine?: string;
 }
 
+/**
+ * A short label rendered on one card, supplied through the Pro board
+ * capability (e.g. observed tracked hours). The board renders `text` verbatim
+ * and knows nothing of its meaning; with no Pro package there are none.
+ */
+export interface CardBadge {
+  readonly cardId: string;
+  readonly text: string;
+  /** Hover text. */
+  readonly title?: string;
+}
+
+export const CARD_BADGE_TEXT_MAX = 24;
+export const CARD_BADGE_TITLE_MAX = 200;
+export const CARD_BADGES_MAX = 10_000;
+
+/**
+ * Validate badges arriving from the optional Pro package before they reach the
+ * webview. Malformed entries are dropped, strings are capped, and a repeated
+ * card id keeps its last badge.
+ */
+export function sanitizeCardBadges(value: unknown): readonly CardBadge[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const byCard = new Map<string, CardBadge>();
+  for (const entry of value.slice(0, CARD_BADGES_MAX)) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const cardId = entry['cardId'];
+    const text = entry['text'];
+    const title = entry['title'];
+    if (typeof cardId !== 'string' || cardId.length === 0 || typeof text !== 'string') {
+      continue;
+    }
+    const trimmedText = text.trim().slice(0, CARD_BADGE_TEXT_MAX);
+    if (trimmedText.length === 0) {
+      continue;
+    }
+    byCard.set(cardId, {
+      cardId,
+      text: trimmedText,
+      ...(typeof title === 'string' && title.trim().length > 0
+        ? { title: title.trim().slice(0, CARD_BADGE_TITLE_MAX) }
+        : {}),
+    });
+  }
+  return [...byCard.values()];
+}
+
 /** Messages sent from the extension host to the webview. */
 export type HostToWebviewMessage =
   | {
@@ -152,7 +235,9 @@ export type HostToWebviewMessage =
       readonly path: string;
       readonly message: string;
     }
-  | ({ readonly type: 'cliRunStatus' } & CliRunStatus);
+  | ({ readonly type: 'cliRunStatus' } & CliRunStatus)
+  /** Full replacement set of card badges; an empty list clears them. */
+  | { readonly type: 'cardBadges'; readonly badges: readonly CardBadge[] };
 
 /** Runtime type guard for persisted/posted board state. */
 export function isBoardState(value: unknown): value is BoardState {
@@ -232,6 +317,12 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         isAgentCliProviderId(value['provider']) &&
         (value['preferredModel'] === undefined || typeof value['preferredModel'] === 'string')
       );
+    case 'setThinkingLevel':
+      return (
+        typeof value['cardId'] === 'string' &&
+        isAgentCliProviderId(value['provider']) &&
+        (value['thinkingLevel'] === undefined || typeof value['thinkingLevel'] === 'string')
+      );
     case 'runCardWithAI':
       return typeof value['cardId'] === 'string';
     case 'fillCardDefinition':
@@ -294,7 +385,8 @@ function isCard(value: unknown): value is Card {
     (candidate['assignee'] === undefined || isAssignee(candidate['assignee'])) &&
     (candidate['dependsOn'] === undefined ||
       (Array.isArray(candidate['dependsOn']) && candidate['dependsOn'].every((id) => typeof id === 'string'))) &&
-    (candidate['preferredModels'] === undefined || isCardPreferredModels(candidate['preferredModels']))
+    (candidate['preferredModels'] === undefined || isCardPreferredModels(candidate['preferredModels'])) &&
+    (candidate['thinkingLevels'] === undefined || isCardThinkingLevels(candidate['thinkingLevels']))
   );
 }
 
@@ -319,6 +411,31 @@ export function isCardPreferredModels(value: unknown): value is CardPreferredMod
   return entries.every(
     ([provider, model]) =>
       isAgentCliProviderId(provider) && typeof model === 'string' && model.trim().length > 0,
+  );
+}
+
+/**
+ * Runtime type guard for a card's per-provider thinking-level map.
+ *
+ * Strict for the same reason {@link isCardPreferredModels} is: an unknown
+ * provider key or a blank value is rejected rather than accepted-and-ignored,
+ * so nothing unusable is ever stored in board state. The card-file parser and
+ * the board mutations drop such entries before they reach state, which keeps a
+ * hand-edited card file forgiving while this guard stays the hard boundary for
+ * posted and persisted data.
+ */
+export function isCardThinkingLevels(value: unknown): value is CardThinkingLevels {
+  if (!isRecord(value) || Array.isArray(value)) {
+    return false;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    return false;
+  }
+  return entries.every(
+    ([provider, level]) =>
+      isAgentCliProviderId(provider) && typeof level === 'string' && level.trim().length > 0,
   );
 }
 

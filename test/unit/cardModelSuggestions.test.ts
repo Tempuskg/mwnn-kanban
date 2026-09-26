@@ -14,6 +14,12 @@ interface PreferredModelDrafts {
   changes(card: { preferredModels?: Record<string, string> }): { provider: string; model: string }[];
 }
 
+interface ThinkingLevelDrafts {
+  get(providerId: string): string;
+  set(providerId: string, value: string): void;
+  changes(card: { thinkingLevels?: Record<string, string> }): { provider: string; level: string }[];
+}
+
 interface BoardWebviewTestExports {
   modelSuggestionsFor(
     suggestions: AgentCliModelSuggestions | null | undefined,
@@ -23,10 +29,14 @@ interface BoardWebviewTestExports {
     providerIds: readonly string[],
     preferredModels: Record<string, string> | undefined,
   ): PreferredModelDrafts;
+  createThinkingLevelDrafts(
+    providerIds: readonly string[],
+    thinkingLevels: Record<string, string> | undefined,
+  ): ThinkingLevelDrafts;
 }
 
 // In Node, media/board.js returns its pure helpers before the browser bootstrap.
-const { modelSuggestionsFor, createPreferredModelDrafts } =
+const { modelSuggestionsFor, createPreferredModelDrafts, createThinkingLevelDrafts } =
   require('../../../media/board.js') as BoardWebviewTestExports;
 
 const PROVIDER_IDS = ['copilot', 'codex', 'claude-code', 'cursor'] as const;
@@ -107,5 +117,42 @@ suite('card model suggestions', () => {
 
     assert.deepEqual(drafts.changes(card), [{ provider: 'codex', model: '' }]);
     assert.equal(drafts.get('claude-code'), 'claude-opus-5');
+  });
+});
+
+suite('card thinking level drafts', () => {
+  test('reports only the provider whose level changed, as a level change', () => {
+    const card = { thinkingLevels: { codex: 'high' } };
+    const drafts = createThinkingLevelDrafts(PROVIDER_IDS, card.thinkingLevels);
+
+    assert.equal(drafts.get('codex'), 'high');
+    assert.deepEqual(drafts.changes(card), []);
+
+    drafts.set('cursor', '  medium  ');
+
+    assert.deepEqual(drafts.changes(card), [{ provider: 'cursor', level: 'medium' }]);
+    assert.equal(drafts.get('codex'), 'high');
+  });
+
+  test('an emptied field is a clear, not a no-op', () => {
+    const card = { thinkingLevels: { codex: 'high' } };
+    const drafts = createThinkingLevelDrafts(PROVIDER_IDS, card.thinkingLevels);
+
+    drafts.set('codex', '   ');
+
+    assert.deepEqual(drafts.changes(card), [{ provider: 'codex', level: '' }]);
+  });
+
+  test('levels and models are tracked independently for the same provider', () => {
+    const card = { preferredModels: { codex: 'gpt-5-codex' }, thinkingLevels: { codex: 'high' } };
+    const models = createPreferredModelDrafts(PROVIDER_IDS, card.preferredModels);
+    const levels = createThinkingLevelDrafts(PROVIDER_IDS, card.thinkingLevels);
+
+    levels.set('codex', 'low');
+
+    // Editing one axis leaves the other reporting no change, so only the field
+    // the user actually touched is posted.
+    assert.deepEqual(models.changes(card), []);
+    assert.deepEqual(levels.changes(card), [{ provider: 'codex', level: 'low' }]);
   });
 });

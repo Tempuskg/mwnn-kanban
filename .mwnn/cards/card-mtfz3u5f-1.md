@@ -1,11 +1,11 @@
 ---
 id: card-mtfz3u5f-1
 title: Add Rabbit  for PR requests
-column: col-mqxta6ho-4
-position: 1000
+column: col-mqwk2njn-4
+position: -35000
 assignee: { kind: human }
 createdAt: 1788104256099
-updatedAt: 1789842648192
+updatedAt: 1790434954433
 ---
 
 ## Description

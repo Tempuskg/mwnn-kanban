@@ -12,7 +12,14 @@ import { cardNeedsDefinition } from './cardDefinition';
 import { copyCardPathToClipboard } from './cardPath';
 import { agentCliModelSuggestions, readAgentCliModelCatalog } from './agentCliModels';
 import { canMoveCardToColumn } from './utils';
-import { isWebviewToHostMessage, type CliRunStatus, type HostToWebviewMessage, type WebviewToHostMessage } from './types';
+import {
+  isWebviewToHostMessage,
+  sanitizeCardBadges,
+  type CardBadge,
+  type CliRunStatus,
+  type HostToWebviewMessage,
+  type WebviewToHostMessage,
+} from './types';
 
 const VIEW_TYPE = 'mwnn-kanban.board';
 
@@ -54,6 +61,12 @@ export class BoardPanel {
    * panel's presence or focus.
    */
   static readonly onDidChangeState = BoardPanel.onDidChangeStateEmitter.event;
+
+  /**
+   * Latest card badges from the Pro board capability. Held statically so a
+   * board opened after the push still shows them; empty when Pro is absent.
+   */
+  private static cardBadges: readonly CardBadge[] = [];
 
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -185,6 +198,20 @@ export class BoardPanel {
     void panel.panel.webview.postMessage(message);
   }
 
+  /** Replace the card badge set and push it to the board if it is open. */
+  static setCardBadges(badges: readonly CardBadge[]): void {
+    BoardPanel.cardBadges = sanitizeCardBadges(badges);
+    BoardPanel.lifecycle.current?.postCardBadges();
+  }
+
+  private postCardBadges(): void {
+    if (!this.webviewReady) {
+      return;
+    }
+    const message: HostToWebviewMessage = { type: 'cardBadges', badges: BoardPanel.cardBadges };
+    void this.panel.webview.postMessage(message);
+  }
+
   /** Push the current store state into the webview. */
   postState(): void {
     const config = vscode.workspace.getConfiguration('mwnn-kanban');
@@ -218,6 +245,8 @@ export class BoardPanel {
     switch (message.type) {
       case 'ready':
         this.webviewReady = true;
+        // Badges first, so the first board render already carries them.
+        this.postCardBadges();
         this.postState();
         return;
       case 'requestAddCard': {
@@ -357,6 +386,9 @@ export class BoardPanel {
         break;
       case 'setPreferredModel':
         await this.deps.store.setPreferredModel(message.cardId, message.provider, message.preferredModel);
+        break;
+      case 'setThinkingLevel':
+        await this.deps.store.setThinkingLevel(message.cardId, message.provider, message.thinkingLevel);
         break;
       case 'runCardWithAI':
         await this.deps.runCardWithAI(message.cardId);

@@ -12,6 +12,7 @@ import {
   type BoardState,
   type Card,
   type CardPreferredModels,
+  type CardThinkingLevels,
   type Column,
   type ColumnRole,
 } from './types';
@@ -152,6 +153,10 @@ function cloneCard(card: Card): Card {
   const preferredModels = clonePreferredModels(card.preferredModels);
   if (preferredModels !== undefined) {
     clone.preferredModels = preferredModels;
+  }
+  const thinkingLevels = cloneThinkingLevels(card.thinkingLevels);
+  if (thinkingLevels !== undefined) {
+    clone.thinkingLevels = thinkingLevels;
   }
   return clone;
 }
@@ -431,6 +436,54 @@ function clonePreferredModels(
 }
 
 /**
+ * Shared normalization for a thinking level. The same rule the preferred model
+ * gets, and deliberately the same function underneath: both are free-form
+ * values that have to survive as a *single* spawn argument, so a blank,
+ * whitespace-only, or control-character value is "not set" rather than an
+ * error. Named separately so call sites read as what they normalize.
+ */
+export function normalizeThinkingLevel(value: string | undefined): string | undefined {
+  return normalizePreferredModel(value);
+}
+
+/**
+ * Validate a whole per-provider thinking-level map, exactly as
+ * {@link normalizeCardPreferredModels} validates the model map: unknown
+ * provider keys and unusable values are dropped rather than stored, and a map
+ * left with no entries becomes undefined so the property is omitted entirely.
+ */
+export function normalizeCardThinkingLevels(
+  value: CardThinkingLevels | undefined,
+): CardThinkingLevels | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized: CardThinkingLevels = {};
+  let count = 0;
+  for (const [provider, level] of Object.entries(value)) {
+    // Only known providers are read, which is what makes an unknown key a no-op
+    // rather than an error: a stale or misspelled key simply never matches.
+    if (!isAgentCliProviderId(provider)) {
+      continue;
+    }
+    const usable = normalizeThinkingLevel(typeof level === 'string' ? level : undefined);
+    if (usable === undefined) {
+      continue;
+    }
+    normalized[provider] = usable;
+    count += 1;
+  }
+  return count > 0 ? normalized : undefined;
+}
+
+function cloneThinkingLevels(
+  value: CardThinkingLevels | undefined,
+): CardThinkingLevels | undefined {
+  return normalizeCardThinkingLevels(value);
+}
+
+/**
  * The model this card names for the provider a dispatch is actually running
  * on, or undefined when it names none for that CLI.
  *
@@ -481,6 +534,65 @@ export function setPreferredModel(
         card.preferredModels = remaining;
       } else {
         delete card.preferredModels;
+      }
+      card.updatedAt = Date.now();
+      break;
+    }
+  }
+  return next;
+}
+
+/**
+ * The thinking level this card names for the provider a dispatch is actually
+ * running on, or undefined when it names none for that CLI.
+ *
+ * The level's read path mirrors the model's exactly, so a provider the credit
+ * fallback swapped in picks up its own level rather than inheriting one spelled
+ * for the CLI whose allowance ran out.
+ */
+export function cardThinkingLevelFor(
+  card: Pick<Card, 'thinkingLevels'>,
+  provider: AgentCliProviderId,
+): string | undefined {
+  return normalizeThinkingLevel(card.thinkingLevels?.[provider]);
+}
+
+/**
+ * Set (or clear) the thinking level a card should be run at **on one
+ * provider**. Free-form and passed straight through to that agent CLI, so it is
+ * only normalized here: anything unusable as a single spawn argument clears
+ * that provider's entry, a cleared entry is removed rather than written as an
+ * empty value, and a card left with no entries loses the property entirely.
+ *
+ * Scoped to one provider so editing the level for one CLI never disturbs what
+ * the card names for the other three - and independent of the model, so
+ * changing one never rewrites the other.
+ */
+export function setThinkingLevel(
+  state: BoardState,
+  cardId: string,
+  provider: AgentCliProviderId,
+  thinkingLevel: string | undefined,
+): BoardState {
+  const next = cloneBoard(state);
+  const normalized = normalizeThinkingLevel(thinkingLevel);
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      // Rebuilt over the fixed provider list rather than mutated in place, so
+      // the only entry this edit can touch is the one it names.
+      const levels: CardThinkingLevels = {};
+      for (const known of AGENT_CLI_PROVIDER_IDS) {
+        const level = known === provider ? normalized : card.thinkingLevels?.[known];
+        if (level !== undefined) {
+          levels[known] = level;
+        }
+      }
+      const remaining = normalizeCardThinkingLevels(levels);
+      if (remaining !== undefined) {
+        card.thinkingLevels = remaining;
+      } else {
+        delete card.thinkingLevels;
       }
       card.updatedAt = Date.now();
       break;

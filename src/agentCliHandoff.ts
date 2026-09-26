@@ -10,19 +10,27 @@ import {
   AGENT_CLI_STAGE_MODELS_SETTING,
   EMPTY_AGENT_CLI_MODEL_CATALOG,
   EMPTY_AGENT_CLI_STAGE_MODELS,
+  EMPTY_AGENT_CLI_STAGE_THINKING_LEVELS,
+  EMPTY_AGENT_CLI_THINKING_LEVELS,
   agentCliModelSourceLabel,
+  agentCliThinkingLevelSourceLabel,
   describeAgentCliModelSource,
+  describeAgentCliThinkingLevelSource,
   resolveAgentCliModel,
+  resolveAgentCliThinkingLevel,
   type AgentCliModelCatalog,
   type AgentCliModelSource,
   type AgentCliStageModels,
+  type AgentCliStageThinkingLevels,
+  type AgentCliThinkingLevelDefaults,
+  type AgentCliThinkingLevelSource,
 } from './agentCliModels';
 import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
 import type { AgentCliHandoffKind } from './agentCliStages';
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
 import type { BoardState, Card } from './types';
-import { cardPreferredModelFor } from './utils';
+import { cardPreferredModelFor, cardThinkingLevelFor } from './utils';
 
 // The provider identity lives in its own module so the model catalog can depend
 // on it without importing the spawn machinery; re-exported here so callers keep
@@ -60,11 +68,41 @@ interface AgentCliModelSpec {
   readonly insertAt?: number;
 }
 
+/**
+ * How one provider names a *thinking level* - its reasoning effort - on its own
+ * command line, as data rather than as a branch per CLI.
+ *
+ * Two shapes cover every CLI seen so far, and both produce separate argv
+ * entries: a plain flag taking the level as the next argument
+ * (`--reasoning-effort high`), and a config-override flag taking one
+ * `key=value` argument (`-c model_reasoning_effort=high`), which `valuePrefix`
+ * selects. A provider that offers no effort selection at all simply omits
+ * `thinking`, and a card that names a level is then run at that CLI's default
+ * effort rather than failing.
+ */
+interface AgentCliThinkingSpec {
+  /** The CLI's own flag, e.g. `-c` or `--reasoning-effort`. */
+  readonly flag: string;
+  /**
+   * Prefix joined to the level to form the flag's single value argument, for a
+   * CLI that spells effort as a config override rather than a dedicated flag.
+   * Omitted for a plain `flag level` pair.
+   */
+  readonly valuePrefix?: string;
+  /**
+   * Index in the provider's fixed `args` at which the arguments are spliced in.
+   * Defaults to the end, which is wrong only for a CLI whose fixed argv ends in
+   * a positional argument (Codex's stdin `-`).
+   */
+  readonly insertAt?: number;
+}
+
 interface AgentCliProviderSpec {
   readonly defaultCommands: readonly string[];
   /** Fixed, single-line argv. The prompt itself always travels over stdin. */
   readonly args: readonly string[];
   readonly model?: AgentCliModelSpec;
+  readonly thinking?: AgentCliThinkingSpec;
 }
 
 /**
@@ -100,6 +138,14 @@ interface AgentCliProviderSpec {
  * as one further spawn argument, so spaces, quotes, and shell metacharacters
  * stay data. A card with no model, a stage with no rule, and a provider with no
  * configured workspace default produce exactly the argv below.
+ *
+ * The *thinking level* a dispatch runs at is resolved through the same layers
+ * and spliced in the same way, from each provider's `thinking` spec. Only Codex
+ * currently exposes reasoning effort on its command line, as the
+ * `model_reasoning_effort` config override; Copilot, Claude Code, and Cursor
+ * publish no such argument, so they carry no spec and a level resolved for them
+ * is reported as not applied while the run proceeds on that CLI's own default
+ * effort. Adding one later is a single entry here - nothing else changes.
  */
 const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   copilot: {
@@ -112,6 +158,9 @@ const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
     args: ['exec', '--sandbox', 'workspace-write', '-'],
     // After `exec`, and before the trailing `-` that names stdin as the prompt.
     model: { flag: '--model', insertAt: 1 },
+    // Codex has no dedicated effort flag; the level is a config override, which
+    // it takes as one `key=value` argument after `-c`.
+    thinking: { flag: '-c', valuePrefix: 'model_reasoning_effort=', insertAt: 1 },
   },
   'claude-code': {
     defaultCommands: ['claude'],
@@ -134,6 +183,19 @@ export const AGENT_CLI_MODEL_FLAGS: Readonly<Record<AgentCliProviderId, string |
   Object.freeze(
     Object.fromEntries(
       AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, PROVIDER_SPECS[provider].model?.flag]),
+    ) as Record<AgentCliProviderId, string | undefined>,
+  );
+
+/**
+ * The thinking-level flag each provider accepts, or undefined for a provider
+ * that takes no effort selection. Exported as data, like the model flags, so
+ * callers and tests can reason about support without reaching into the spawn
+ * logic - and so the "unsupported" path stays injectable.
+ */
+export const AGENT_CLI_THINKING_FLAGS: Readonly<Record<AgentCliProviderId, string | undefined>> =
+  Object.freeze(
+    Object.fromEntries(
+      AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, PROVIDER_SPECS[provider].thinking?.flag]),
     ) as Record<AgentCliProviderId, string | undefined>,
   );
 
@@ -226,6 +288,102 @@ export function resolveAgentCliModelSelection(
 }
 
 /**
+ * The outcome of turning a resolved thinking level into CLI arguments for one
+ * provider. `applied: false` is not a failure: the run continues at the
+ * provider's own default effort, and `reason` explains why the level was
+ * skipped so it never happens silently. A level that cannot be applied must
+ * never be the reason a dispatch does not happen.
+ */
+export interface AgentCliThinkingSelection {
+  /** The resolved level, exactly as it will reach the CLI. */
+  readonly requested: string;
+  /** Which layer supplied this level: card, stage rule, workspace, escalation. */
+  readonly source: AgentCliThinkingLevelSource;
+  /** The stage this selection was resolved for, when one was in hand. */
+  readonly stage?: AgentCliHandoffKind;
+  readonly applied: boolean;
+  /** The provider's own argv entries when applied; empty otherwise. */
+  readonly args: readonly string[];
+  readonly reason?: string;
+}
+
+export interface AgentCliThinkingResolutionOptions {
+  /** Per-provider workspace defaults; defaults to "nothing configured". */
+  readonly thinkingLevels?: AgentCliThinkingLevelDefaults;
+  /**
+   * The AI-loop stage being dispatched. Omitting it skips the stage layer
+   * entirely, which is what a caller with no stage in hand wants.
+   */
+  readonly stage?: AgentCliHandoffKind;
+  /** Per-stage level rules; defaults to "no rules configured". */
+  readonly stageThinkingLevels?: AgentCliStageThinkingLevels;
+  /**
+   * A level the AI loop's escalation ladder picked for this retry. Supersedes
+   * every configured layer, for the same reason an escalated model does.
+   */
+  readonly escalatedThinkingLevel?: string;
+  /**
+   * Injectable so the "provider takes no effort selection" path is exercisable
+   * for any provider, including one that currently has a spec.
+   */
+  readonly flags?: Readonly<Record<AgentCliProviderId, string | undefined>>;
+}
+
+/**
+ * Turn the resolved thinking level for one card on one provider at one stage
+ * into that provider's CLI arguments. The resolution order lives in
+ * `agentCliModels`; this only shapes the result for the command line. Returns
+ * undefined when no layer names a level, which is what keeps an unconfigured
+ * dispatch producing byte-identical arguments to the behavior before the effort
+ * axis existed.
+ */
+export function resolveAgentCliThinkingSelection(
+  provider: AgentCliProviderId,
+  cardThinkingLevel: string | undefined,
+  options: AgentCliThinkingResolutionOptions = {},
+): AgentCliThinkingSelection | undefined {
+  const stage = options.stage;
+  const resolved = resolveAgentCliThinkingLevel(
+    provider,
+    cardThinkingLevel,
+    options.thinkingLevels ?? EMPTY_AGENT_CLI_THINKING_LEVELS,
+    stage !== undefined
+      ? {
+          stage,
+          stageThinkingLevels:
+            options.stageThinkingLevels ?? EMPTY_AGENT_CLI_STAGE_THINKING_LEVELS,
+        }
+      : undefined,
+    options.escalatedThinkingLevel,
+  );
+  if (resolved === undefined) {
+    return undefined;
+  }
+
+  const requested = resolved.level;
+  const source = resolved.source;
+  // Carried on every selection, not just stage-sourced ones, so a message can
+  // always say which stage the run belonged to.
+  const stageField = stage !== undefined ? { stage } : {};
+  const flag = (options.flags ?? AGENT_CLI_THINKING_FLAGS)[provider];
+  if (flag === undefined) {
+    return {
+      requested,
+      source,
+      ...stageField,
+      applied: false,
+      reason: `${AGENT_CLI_LABELS[provider]} does not accept a thinking level, so ${describeAgentCliThinkingLevelSource(source)}${describeStageSuffix(source, stage)} "${requested}" was not applied and the run used that CLI's default thinking level.`,
+      args: [],
+    };
+  }
+  const spec = PROVIDER_SPECS[provider].thinking;
+  // One value argument either way, so a level containing a space or a shell
+  // metacharacter can never become a second argument or a command.
+  const value = spec?.valuePrefix !== undefined ? `${spec.valuePrefix}${requested}` : requested;
+  return { requested, source, ...stageField, applied: true, args: [flag, value] };
+}
+
+/**
  * ` for the definition stage`, but only for a stage-sourced model: naming the
  * stage is what points the user at the right key in the settings object, and it
  * would be noise on a card or workspace model that applies to every stage.
@@ -243,22 +401,40 @@ function describeStageSuffix(
 }
 
 /**
- * The provider's fixed argv with the resolved model arguments spliced in. The
- * model value stays one argument, so a name containing spaces, quotes, or shell
- * metacharacters can never become a second argument or a command.
+ * The provider's fixed argv with the resolved model and thinking-level
+ * arguments spliced in. Every resolved value stays exactly one argument, so a
+ * name or level containing spaces, quotes, or shell metacharacters can never
+ * become a second argument or a command.
+ *
+ * Both axes can target the same index (Codex splices both after `exec`), so the
+ * insertions are applied from the highest index down and, at a tie, the model
+ * lands before the level. That makes the argv a pure function of the two
+ * selections rather than of the order this function happens to handle them in.
  */
 function providerArgs(
   provider: AgentCliProviderId,
   selection: AgentCliModelSelection | undefined,
+  thinkingSelection?: AgentCliThinkingSelection,
 ): string[] {
   const spec = PROVIDER_SPECS[provider];
   const args = [...spec.args];
-  if (selection === undefined || !selection.applied || selection.args.length === 0) {
-    return args;
+  const clamp = (index: number | undefined): number =>
+    Math.min(Math.max(index ?? args.length, 0), args.length);
+
+  const insertions: { readonly index: number; readonly order: number; readonly args: readonly string[] }[] = [];
+  if (selection?.applied && selection.args.length > 0) {
+    insertions.push({ index: clamp(spec.model?.insertAt), order: 0, args: selection.args });
+  }
+  if (thinkingSelection?.applied && thinkingSelection.args.length > 0) {
+    insertions.push({ index: clamp(spec.thinking?.insertAt), order: 1, args: thinkingSelection.args });
   }
 
-  const insertAt = Math.min(Math.max(spec.model?.insertAt ?? args.length, 0), args.length);
-  args.splice(insertAt, 0, ...selection.args);
+  // Descending index so an earlier splice never shifts a later one's target;
+  // descending `order` at a tie so the model ends up first once both are in.
+  insertions.sort((left, right) => right.index - left.index || right.order - left.order);
+  for (const insertion of insertions) {
+    args.splice(insertion.index, 0, ...insertion.args);
+  }
   return args;
 }
 
@@ -624,8 +800,10 @@ export interface AgentCliInvocation {
   /** Hand-off prompt, written to the process's stdin; argv stays single-line. */
   readonly stdin: string;
   readonly cwd: string;
-  /** Present only when the card named a model; describes how it was handled. */
+  /** Present only when some layer named a model; describes how it was handled. */
   readonly modelSelection?: AgentCliModelSelection;
+  /** Present only when some layer named a thinking level; likewise. */
+  readonly thinkingSelection?: AgentCliThinkingSelection;
 }
 
 export function buildAgentCliInvocation(
@@ -633,8 +811,9 @@ export function buildAgentCliInvocation(
   prompt: string,
   cwd: string,
   modelSelection?: AgentCliModelSelection,
+  thinkingSelection?: AgentCliThinkingSelection,
 ): AgentCliInvocation {
-  const args = providerArgs(target.provider, modelSelection);
+  const args = providerArgs(target.provider, modelSelection, thinkingSelection);
   const invocation: AgentCliInvocation = {
     provider: target.provider,
     label: target.label,
@@ -643,7 +822,11 @@ export function buildAgentCliInvocation(
     stdin: prompt,
     cwd,
   };
-  return modelSelection ? { ...invocation, modelSelection } : invocation;
+  return {
+    ...invocation,
+    ...(modelSelection ? { modelSelection } : {}),
+    ...(thinkingSelection ? { thinkingSelection } : {}),
+  };
 }
 
 export interface PreparedAgentCliInvocation {
@@ -653,8 +836,10 @@ export interface PreparedAgentCliInvocation {
 
 export interface PrepareAgentCliInvocationOptions {
   readonly platform?: NodeJS.Platform;
-  /** Already-resolved card model; omitted when the card names none. */
+  /** Already-resolved model selection; omitted when no layer named one. */
   readonly modelSelection?: AgentCliModelSelection;
+  /** Already-resolved thinking level; omitted when no layer named one. */
+  readonly thinkingSelection?: AgentCliThinkingSelection;
 }
 
 /**
@@ -668,12 +853,18 @@ export async function prepareAgentCliInvocation(
   cwd: string,
   options: PrepareAgentCliInvocationOptions = {},
 ): Promise<PreparedAgentCliInvocation> {
-  const invocation = buildAgentCliInvocation(target, prompt, cwd, options.modelSelection);
+  const invocation = buildAgentCliInvocation(
+    target,
+    prompt,
+    cwd,
+    options.modelSelection,
+    options.thinkingSelection,
+  );
   if (target.provider !== 'cursor') {
     return { invocation };
   }
 
-  const cursorArgs = providerArgs('cursor', options.modelSelection);
+  const cursorArgs = providerArgs('cursor', options.modelSelection, options.thinkingSelection);
   const platform = options.platform ?? process.platform;
   const unwrapped = await resolveCursorWindowsLaunch(target.executable, platform);
   if (unwrapped) {
@@ -1066,6 +1257,26 @@ export interface AgentCliCardHandoff {
    * for this dispatch only; nothing is written back to the card or settings.
    */
   readonly escalatedModel?: string;
+  /**
+   * Per-provider workspace default thinking levels, already validated. Omitted
+   * means "nothing configured", so the card's own level is the only one that
+   * can apply.
+   */
+  readonly thinkingLevels?: AgentCliThinkingLevelDefaults;
+  /**
+   * Per-stage thinking-level rules, already validated. Resolved against this
+   * handoff's own `kind`, so each stage of one loop run can think as hard as
+   * that stage warrants.
+   */
+  readonly stageThinkingLevels?: AgentCliStageThinkingLevels;
+  /**
+   * A thinking level the AI loop's escalation ladder picked for this retry.
+   * Supersedes every configured layer for this dispatch only. The shipped
+   * ladder configures model names only, so nothing supplies this yet; the
+   * parameter exists so the escalation layer of the resolution order is real
+   * rather than notional the day the ladder format grows one.
+   */
+  readonly escalatedThinkingLevel?: string;
 }
 
 /**
@@ -1113,6 +1324,13 @@ export interface AgentCliCardHandoffResult {
    * model that could not be honored is never dropped silently.
    */
   readonly modelSelection?: AgentCliModelSelection;
+  /**
+   * How the resolved thinking level was handled for this dispatch. Absent when
+   * no layer named one. Callers surface `applied: false` so a level that could
+   * not be honored is never dropped silently - it is reported, and the run
+   * proceeds at the CLI's own default effort.
+   */
+  readonly thinkingSelection?: AgentCliThinkingSelection;
 }
 
 export interface AgentCliCardHandoffOptions {
@@ -1164,18 +1382,45 @@ export async function runAgentCliCardHandoff(
       ...(handoff.escalatedModel !== undefined ? { escalatedModel: handoff.escalatedModel } : {}),
     },
   );
-  const withModel = (result: AgentCliCardHandoffResult): AgentCliCardHandoffResult =>
-    modelSelection ? { ...result, modelSelection } : result;
+  // The effort axis resolves per dispatch from the same card snapshot, against
+  // the same provider and stage, so a level and a model can never be read from
+  // different states of the board.
+  const thinkingSelection = resolveAgentCliThinkingSelection(
+    handoff.target.provider,
+    cardThinkingLevelFor(before, handoff.target.provider),
+    {
+      stage: handoff.kind,
+      ...(handoff.thinkingLevels !== undefined ? { thinkingLevels: handoff.thinkingLevels } : {}),
+      ...(handoff.stageThinkingLevels !== undefined
+        ? { stageThinkingLevels: handoff.stageThinkingLevels }
+        : {}),
+      ...(handoff.escalatedThinkingLevel !== undefined
+        ? { escalatedThinkingLevel: handoff.escalatedThinkingLevel }
+        : {}),
+    },
+  );
+  const withModel = (result: AgentCliCardHandoffResult): AgentCliCardHandoffResult => ({
+    ...result,
+    ...(modelSelection ? { modelSelection } : {}),
+    ...(thinkingSelection ? { thinkingSelection } : {}),
+  });
 
   await handoff.store.appendActivity(
     handoff.cardId,
-    formatAgentCliStartEntry(handoff.target.label, handoff.kind, now(), modelSelection),
+    formatAgentCliStartEntry(
+      handoff.target.label,
+      handoff.kind,
+      now(),
+      modelSelection,
+      thinkingSelection,
+    ),
   );
   const afterStart = findCard(await handoff.store.reload(), handoff.cardId);
   const activityBaseline = (afterStart?.activity ?? before.activity ?? '').length;
   const prepared = await prepareAgentCliInvocation(handoff.target, handoff.prompt, handoff.cwd, {
     ...(options.platform !== undefined ? { platform: options.platform } : {}),
     ...(modelSelection !== undefined ? { modelSelection } : {}),
+    ...(thinkingSelection !== undefined ? { thinkingSelection } : {}),
   });
   let processResult: AgentCliProcessResult;
   try {
@@ -1511,6 +1756,7 @@ export function formatAgentCliStartEntry(
   kind: AgentCliHandoffKind,
   timestamp: Date = new Date(),
   modelSelection?: AgentCliModelSelection,
+  thinkingSelection?: AgentCliThinkingSelection,
 ): string {
   return [
     `### ${timestamp.toISOString()} - ${providerLabel} ${kind} handoff started`,
@@ -1523,6 +1769,16 @@ export function formatAgentCliStartEntry(
           modelSelection.applied
             ? `${agentCliModelSourceLabel(modelSelection.source)}${describeStageSuffix(modelSelection.source, modelSelection.stage)}: ${modelSelection.requested}.`
             : `${agentCliModelSourceLabel(modelSelection.source)}${describeStageSuffix(modelSelection.source, modelSelection.stage)} "${modelSelection.requested}" was not applied: ${modelSelection.reason ?? `${providerLabel} does not accept a model selection.`}`,
+        ]
+      : []),
+    // The effort a dispatch actually ran at belongs in the same durable record
+    // and for the same reason: a card that fell back to the CLI's own default
+    // should be explainable later without the run's notifications.
+    ...(thinkingSelection
+      ? [
+          thinkingSelection.applied
+            ? `${agentCliThinkingLevelSourceLabel(thinkingSelection.source)}${describeStageSuffix(thinkingSelection.source, thinkingSelection.stage)}: ${thinkingSelection.requested}.`
+            : `${agentCliThinkingLevelSourceLabel(thinkingSelection.source)}${describeStageSuffix(thinkingSelection.source, thinkingSelection.stage)} "${thinkingSelection.requested}" was not applied: ${thinkingSelection.reason ?? `${providerLabel} does not accept a thinking level.`}`,
         ]
       : []),
   ].join('\n');

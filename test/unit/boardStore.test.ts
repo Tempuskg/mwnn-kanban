@@ -164,6 +164,71 @@ suite('board store', () => {
     assert.equal(state.columns[0]!.cards[0]!.title, 'Task');
   });
 
+  test('recovers cards into their original default columns after column ids were regenerated', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [
+        { id: 'col-newbatch-1', title: 'Backlog', role: 'backlog', wipLimit: null, reverseWip: null },
+        { id: 'col-newbatch-2', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 },
+        { id: 'col-newbatch-3', title: 'In Progress', role: 'in-progress', wipLimit: null, reverseWip: null },
+        { id: 'col-newbatch-4', title: 'Verify', role: 'verify', wipLimit: null, reverseWip: null },
+        { id: 'col-newbatch-5', title: 'Done', role: 'done', wipLimit: null, reverseWip: null },
+      ],
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-ready.md': serializeCard({
+        columnId: 'col-oldbatch-2',
+        position: 1500,
+        card: { id: 'card-ready', title: 'Ready task', createdAt: 1 },
+      }),
+      '.mwnn/cards/card-verify.md': serializeCard({
+        columnId: 'col-oldbatch-4',
+        position: 500,
+        card: { id: 'card-verify', title: 'Verify task', createdAt: 2 },
+      }),
+      '.mwnn/cards/card-done.md': serializeCard({
+        columnId: 'col-oldbatch-5',
+        position: -1000,
+        card: { id: 'card-done', title: 'Done task', createdAt: 3 },
+      }),
+    });
+
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    assert.equal(store.getState().columns.length, 5);
+    assert.deepEqual(store.getState().columns[1]!.cards.map((card) => card.id), ['card-ready']);
+    assert.deepEqual(store.getState().columns[3]!.cards.map((card) => card.id), ['card-verify']);
+    assert.deepEqual(store.getState().columns[4]!.cards.map((card) => card.id), ['card-done']);
+
+    const recovered = parseCard(fileSystem.snapshot().get('.mwnn/cards/card-ready.md') ?? '');
+    assert.equal(recovered.columnId, 'col-newbatch-2');
+    assert.equal(recovered.position, 1500);
+  });
+
+  test('keeps an ambiguous orphan column separate instead of guessing its placement', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [
+        { id: 'col-newbatch-1', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 },
+      ],
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-custom.md': serializeCard({
+        columnId: 'customer-defined-column',
+        position: 1000,
+        card: { id: 'card-custom', title: 'Custom task', createdAt: 1 },
+      }),
+    });
+
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    assert.equal(store.getState().columns.length, 2);
+    assert.equal(store.getState().columns[1]!.id, 'customer-defined-column');
+    assert.equal(store.getState().columns[1]!.cards[0]!.id, 'card-custom');
+  });
+
   test('returns undefined when columns.json is absent', async () => {
     const state = await readBoardStateIfPresent({
       boardFolder: '.mwnn',
@@ -184,6 +249,24 @@ suite('board store', () => {
     assert.equal(state, undefined);
   });
 
+  test('does not rewrite columns when an existing card cannot be read', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const serializedColumns = serializeColumns(columnsDocument);
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializedColumns,
+      '.mwnn/cards/card-broken.md': 'not a card document',
+    });
+
+    await assert.rejects(
+      () => createBoardStore(createDeps({ fileSystem })),
+      /frontmatter/i,
+    );
+    assert.equal(fileSystem.snapshot().get('.mwnn/columns.json'), serializedColumns);
+  });
+
   test('keeps a default board in memory without creating files until the first mutation', async () => {
     const fileSystem = createFakeFileSystem();
     const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['A', 'Ready', 'Done'] }));
@@ -201,6 +284,39 @@ suite('board store', () => {
     assert.equal(columnsDocument.version, BOARD_FILE_VERSION);
     assert.equal(columnsDocument.columns[1]!.reverseWip, 3);
     assert.match(fileSystem.snapshot().get('.mwnn/README.md') ?? '', /source of truth/i);
+  });
+
+  test('persists a per-provider thinking level to the card file and reads it back', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready'] }));
+    const columnId = store.getState().columns[0]!.id;
+    await store.addCard(columnId, 'Think hard about this');
+    const cardId = store.getState().columns[0]!.cards[0]!.id;
+
+    await store.setPreferredModel(cardId, 'codex', 'gpt-5-codex');
+    await store.setThinkingLevel(cardId, 'codex', 'high');
+    await store.setThinkingLevel(cardId, 'cursor', 'medium');
+
+    const persisted = fileSystem.snapshot().get(`.mwnn/cards/${cardId}.md`) ?? '';
+    assert.ok(persisted.includes('thinkingLevel.codex: high'));
+    assert.ok(persisted.includes('thinkingLevel.cursor: medium'));
+
+    // Reloading goes through the store's own card sanitizer, which is where a
+    // field the board model carries but the clone forgets would disappear.
+    const reloaded = await store.reload();
+    assert.deepEqual(reloaded.columns[0]!.cards[0]!.thinkingLevels, {
+      codex: 'high',
+      cursor: 'medium',
+    });
+    assert.deepEqual(reloaded.columns[0]!.cards[0]!.preferredModels, { codex: 'gpt-5-codex' });
+
+    // Clearing the last level removes the key rather than writing it blank.
+    await store.setThinkingLevel(cardId, 'codex', '');
+    await store.setThinkingLevel(cardId, 'cursor', '');
+    assert.equal(
+      (fileSystem.snapshot().get(`.mwnn/cards/${cardId}.md`) ?? '').includes('thinkingLevel'),
+      false,
+    );
   });
 
   test('notifies after a mutation is persisted with cloned previous and current states', async () => {

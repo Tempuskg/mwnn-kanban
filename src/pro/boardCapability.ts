@@ -1,6 +1,6 @@
 import type * as vscode from 'vscode';
 import type { BoardStore, BoardStoreChange } from '../boardStore';
-import type { BoardState } from '../types';
+import { sanitizeCardBadges, type BoardState, type CardBadge } from '../types';
 import {
   BOARD_CAPABILITY_VERSION,
   type BoardCapabilityV1,
@@ -15,6 +15,7 @@ export interface CreateBoardCapabilityOptions {
   readonly readBoardAt: (rootFsPath: string, boardFolder: string) => Promise<BoardState | undefined>;
   readonly showBoard: () => void;
   readonly revealCard: (cardId: string) => boolean;
+  readonly setCardBadges?: (badges: readonly CardBadge[]) => void;
 }
 
 export function createBoardChangeEvent(
@@ -56,5 +57,10 @@ export function createBoardCapability(options: CreateBoardCapabilityOptions): Bo
       return options.revealCard(cardId);
     },
     cardFilePath: (cardId) => `${normalizedBoardFolder}/cards/${cardId}.md`,
+    ...(options.setCardBadges === undefined ? {} : {
+      setCardBadges: (badges: readonly CardBadge[]) => {
+        options.setCardBadges?.(sanitizeCardBadges(badges));
+      },
+    }),
   };
 }

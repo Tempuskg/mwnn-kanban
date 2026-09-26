@@ -8,6 +8,7 @@ import {
   type BoardChangeEvent,
 } from '../../src/pro';
 import type { BoardStoreChange } from '../../src/boardStore';
+import { CARD_BADGE_TEXT_MAX, sanitizeCardBadges, type CardBadge } from '../../src/types';
 import { addCard, defaultBoard } from '../../src/utils';
 
 const onDidChangeBoard = (() => ({ dispose: () => undefined })) as vscode.Event<BoardChangeEvent>;
@@ -85,5 +86,61 @@ suite('Board capability', () => {
         at: 1234,
       },
     );
+  });
+
+  test('omits setCardBadges when no badge sink is supplied so Pro can feature-detect it', () => {
+    const capability = createBoardCapability({
+      store: { getState: () => defaultBoard(['Ready']) },
+      workspaceRoot: 'C:\work\primary',
+      boardFolder: '.mwnn',
+      onDidChangeBoard,
+      readBoardAt: async () => undefined,
+      showBoard: () => undefined,
+      revealCard: () => false,
+    });
+
+    assert.equal('setCardBadges' in capability, false);
+    assert.equal(typeof capability.setCardBadges, 'undefined');
+  });
+
+  test('forwards sanitized card badges as a full replacement set', () => {
+    const pushes: (readonly CardBadge[])[] = [];
+    const capability = createBoardCapability({
+      store: { getState: () => defaultBoard(['Ready']) },
+      workspaceRoot: 'C:\work\primary',
+      boardFolder: '.mwnn',
+      onDidChangeBoard,
+      readBoardAt: async () => undefined,
+      showBoard: () => undefined,
+      revealCard: () => false,
+      setCardBadges: (badges) => {
+        pushes.push(badges);
+      },
+    });
+
+    assert.equal(typeof capability.setCardBadges, 'function');
+    capability.setCardBadges?.([
+      { cardId: 'card-1', text: '2.5h', title: '2h 30m tracked' },
+      { cardId: 'card-2', text: '   ' },
+      { cardId: 'card-3', text: '1h' },
+      { cardId: 'card-3', text: '1.5h' },
+      { text: 'orphan' } as unknown as CardBadge,
+    ]);
+    capability.setCardBadges?.([]);
+
+    assert.deepEqual(pushes, [
+      [
+        { cardId: 'card-1', text: '2.5h', title: '2h 30m tracked' },
+        { cardId: 'card-3', text: '1.5h' },
+      ],
+      [],
+    ]);
+  });
+
+  test('sanitizeCardBadges rejects non-arrays and caps text length', () => {
+    assert.deepEqual(sanitizeCardBadges(undefined), []);
+    assert.deepEqual(sanitizeCardBadges({ cardId: 'a', text: '1h' }), []);
+    const [badge] = sanitizeCardBadges([{ cardId: 'a', text: 'x'.repeat(100) }]);
+    assert.equal(badge?.text.length, CARD_BADGE_TEXT_MAX);
   });
 });

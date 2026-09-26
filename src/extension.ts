@@ -8,8 +8,12 @@ import {
 import {
   readAgentCliModelCatalog,
   readAgentCliStageModels,
+  readAgentCliStageThinkingLevels,
+  readAgentCliThinkingLevels,
   type AgentCliModelCatalog,
   type AgentCliStageModels,
+  type AgentCliStageThinkingLevels,
+  type AgentCliThinkingLevelDefaults,
 } from './agentCliModels';
 import {
   AGENT_CLI_LABELS,
@@ -236,6 +240,26 @@ function readAgentCliStageModelRules(): AgentCliStageModels {
   );
 }
 
+/**
+ * Per-provider workspace default thinking levels. Validated in
+ * `agentCliModels` for the same reason the model settings are: a malformed
+ * setting degrades to "no default configured" instead of breaking a dispatch.
+ */
+function readAgentCliThinkingLevelDefaults(): AgentCliThinkingLevelDefaults {
+  return readAgentCliThinkingLevels(
+    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('agentCliThinkingLevels', {}),
+  );
+}
+
+/** Per-stage thinking-level rules, validated the same way. */
+function readAgentCliStageThinkingLevelRules(): AgentCliStageThinkingLevels {
+  return readAgentCliStageThinkingLevels(
+    vscode.workspace
+      .getConfiguration('mwnn-kanban')
+      .get<unknown>('agentCliStageThinkingLevels', {}),
+  );
+}
+
 function getImplicitWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const activeUri = vscode.window.activeTextEditor?.document.uri;
   if (activeUri) {
@@ -326,6 +350,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       openBoard();
     },
     revealCard: (cardId) => BoardPanel.revealCard(cardId),
+    setCardBadges: (badges) => BoardPanel.setCardBadges(badges),
   });
 
   const inFlightCardHandoffs = createChatHandoffInFlight();
@@ -408,6 +433,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     configuredPaths: readAgentCliPaths(),
     modelCatalog: readAgentCliModels(),
     stageModels: readAgentCliStageModelRules(),
+    thinkingLevels: readAgentCliThinkingLevelDefaults(),
+    stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
     cwd: workspaceRoot.fsPath,
     store,
     runWithProgress: runAgentCliWithStatusBarProgress,
@@ -730,6 +757,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // Read once per loop run, like the CLI paths and fallback order.
         modelCatalog: readAgentCliModels(),
         stageModels: readAgentCliStageModelRules(),
+        thinkingLevels: readAgentCliThinkingLevelDefaults(),
+        stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
         escalation: readAiLoopModelEscalation(),
         cwd: workspaceRoot.fsPath,
         store,

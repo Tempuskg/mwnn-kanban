@@ -61,6 +61,28 @@ suite('serialization', () => {
     assert.deepEqual(parseCard(serialized), withoutDependencies);
   });
 
+  test('card markdown accepts a block-style dependency list from existing boards', () => {
+    const markdown = `---
+id: card-block-list
+title: Block list dependency
+column: col-ready
+position: 1000
+dependsOn:
+  - card-upstream
+createdAt: 1719360000000
+---
+
+## Description
+Depends on an existing card.
+
+## Acceptance criteria
+
+## Activity
+`;
+
+    assert.deepEqual(parseCard(markdown).card.dependsOn, ['card-upstream']);
+  });
+
   test('card markdown round-trips when optional sections are omitted', () => {
     const document: CardDocument = {
       columnId: 'col-backlog',

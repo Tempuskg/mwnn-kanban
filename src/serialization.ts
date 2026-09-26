@@ -4,11 +4,17 @@ import {
   type Assignee,
   type Card,
   type CardPreferredModels,
+  type CardThinkingLevels,
   type Column,
   type ColumnRole,
   isAssignee,
 } from './types';
-import { normalizeCardPreferredModels, normalizePreferredModel } from './utils';
+import {
+  normalizeCardPreferredModels,
+  normalizeCardThinkingLevels,
+  normalizePreferredModel,
+  normalizeThinkingLevel,
+} from './utils';
 
 /**
  * The frontmatter key prefix for a card's per-provider models.
@@ -35,6 +41,17 @@ const PREFERRED_MODEL_KEY_PREFIX = 'preferredModel.';
  */
 const LEGACY_PREFERRED_MODEL_KEY = 'preferredModel';
 
+/**
+ * The frontmatter key prefix for a card's per-provider thinking levels.
+ *
+ * Same flat repeated-scalar shape as {@link PREFERRED_MODEL_KEY_PREFIX}, and
+ * for the same reasons: no new parsing machinery, one quoting rule per line,
+ * and a one-line diff when a single provider's level changes. There is no
+ * legacy bare `thinkingLevel` key to read - the level was per-provider from the
+ * day it shipped - so a bare key is simply an unknown key and is ignored.
+ */
+const THINKING_LEVEL_KEY_PREFIX = 'thinkingLevel.';
+
 export const BOARD_FILE_VERSION = BOARD_STATE_VERSION;
 
 export type ColumnConfig = Pick<Column, 'id' | 'title' | 'role' | 'wipLimit' | 'reverseWip'>;
@@ -59,6 +76,7 @@ export function serializeCard(document: CardDocument): string {
     `position: ${document.position}`,
     ...(document.card.assignee ? [`assignee: ${serializeAssignee(document.card.assignee)}`] : []),
     ...serializePreferredModels(document.card.preferredModels),
+    ...serializeThinkingLevels(document.card.thinkingLevels),
     `createdAt: ${document.card.createdAt}`,
     ...(document.card.updatedAt !== undefined ? [`updatedAt: ${document.card.updatedAt}`] : []),
     ...(document.card.dependsOn && document.card.dependsOn.length > 0
@@ -101,6 +119,7 @@ export function parseCard(text: string): CardDocument {
   const assignee = optionalAssignee(frontmatter, 'assignee');
   const dependsOn = optionalStringArray(frontmatter, 'dependsOn');
   const preferredModels = optionalPreferredModels(frontmatter);
+  const thinkingLevels = optionalThinkingLevels(frontmatter);
 
   const card: Card = { id, title, createdAt };
   if (updatedAt !== undefined) {
@@ -123,6 +142,9 @@ export function parseCard(text: string): CardDocument {
   }
   if (preferredModels !== undefined) {
     card.preferredModels = preferredModels;
+  }
+  if (thinkingLevels !== undefined) {
+    card.thinkingLevels = thinkingLevels;
   }
 
   return { columnId, position, card };
@@ -154,11 +176,35 @@ export function parseColumns(text: string): ColumnsDocument {
 
 function parseFrontmatter(text: string): Record<string, string> {
   const entries: Record<string, string> = {};
+  let pendingListKey: string | undefined;
+  let pendingListItems: string[] = [];
+
+  const flushPendingList = (): void => {
+    if (pendingListKey === undefined) {
+      return;
+    }
+
+    entries[pendingListKey] = `[${pendingListItems.join(', ')}]`;
+    pendingListKey = undefined;
+    pendingListItems = [];
+  };
+
   for (const rawLine of normalizeNewlines(text).split('\n')) {
     const line = rawLine.trim();
     if (!line) {
       continue;
     }
+
+    if (pendingListKey === 'dependsOn' && line.startsWith('-')) {
+      const item = line.slice(1).trim();
+      if (item.length === 0) {
+        throw new Error('Invalid array frontmatter for dependsOn.');
+      }
+      pendingListItems.push(item);
+      continue;
+    }
+
+    flushPendingList();
 
     const separatorIndex = line.indexOf(':');
     if (separatorIndex === -1) {
@@ -167,8 +213,15 @@ function parseFrontmatter(text: string): Record<string, string> {
 
     const key = line.slice(0, separatorIndex).trim();
     const value = line.slice(separatorIndex + 1).trim();
+    if (key === 'dependsOn' && value.length === 0) {
+      pendingListKey = key;
+      pendingListItems = [];
+      continue;
+    }
     entries[key] = value;
   }
+
+  flushPendingList();
   return entries;
 }
 
@@ -353,6 +406,64 @@ function optionalPreferredModels(
   return normalizeCardPreferredModels(models);
 }
 
+/**
+ * One `thinkingLevel.<provider>` line per provider that names a level, in the
+ * fixed provider order so the file is stable across writes. A card with no
+ * entries writes no key at all, which is what keeps a card that never used the
+ * feature serializing byte-identically to before it existed.
+ */
+function serializeThinkingLevels(levels: CardThinkingLevels | undefined): string[] {
+  const normalized = normalizeCardThinkingLevels(levels);
+  if (normalized === undefined) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const level = normalized[provider];
+    if (level !== undefined) {
+      lines.push(`${THINKING_LEVEL_KEY_PREFIX}${provider}: ${serializeScalar(level)}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * The card's per-provider thinking levels. A blank, whitespace-only, or
+ * control-character value is treated as "no level for that provider" rather
+ * than thrown, and a key naming an unknown provider is never read - an odd
+ * value must never make the whole card file unreadable and drop the card off
+ * the board on reload.
+ */
+function optionalThinkingLevels(
+  frontmatter: Record<string, string>,
+): CardThinkingLevels | undefined {
+  const levels: CardThinkingLevels = {};
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const level = readThinkingLevelScalar(
+      frontmatter[`${THINKING_LEVEL_KEY_PREFIX}${provider}`],
+    );
+    if (level !== undefined) {
+      levels[provider] = level;
+    }
+  }
+  return normalizeCardThinkingLevels(levels);
+}
+
+function readThinkingLevelScalar(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  let parsed: string;
+  try {
+    parsed = parseScalar(value);
+  } catch {
+    return undefined;
+  }
+  return normalizeThinkingLevel(parsed);
+}
+
 function readPreferredModelScalar(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -374,6 +485,9 @@ function optionalStringArray(frontmatter: Record<string, string>, key: string): 
   }
 
   const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
   if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) {
     throw new Error(`Invalid array frontmatter for ${key}.`);
   }

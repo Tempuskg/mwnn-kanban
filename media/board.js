@@ -79,10 +79,42 @@
    * @param {Record<string, string> | null | undefined} preferredModels
    */
   function createPreferredModelDrafts(providerIds, preferredModels) {
+    return createPerProviderDrafts(providerIds, preferredModels, 'model', (card) =>
+      card ? card.preferredModels : undefined,
+    );
+  }
+
+  /**
+   * The card's thinking level per agent CLI while its details form is open.
+   *
+   * The same machinery as the model drafts, and deliberately so: the two are
+   * independent axes of one selection, edited through one provider selector, so
+   * a second hand-rolled draft store would be a second chance for the visible
+   * field and the saved value to disagree.
+   * @param {ReadonlyArray<string>} providerIds
+   * @param {Record<string, string> | null | undefined} thinkingLevels
+   */
+  function createThinkingLevelDrafts(providerIds, thinkingLevels) {
+    return createPerProviderDrafts(providerIds, thinkingLevels, 'level', (card) =>
+      card ? card.thinkingLevels : undefined,
+    );
+  }
+
+  /**
+   * One trimmed draft value per provider, with `changes` as the single answer
+   * to "what did the user actually alter" - so the unsaved-changes check and
+   * the save path cannot disagree, and an untouched provider is never posted
+   * and so never rewritten on the card file.
+   * @param {ReadonlyArray<string>} providerIds
+   * @param {Record<string, string> | null | undefined} values
+   * @param {string} valueKey name of the value field on each `changes` entry
+   * @param {(card: any) => Record<string, string> | undefined} readCardValues
+   */
+  function createPerProviderDrafts(providerIds, values, valueKey, readCardValues) {
     /** @type {Record<string, string>} */
     const drafts = {};
     for (const providerId of providerIds) {
-      drafts[providerId] = readStoredModel(preferredModels, providerId);
+      drafts[providerId] = readStoredProviderValue(values, providerId);
     }
 
     return {
@@ -98,16 +130,16 @@
         }
       },
       /**
-       * Which providers differ from the card, as `{ provider, model }` with an
-       * empty `model` meaning "cleared".
-       * @param {{ preferredModels?: Record<string, string> }} card
+       * Which providers differ from the card, as `{ provider, [valueKey] }`
+       * with an empty value meaning "cleared".
+       * @param {any} card
        */
       changes: (card) => {
         const changed = [];
         for (const providerId of providerIds) {
           const next = drafts[providerId] || '';
-          if (next !== readStoredModel(card ? card.preferredModels : undefined, providerId)) {
-            changed.push({ provider: providerId, model: next });
+          if (next !== readStoredProviderValue(readCardValues(card), providerId)) {
+            changed.push({ provider: providerId, [valueKey]: next });
           }
         }
         return changed;
@@ -116,11 +148,11 @@
   }
 
   /**
-   * @param {Record<string, string> | null | undefined} preferredModels
+   * @param {Record<string, string> | null | undefined} values
    * @param {string} providerId
    */
-  function readStoredModel(preferredModels, providerId) {
-    const stored = preferredModels ? preferredModels[providerId] : undefined;
+  function readStoredProviderValue(values, providerId) {
+    const stored = values ? values[providerId] : undefined;
     return typeof stored === 'string' ? stored.trim() : '';
   }
 
@@ -134,6 +166,7 @@
       createCardPathCopyFeedback,
       modelSuggestionsFor,
       createPreferredModelDrafts,
+      createThinkingLevelDrafts,
     };
     return;
   }
@@ -152,7 +185,8 @@
    *   activity?: string,
    *   assignee?: Assignee,
    *   dependsOn?: string[],
-   *   preferredModels?: Record<string, string>
+   *   preferredModels?: Record<string, string>,
+   *   thinkingLevels?: Record<string, string>
    * }} Card
    * @typedef {{
    *   id: string,
@@ -203,6 +237,13 @@
    * @type {Map<string, { providerLabel: string, statusLine: string }>}
    */
   const cliRunStatuses = new Map();
+  /**
+   * Card badges pushed by the extension host from the optional Pro package
+   * (observed tracked hours). Each push replaces the whole set; a card with no
+   * entry renders no badge at all. Empty when Pro is absent.
+   * @type {Map<string, { text: string, title: string }>}
+   */
+  let cardBadges = new Map();
 
   // Board zoom. Scales the rendered columns/cards visually (via the CSS `zoom`
   // property, which reflows so scrollbars and drag hit-testing stay correct)
@@ -258,6 +299,8 @@
       applyCardPathCopyResult(message);
     } else if (message && message.type === 'cliRunStatus') {
       applyCliRunStatus(message);
+    } else if (message && message.type === 'cardBadges') {
+      applyCardBadges(message.badges);
     }
   });
 
@@ -288,6 +331,30 @@
       }
     }
     render();
+  }
+
+  /** @param {unknown} badges */
+  function applyCardBadges(badges) {
+    const next = new Map();
+    if (Array.isArray(badges)) {
+      for (const badge of badges) {
+        if (badge && typeof badge.cardId === 'string' && typeof badge.text === 'string' && badge.text) {
+          next.set(badge.cardId, {
+            text: badge.text,
+            title: typeof badge.title === 'string' ? badge.title : '',
+          });
+        }
+      }
+    }
+    const unchanged = next.size === cardBadges.size
+      && [...next].every(([cardId, badge]) => {
+        const previous = cardBadges.get(cardId);
+        return previous !== undefined && previous.text === badge.text && previous.title === badge.title;
+      });
+    cardBadges = next;
+    if (!unchanged && board) {
+      render();
+    }
   }
 
   function render() {
@@ -622,6 +689,20 @@
         : 'Latest card status is BLOCKED';
       meta.appendChild(chip);
     }
+    if (hasDoneStatus(card.activity)) {
+      const chip = renderChip('Done', 'card-chip-done');
+      chip.title = 'Latest card status is DONE';
+      meta.appendChild(chip);
+    }
+
+    const badge = cardBadges.get(card.id);
+    if (badge) {
+      const chip = renderChip(badge.text, 'card-chip-badge');
+      if (badge.title) {
+        chip.title = badge.title;
+      }
+      meta.appendChild(chip);
+    }
 
     const cliRun = cliRunStatuses.get(card.id);
     if (cliRun) {
@@ -696,13 +777,27 @@
    * @param {string | undefined} activity
    */
   function hasBlockedStatus(activity) {
-    const matches = [...(activity ?? '').matchAll(/^\s*STATUS:\s*(.*)$/gim)];
-    if (matches.length === 0) {
-      return false;
-    }
+    return /^BLOCKED\b/i.test(latestActivityStatus(activity) ?? '');
+  }
 
+  /**
+   * Same newest-marker rule as hasBlockedStatus: true only when the latest
+   * STATUS line reports DONE. Display-only; never affects placement or flow.
+   * @param {string | undefined} activity
+   */
+  function hasDoneStatus(activity) {
+    return /^DONE\b/i.test(latestActivityStatus(activity) ?? '');
+  }
+
+  /**
+   * Returns the trimmed value of the newest `STATUS:` line in Activity, or
+   * undefined when none has been recorded.
+   * @param {string | undefined} activity
+   */
+  function latestActivityStatus(activity) {
+    const matches = [...(activity ?? '').matchAll(/^\s*STATUS:\s*(.*)$/gim)];
     const lastMatch = matches[matches.length - 1];
-    return /^BLOCKED\b/i.test(lastMatch?.[1]?.trim() ?? '');
+    return lastMatch?.[1]?.trim();
   }
 
   /**
@@ -1024,7 +1119,10 @@
     const activityInput = renderTextArea('Activity', activityDraft.initialValue, 8);
     activityInput.input.placeholder = 'No activity yet. Add notes or Markdown.';
     const assigneeControls = renderAssigneeControls(record.card.assignee);
-    const preferredModelControls = renderPreferredModelControls(record.card.preferredModels);
+    const preferredModelControls = renderPreferredModelControls(
+      record.card.preferredModels,
+      record.card.thinkingLevels,
+    );
     const dependencyControls = renderDependencyControls(record.card);
 
     form.append(
@@ -1092,6 +1190,7 @@
       assigneeKind: assigneeControls.kind,
       assigneeName: assigneeControls.name,
       preferredModels: preferredModelControls.read(),
+      thinkingLevels: preferredModelControls.readThinkingLevels(),
       getDependencies: dependencyControls.getDependencies,
       currentColumnId: record.column.id,
       columnSelect: columnSelector.select,
@@ -1193,6 +1292,10 @@
     }
 
     if (fields.preferredModels.changes(card).length > 0) {
+      return true;
+    }
+
+    if (fields.thinkingLevels.changes(card).length > 0) {
       return true;
     }
 
@@ -1474,8 +1577,15 @@
   }
 
   /**
-   * Renders the card's preferred AI model as "pick the CLI, then pick the
-   * model": a provider selector followed by a combo box for that provider.
+   * Renders the card's AI selection as "pick the CLI, then answer both
+   * questions about it": a provider selector followed by a combo box for that
+   * provider's model and a text field for its thinking level.
+   *
+   * One control rather than two because the two fields answer *the same*
+   * question about *the same* CLI - which model, and how hard it thinks - so
+   * they share the provider selector, the drafts, and the change detection. A
+   * separate thinking control would need its own provider selector, and the
+   * two could then be pointed at different CLIs at once.
    *
    * Per provider because the card does not choose the CLI it runs on - the
    * provider is picked at dispatch and can be swapped again by the credit
@@ -1492,15 +1602,20 @@
    * past remembering each CLI's spelling. Leaving a field blank is a real
    * state, not a missing value, so the placeholder and help text say what blank
    * means.
+   * The level is a plain free-form field with no list beside it, unlike the
+   * model: effort vocabularies are short and documented by each CLI, so there
+   * is nothing a curated suggestion setting would add that the placeholder and
+   * help text do not.
    * @param {Record<string, string> | undefined} preferredModels
+   * @param {Record<string, string> | undefined} thinkingLevels
    */
-  function renderPreferredModelControls(preferredModels) {
+  function renderPreferredModelControls(preferredModels, thinkingLevels) {
     const wrapper = document.createElement('div');
     wrapper.className = 'card-field';
 
     const label = document.createElement('span');
     label.className = 'card-field-label';
-    label.textContent = 'Preferred AI model per CLI';
+    label.textContent = 'Preferred AI model and thinking level per CLI';
 
     const row = document.createElement('div');
     row.className = 'card-model-row';
@@ -1529,7 +1644,21 @@
     const help = document.createElement('span');
     help.className = 'card-field-help';
 
+    const thinkingLabel = document.createElement('span');
+    thinkingLabel.className = 'card-model-thinking-label';
+    thinkingLabel.textContent = 'Thinking';
+
+    const thinkingInput = document.createElement('input');
+    thinkingInput.className = 'card-field-input';
+    thinkingInput.type = 'text';
+    thinkingInput.setAttribute('aria-label', 'Thinking level for the selected agent CLI');
+
+    const thinking = document.createElement('div');
+    thinking.className = 'card-model-thinking';
+    thinking.append(thinkingLabel, thinkingInput);
+
     const drafts = createPreferredModelDrafts(AGENT_CLI_PROVIDER_IDS, preferredModels);
+    const thinkingDrafts = createThinkingLevelDrafts(AGENT_CLI_PROVIDER_IDS, thinkingLevels);
 
     const selectedProvider = () =>
       AGENT_CLI_PROVIDERS.find((provider) => provider.id === providerSelect.value) ||
@@ -1544,7 +1673,9 @@
           continue;
         }
         const model = drafts.get(provider.id);
-        option.textContent = model.length > 0 ? provider.label + ' — ' + model : provider.label;
+        const level = thinkingDrafts.get(provider.id);
+        const named = [model, level ? level + ' thinking' : ''].filter((part) => part.length > 0);
+        option.textContent = named.length > 0 ? provider.label + ' — ' + named.join(', ') : provider.label;
       }
     };
 
@@ -1559,6 +1690,7 @@
         : 'No models are configured for ' + provider.label;
       suggest.setAttribute('aria-label', suggest.title);
       input.placeholder = 'Uses ' + provider.label + "'s default model";
+      thinkingInput.placeholder = 'Default effort';
     };
 
     const syncHelp = () => {
@@ -1576,12 +1708,19 @@
       const setNote = named > 0
         ? ' ' + named + ' of ' + AGENT_CLI_PROVIDERS.length + ' CLIs have a model set on this card.'
         : ' No CLI has a model set on this card.';
-      help.textContent = blankNote + listNote + setNote;
+      // The effort axis gets its own sentence rather than being folded into the
+      // model's: they are answered independently, and a level left blank means
+      // something different from a model left blank.
+      const thinkingNote = thinkingDrafts.get(provider.id).length > 0
+        ? ' Thinking: passed to ' + provider.label + ' as typed; only a CLI that accepts a reasoning-effort argument applies it, and a run never fails because it could not.'
+        : ' Thinking blank: ' + provider.label + ' runs this card at its own default effort.';
+      help.textContent = blankNote + listNote + setNote + thinkingNote;
     };
 
     providerSelect.addEventListener('change', () => {
       closeModelPicker();
       input.value = drafts.get(providerSelect.value);
+      thinkingInput.value = thinkingDrafts.get(providerSelect.value);
       syncSuggestions();
       syncHelp();
     });
@@ -1630,25 +1769,38 @@
     input.addEventListener('input', captureInput);
     input.addEventListener('change', captureInput);
 
+    // Same two events for the level, and the same write-through: nothing here
+    // checks the value against a list of effort names.
+    const captureThinkingInput = () => {
+      thinkingDrafts.set(providerSelect.value, thinkingInput.value);
+      syncProviderOptions();
+      syncHelp();
+    };
+    thinkingInput.addEventListener('input', captureThinkingInput);
+    thinkingInput.addEventListener('change', captureThinkingInput);
+
     // Open on a provider the card already names, so an existing model is
     // visible without hunting through the selector for it.
     const initialProvider =
-      AGENT_CLI_PROVIDERS.find((provider) => drafts.get(provider.id).length > 0) ||
-      AGENT_CLI_PROVIDERS[0];
+      AGENT_CLI_PROVIDERS.find(
+        (provider) => drafts.get(provider.id).length > 0 || thinkingDrafts.get(provider.id).length > 0,
+      ) || AGENT_CLI_PROVIDERS[0];
     providerSelect.value = initialProvider.id;
     input.value = drafts.get(initialProvider.id);
+    thinkingInput.value = thinkingDrafts.get(initialProvider.id);
 
     syncProviderOptions();
     syncSuggestions();
     syncHelp();
 
     combo.append(input, suggest);
-    row.append(providerSelect, combo);
+    row.append(providerSelect, combo, thinking);
     wrapper.append(label, row, help);
     return {
       wrapper,
       providerSelect,
       input,
+      thinkingInput,
       /**
        * The drafts, with the visible field folded in first so a value the
        * browser never reported through an event still reaches the save.
@@ -1656,6 +1808,11 @@
       read: () => {
         drafts.set(providerSelect.value, input.value);
         return drafts;
+      },
+      /** The thinking-level drafts, folded in the same way. */
+      readThinkingLevels: () => {
+        thinkingDrafts.set(providerSelect.value, thinkingInput.value);
+        return thinkingDrafts;
       },
     };
   }
@@ -2082,6 +2239,20 @@
             preferredModel: change.model,
           }
         : { type: 'setPreferredModel', cardId: card.id, provider: change.provider });
+    }
+
+    for (const change of fields.thinkingLevels.changes(card)) {
+      // Posted independently of the model, on the same rule: an emptied field
+      // clears that CLI's level and the host removes the frontmatter key, and
+      // only the providers that actually changed are posted.
+      post(change.level.length > 0
+        ? {
+            type: 'setThinkingLevel',
+            cardId: card.id,
+            provider: change.provider,
+            thinkingLevel: change.level,
+          }
+        : { type: 'setThinkingLevel', cardId: card.id, provider: change.provider });
     }
 
     if (fields.columnSelect && fields.currentColumnId) {

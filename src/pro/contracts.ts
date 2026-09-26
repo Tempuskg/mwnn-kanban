@@ -1,5 +1,7 @@
 import type * as vscode from 'vscode';
-import type { BoardState } from '../types';
+import type { BoardState, CardBadge } from '../types';
+
+export type { CardBadge } from '../types';
 
 export const BOARD_CAPABILITY_VERSION = 1 as const;
 
@@ -27,6 +29,11 @@ export interface BoardCapabilityV1 {
   readonly readBoardAt: (rootFsPath: string, boardFolder?: string) => Promise<BoardState | undefined>;
   readonly revealCard: (cardId: string) => Promise<boolean>;
   readonly cardFilePath: (cardId: string) => string;
+  /**
+   * Additive and optional: Pro feature-detects it with `typeof === 'function'`.
+   * Replaces the full badge set for this board; `[]` clears it.
+   */
+  readonly setCardBadges?: (badges: readonly CardBadge[]) => void;
 }
 
 export interface ProFeatureCapabilities {

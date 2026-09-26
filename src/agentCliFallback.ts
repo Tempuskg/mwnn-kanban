@@ -41,6 +41,8 @@ import {
   resolveAgentCliModel,
   type AgentCliModelCatalog,
   type AgentCliStageModels,
+  type AgentCliStageThinkingLevels,
+  type AgentCliThinkingLevelDefaults,
   type ResolvedAgentCliModel,
 } from './agentCliModels';
 import {
@@ -186,6 +188,15 @@ export interface AgentCliFallbackDeps {
    * stage on that stage's rule rather than on another stage's.
    */
   readonly stageModels?: AgentCliStageModels;
+  /**
+   * Validated per-provider workspace default thinking levels, forwarded to
+   * every handoff for the same reason the model catalog is: a replacement
+   * provider must resolve its *own* effort default rather than inherit one
+   * spelled for the CLI whose allowance ran out.
+   */
+  readonly thinkingLevels?: AgentCliThinkingLevelDefaults;
+  /** Validated per-stage thinking-level rules, forwarded to every handoff. */
+  readonly stageThinkingLevels?: AgentCliStageThinkingLevels;
   /**
    * Model escalation policy. Omitted means disabled, which keeps the existing
    * single-attempt behavior exactly: an inconclusive attempt is returned to the
@@ -479,6 +490,10 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
             signal: deps.signal,
             ...(deps.modelCatalog !== undefined ? { modelCatalog: deps.modelCatalog } : {}),
             ...(deps.stageModels !== undefined ? { stageModels: deps.stageModels } : {}),
+            ...(deps.thinkingLevels !== undefined ? { thinkingLevels: deps.thinkingLevels } : {}),
+            ...(deps.stageThinkingLevels !== undefined
+              ? { stageThinkingLevels: deps.stageThinkingLevels }
+              : {}),
             ...(escalatedModel !== undefined ? { escalatedModel } : {}),
           },
           observer ? { observer } : {},

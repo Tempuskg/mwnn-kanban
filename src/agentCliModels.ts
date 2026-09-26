@@ -1,5 +1,9 @@
 /**
- * Which model an agent CLI dispatch runs on.
+ * Which model an agent CLI dispatch runs on, and how hard that model thinks.
+ *
+ * Two independent axes of one selection. The model policy is below; the
+ * thinking-level policy is the last section of this file and mirrors it layer
+ * for layer, so the two can never drift into different precedence rules.
  *
  * This module owns the whole policy, in one place, so the per-card run, the AI
  * loop's four stages, and the credit fallback cannot disagree:
@@ -45,7 +49,7 @@
 import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
 import type { AgentCliModelSuggestions } from './types';
 import { AGENT_CLI_HANDOFF_KINDS, type AgentCliHandoffKind } from './agentCliStages';
-import { normalizePreferredModel } from './utils';
+import { normalizePreferredModel, normalizeThinkingLevel } from './utils';
 
 /** The user-facing id of the setting this module validates. */
 export const AGENT_CLI_MODELS_SETTING = 'mwnn-kanban.agentCliModels';
@@ -319,6 +323,220 @@ export function resolveAgentCliModel(
   const fromWorkspace = defaultAgentCliModel(catalog, provider);
   if (fromWorkspace !== undefined) {
     return { model: fromWorkspace, source: 'workspace-default' };
+  }
+  return undefined;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Thinking level
+ *
+ * The second axis of the same selection. "Which model" and "how hard should it
+ * think" are independent questions, and a user should not have to answer the
+ * second by inventing a model name that encodes it. The level therefore
+ * resolves through *this* module, layer for layer with the model, rather than
+ * through a policy of its own that could drift out of step:
+ *
+ * 0. a level the AI loop's escalation ladder picked for this retry;
+ * 1. the level the card names for *this* provider (`thinkingLevel.<provider>`);
+ * 2. otherwise the rule configured for the stage being dispatched
+ *    (`mwnn-kanban.agentCliStageThinkingLevels`);
+ * 3. otherwise the per-provider workspace default
+ *    (`mwnn-kanban.agentCliThinkingLevels`);
+ * 4. otherwise nothing - no argument is added and the CLI runs at whatever
+ *    effort it defaults to, byte-identically to before this axis existed.
+ *
+ * The workspace default is one string per provider rather than a list, which
+ * is where it differs from the model catalog: a model list doubles as the card
+ * UI's suggestion set because model names are unguessable and change between
+ * releases, while a provider's effort levels are a small vocabulary the CLI
+ * documents. There is nothing a second entry would be for.
+ * ------------------------------------------------------------------------ */
+
+/** The user-facing id of the per-provider workspace default this module reads. */
+export const AGENT_CLI_THINKING_LEVELS_SETTING = 'mwnn-kanban.agentCliThinkingLevels';
+
+/** The user-facing id of the per-stage thinking-level rules. */
+export const AGENT_CLI_STAGE_THINKING_LEVELS_SETTING = 'mwnn-kanban.agentCliStageThinkingLevels';
+
+/**
+ * One validated thinking level per provider. A provider is absent rather than
+ * present with a blank value, so `defaults[provider]` being undefined always
+ * means "no workspace opinion about effort for this CLI".
+ */
+export type AgentCliThinkingLevelDefaults = { readonly [K in AgentCliProviderId]?: string };
+
+/** The "nothing configured" defaults, and the default for every resolution. */
+export const EMPTY_AGENT_CLI_THINKING_LEVELS: AgentCliThinkingLevelDefaults = Object.freeze({});
+
+/**
+ * Read `mwnn-kanban.agentCliThinkingLevels` from an unvalidated configuration
+ * value. Nothing here throws: a malformed setting degrades to "no default
+ * configured" for the affected provider instead of breaking a dispatch.
+ * Non-object values, unknown provider keys, non-string values, and blank or
+ * otherwise unusable levels are all dropped.
+ */
+export function readAgentCliThinkingLevels(value: unknown): AgentCliThinkingLevelDefaults {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return EMPTY_AGENT_CLI_THINKING_LEVELS;
+  }
+
+  const configured = value as Record<string, unknown>;
+  // Only known providers are read, which is what makes an unknown key a no-op
+  // rather than an error: a stale or misspelled key simply never matches.
+  const defaults: { -readonly [K in AgentCliProviderId]?: string } = {};
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const configuredLevel = configured[provider];
+    if (typeof configuredLevel !== 'string') {
+      continue;
+    }
+    const level = normalizeThinkingLevel(configuredLevel);
+    if (level !== undefined) {
+      defaults[provider] = level;
+    }
+  }
+  return Object.freeze(defaults);
+}
+
+/** The provider's workspace default level, or undefined when it has none. */
+export function defaultAgentCliThinkingLevel(
+  defaults: AgentCliThinkingLevelDefaults,
+  provider: AgentCliProviderId,
+): string | undefined {
+  return defaults[provider];
+}
+
+/**
+ * A thinking level per AI-loop stage. Keyed on stage rather than on stage *and*
+ * provider for the same reason the stage model rules are: a stage rule is a
+ * deliberate override of the workspace default, and per-provider spelling
+ * already lives in the workspace default.
+ */
+export type AgentCliStageThinkingLevels = { readonly [K in AgentCliHandoffKind]?: string };
+
+/** The "no stage rules configured" value, and the default for every resolution. */
+export const EMPTY_AGENT_CLI_STAGE_THINKING_LEVELS: AgentCliStageThinkingLevels = Object.freeze({});
+
+/**
+ * Read `mwnn-kanban.agentCliStageThinkingLevels` from an unvalidated
+ * configuration value. Nothing here throws: a malformed setting degrades to
+ * "no rule" for the affected stage rather than breaking a dispatch.
+ */
+export function readAgentCliStageThinkingLevels(value: unknown): AgentCliStageThinkingLevels {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return EMPTY_AGENT_CLI_STAGE_THINKING_LEVELS;
+  }
+
+  const configured = value as Record<string, unknown>;
+  // Only known stages are read, so a stale or misspelled key is a no-op.
+  const rules: { -readonly [K in AgentCliHandoffKind]?: string } = {};
+  for (const stage of AGENT_CLI_HANDOFF_KINDS) {
+    const configuredLevel = configured[stage];
+    if (typeof configuredLevel !== 'string') {
+      continue;
+    }
+    const level = normalizeThinkingLevel(configuredLevel);
+    if (level !== undefined) {
+      rules[stage] = level;
+    }
+  }
+  return Object.freeze(rules);
+}
+
+/** The level configured for one stage, or undefined when that stage has none. */
+export function stageAgentCliThinkingLevel(
+  rules: AgentCliStageThinkingLevels,
+  stage: AgentCliHandoffKind,
+): string | undefined {
+  return rules[stage];
+}
+
+/**
+ * Which stage a dispatch belongs to, together with the configured level rules.
+ * Passed as one value for the same reason {@link AgentCliStageContext} is: half
+ * of it is never a useful argument.
+ */
+export interface AgentCliThinkingStageContext {
+  readonly stage: AgentCliHandoffKind;
+  readonly stageThinkingLevels: AgentCliStageThinkingLevels;
+}
+
+/**
+ * Where a resolved thinking level came from. The same four layers as the
+ * model's, and deliberately the same union, so any surface that already
+ * switches on a selection source handles both axes with one vocabulary.
+ */
+export type AgentCliThinkingLevelSource = AgentCliModelSource;
+
+/** How a resolved level is named mid-sentence in notifications and failures. */
+export function describeAgentCliThinkingLevelSource(source: AgentCliThinkingLevelSource): string {
+  switch (source) {
+    case 'card':
+      return 'the card thinking level';
+    case 'stage-rule':
+      return 'the AI loop stage thinking level rule';
+    case 'escalation':
+      return 'the AI loop escalation thinking level';
+    default:
+      return 'the workspace default thinking level';
+  }
+}
+
+/** Sentence-leading form of {@link describeAgentCliThinkingLevelSource}. */
+export function agentCliThinkingLevelSourceLabel(source: AgentCliThinkingLevelSource): string {
+  switch (source) {
+    case 'card':
+      return 'Card thinking level';
+    case 'stage-rule':
+      return 'AI loop stage thinking level rule';
+    case 'escalation':
+      return 'AI loop escalation thinking level';
+    default:
+      return 'Workspace default thinking level';
+  }
+}
+
+export interface ResolvedAgentCliThinkingLevel {
+  /** The level exactly as it will reach the CLI. */
+  readonly level: string;
+  readonly source: AgentCliThinkingLevelSource;
+}
+
+/**
+ * Resolve the thinking level for one dispatch of one card on one provider, at
+ * one stage. The single resolution site for the effort axis, exactly as
+ * {@link resolveAgentCliModel} is for the model axis.
+ *
+ * Returns undefined when no layer names a level, which is what keeps an
+ * unconfigured workspace producing exactly the arguments it produced before
+ * this axis existed. Resolving never writes anything back to the card or the
+ * settings.
+ */
+export function resolveAgentCliThinkingLevel(
+  provider: AgentCliProviderId,
+  cardThinkingLevel: string | undefined,
+  defaults: AgentCliThinkingLevelDefaults = EMPTY_AGENT_CLI_THINKING_LEVELS,
+  stage?: AgentCliThinkingStageContext,
+  escalatedThinkingLevel?: string,
+): ResolvedAgentCliThinkingLevel | undefined {
+  // Above the card, for the same reason an escalation model is: the loop only
+  // picks one after an attempt on a lower layer already failed.
+  const fromEscalation = normalizeThinkingLevel(escalatedThinkingLevel);
+  if (fromEscalation !== undefined) {
+    return { level: fromEscalation, source: 'escalation' };
+  }
+  const fromCard = normalizeThinkingLevel(cardThinkingLevel);
+  if (fromCard !== undefined) {
+    return { level: fromCard, source: 'card' };
+  }
+  const fromStage = stage
+    ? stageAgentCliThinkingLevel(stage.stageThinkingLevels, stage.stage)
+    : undefined;
+  if (fromStage !== undefined) {
+    return { level: fromStage, source: 'stage-rule' };
+  }
+  const fromWorkspace = defaultAgentCliThinkingLevel(defaults, provider);
+  if (fromWorkspace !== undefined) {
+    return { level: fromWorkspace, source: 'workspace-default' };
   }
   return undefined;
 }
