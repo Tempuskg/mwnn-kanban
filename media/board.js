@@ -260,11 +260,9 @@
   const root = /** @type {HTMLElement} */ (document.getElementById('board'));
 
   window.addEventListener('message', (event) => {
-    // Only trust messages from the VS Code extension host. Webview content runs
-    // in a sandboxed `vscode-webview://` iframe and the host delivers its
-    // messages under that same origin scheme, so reject anything else (e.g. a
-    // web origin) before acting on the payload (CWE-20).
-    if (event.origin && !event.origin.startsWith('vscode-webview://')) {
+    // VS Code forwards extension-host messages from the parent webview frame.
+    // Require its exact origin; reject opaque or cross-origin senders.
+    if (event.origin === 'null' || event.origin !== window.location.origin) {
       return;
     }
     const message = event.data;

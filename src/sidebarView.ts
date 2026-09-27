@@ -181,6 +181,11 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     }
 
     window.addEventListener('message', (event) => {
+      // Accept host messages only from this webview's exact origin.
+      if (event.origin === 'null' || event.origin !== window.location.origin) {
+        return;
+      }
+
       const message = event.data;
       if (message && message.type === 'boardButton') {
         applyButtonMode(message.mode);
