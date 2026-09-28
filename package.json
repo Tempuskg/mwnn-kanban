@@ -192,6 +192,12 @@
         "icon": "$(export)"
       },
       {
+        "command": "mwnn-kanban-pro.exportWeeklyDigest",
+        "title": "Export Weekly Review Digest",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(output)"
+      },
+      {
         "command": "mwnn-kanban-pro.startFocusSession",
         "title": "Start Focus Session",
         "category": "MWNN Kanban Pro",
@@ -802,6 +808,10 @@
         },
         {
           "command": "mwnn-kanban-pro.exportTimesheet",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.exportWeeklyDigest",
           "when": "mwnn-kanban.hasProLicense"
         },
         {
