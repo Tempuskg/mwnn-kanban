@@ -115,6 +115,11 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.populateAgentCliModels",
+        "title": "Populate Agent CLI Models and Thinking Levels",
+        "category": "MWNN Kanban"
+      },
+      {
         "command": "mwnn-kanban.resetBoard",
         "title": "Reset Board",
         "category": "MWNN Kanban"
@@ -394,6 +399,16 @@
           },
           "scope": "resource"
         },
+        "mwnn-kanban.defineUseJev": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When a card is defined with AI, ask TypeSafe's Jev model to judge the card's difficulty and pick each agent CLI's `preferredModel.<provider>` and `thinkingLevel.<provider>` from the names in `#mwnn-kanban.agentCliModels#` and `#mwnn-kanban.agentCliThinkingLevels#`. Jev is used only when the `TYPESAFE_API_KEY` environment variable is set; otherwise, or if Jev fails or times out, the defining agent chooses from the same names and the definition proceeds normally."
+        },
+        "mwnn-kanban.defineOverwriteRunSettings": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let card definition replace a model or thinking level already set on the card. Off by default, so a model or level someone chose for a card is kept and only providers the card names nothing for are filled in."
+        },
         "mwnn-kanban.agentCliModels": {
           "type": "object",
           "default": {},
@@ -463,22 +478,46 @@
         "mwnn-kanban.agentCliThinkingLevels": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Thinking level (reasoning effort) for each agent CLI used by 'Run Card with AI' and the AI board loop. A second, independent axis of model selection: it says how hard the agent should think, not which model runs. Levels are CLI-specific and are passed through unchanged, so spell each one the way that CLI accepts it. A card's own `thinkingLevel.<provider>` wins, then `#mwnn-kanban.agentCliStageThinkingLevels#`, then this setting, then whatever effort that CLI runs at by default. Only CLIs that expose reasoning effort on their command line can honor a level - today that is OpenAI Codex CLI (`minimal`, `low`, `medium`, `high`). A level set for a CLI that accepts none is reported on the card and the run proceeds at that CLI's own default effort; it never fails the run. Leave a CLI out for unchanged behavior.",
+          "markdownDescription": "Thinking level (reasoning effort) for each agent CLI used by 'Run Card with AI' and the AI board loop. A second, independent axis of model selection: it says how hard the agent should think, not which model runs. Levels are CLI-specific and are passed through unchanged, so spell each one the way that CLI accepts it. A card's own `thinkingLevel.<provider>` wins, then `#mwnn-kanban.agentCliStageThinkingLevels#`, then this setting, then whatever effort that CLI runs at by default. Copilot CLI accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; OpenAI Codex CLI accepts `minimal`, `low`, `medium`, or `high`; Claude Code CLI accepts `low`, `medium`, `high`, `xhigh`, or `max`. Cursor Agent CLI does not accept an effort argument; a level set for it is reported on the card and the run proceeds at its default effort without failing. Each CLI takes one level, or a list whose first entry is the level used and whose other entries are offered as suggestions in the card's thinking field. `MWNN Kanban: Populate Agent CLI Models and Thinking Levels` can fill this from the installed CLIs. Leave a CLI out for unchanged behavior.",
           "properties": {
             "copilot": {
-              "type": "string",
-              "description": "Thinking level for GitHub Copilot CLI, as it spells it. GitHub Copilot CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
+              "type": [
+                "string",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Thinking level for GitHub Copilot CLI, as it spells it. Copilot accepts this value through `--effort` (also known as `--reasoning-effort`)."
             },
             "codex": {
-              "type": "string",
+              "type": [
+                "string",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              },
               "description": "Thinking level for OpenAI Codex CLI, as it spells it - for example `minimal`, `low`, `medium`, or `high`. Passed through as the `model_reasoning_effort` config override."
             },
             "claude-code": {
-              "type": "string",
-              "description": "Thinking level for Anthropic Claude Code CLI, as it spells it. Claude Code CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
+              "type": [
+                "string",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Thinking level for Anthropic Claude Code CLI, as it spells it. Claude Code accepts this value through `--effort`."
             },
             "cursor": {
-              "type": "string",
+              "type": [
+                "string",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              },
               "description": "Thinking level for Cursor Agent CLI, as it spells it. Cursor Agent CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
             }
           },
@@ -715,6 +754,9 @@
           "when": "config.mwnn-kanban.enableRunWithAI"
         },
         {
+          "command": "mwnn-kanban.populateAgentCliModels"
+        },
+        {
           "command": "mwnn-kanban.resetBoard"
         },
         {
@@ -831,7 +873,9 @@
     "presmoke:workspace-model": "npm run compile-tests",
     "smoke:workspace-model": "node ./scripts/smoke-workspace-model-default.cjs",
     "version:build": "node ./scripts/bump-package-version.cjs",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "presmoke:populate-models": "npm run compile-tests",
+    "smoke:populate-models": "node ./scripts/smoke-populate-models.cjs"
   },
   "dependencies": {
     "@tempuskg/mwnn-kanban-pro": "^0.1.11"

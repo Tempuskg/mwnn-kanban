@@ -841,6 +841,7 @@ body {
 /* One model field per agent CLI: the CLI name is the row label. */
 /* The model box and the button that opens that CLI's configured list. */
 .card-model-combo {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 4px;
@@ -878,6 +879,11 @@ body {
 }
 
 .model-picker {
+  /* Directly below the combo box it belongs to, at least as wide as it. */
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  box-sizing: border-box;
   max-height: 240px;
   overflow-y: auto;
 }
@@ -885,7 +891,6 @@ body {
 .model-picker-empty {
   margin: 0;
   padding: 6px 10px;
-  max-width: 260px;
   color: var(--vscode-descriptionForeground);
   font-size: 0.85rem;
 }
@@ -913,6 +918,16 @@ body {
 .card-model-thinking .card-field-input {
   width: 8.5rem;
   min-width: 0;
+}
+
+/*
+ * The level field is narrow and sits at the row's right edge, so its menu
+ * grows leftwards and gets enough width for the explanatory notes.
+ */
+.card-model-thinking .model-picker {
+  left: auto;
+  right: 0;
+  min-width: max(100%, 16rem);
 }
 
 .card-model-thinking-label {

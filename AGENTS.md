@@ -101,7 +101,7 @@ Rules for direct board edits:
 - `preferredModel.<provider>` is optional and free-form: the name of the AI model the card should be run with **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. The model is scoped per provider because a card never chooses its own CLI — the CLI is picked per dispatch and the credit fallback can change it mid-run — so the entry for whichever provider actually runs is the one passed to that CLI as its model argument, without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else that CLI's own default model when none is set.
 - A single bare `preferredModel` scalar is the legacy, pre-scoping shape. It is still read and applies to every provider the card does not scope explicitly, so existing cards keep working; the extension never writes it again and migrates the card to the per-provider keys on its next write.
 - `thinkingLevel.<provider>` is optional and free-form: the *thinking level* (reasoning effort) the card should be run at **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. It is a second axis of the same selection and fully independent of the model — "how hard should it think", not "which model runs" — and it is scoped per provider for exactly the reasons the model is, since the CLI is picked per dispatch and the credit fallback can change it mid-run. The entry for whichever provider actually runs is passed to that CLI without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default effort. There is no legacy bare `thinkingLevel` scalar: the key was per-provider from the start.
-- Only a CLI that exposes reasoning effort on its command line can honor a thinking level. On one that does not, the level is recorded on the card as not applied and the run proceeds at that CLI's default effort; a level that cannot be applied never fails a run.
+- Codex CLI, Copilot CLI, and Claude Code CLI accept thinking levels on their command lines. Cursor Agent CLI does not; its level is recorded on the card as not applied and the run proceeds at the CLI's default effort. A level that cannot be applied never fails a run.
 
 ---
 
@@ -479,10 +479,10 @@ What the slice of work is.
   rather than writing an empty value; a provider the card names no level for
   uses the AI loop stage rule (`mwnn-kanban.agentCliStageThinkingLevels`), else
   the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`),
-  else that CLI's own default effort. Only a CLI that exposes reasoning effort
-  on its command line can honor a level; on one that does not, the level is
-  reported on the card as not applied and the run proceeds at that CLI's
-  default effort — it never fails the run.
+  else that CLI's own default effort. Codex CLI, Copilot CLI, and Claude Code
+  CLI accept levels on their command lines. Cursor Agent CLI does not; its
+  level is reported on the card as not applied and the run proceeds at that
+  CLI's default effort — it never fails the run.
 
 ### Scalar quoting (match the extension's parser)
 

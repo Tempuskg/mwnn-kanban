@@ -1,6 +1,10 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
-import { agentCliModelSuggestions, readAgentCliModelCatalog } from '../../src/agentCliModels';
+import {
+  agentCliModelSuggestions,
+  readAgentCliModelCatalog,
+  readAgentCliThinkingLevelSuggestions,
+} from '../../src/agentCliModels';
 import {
   BOARD_STATE_VERSION,
   type AgentCliModelSuggestions,
@@ -25,6 +29,11 @@ interface BoardWebviewTestExports {
     suggestions: AgentCliModelSuggestions | null | undefined,
     providerId: string,
   ): string[];
+  modelPickerContent(
+    models: readonly string[],
+    filter: string,
+    currentValue: string,
+  ): { models: string[]; offerDefault: boolean; note: '' | 'unconfigured' | 'no-match' };
   createPreferredModelDrafts(
     providerIds: readonly string[],
     preferredModels: Record<string, string> | undefined,
@@ -36,7 +45,7 @@ interface BoardWebviewTestExports {
 }
 
 // In Node, media/board.js returns its pure helpers before the browser bootstrap.
-const { modelSuggestionsFor, createPreferredModelDrafts, createThinkingLevelDrafts } =
+const { modelSuggestionsFor, modelPickerContent, createPreferredModelDrafts, createThinkingLevelDrafts } =
   require('../../../media/board.js') as BoardWebviewTestExports;
 
 const PROVIDER_IDS = ['copilot', 'codex', 'claude-code', 'cursor'] as const;
@@ -81,6 +90,7 @@ suite('card model suggestions', () => {
       enableRunWithAI: true,
       zoom: 1,
       modelSuggestions,
+      thinkingLevelSuggestions: readAgentCliThinkingLevelSuggestions({ codex: ['medium', 'high'] }),
     };
 
     assert.equal(message.type, 'state');
@@ -154,5 +164,57 @@ suite('card thinking level drafts', () => {
     // the user actually touched is posted.
     assert.deepEqual(models.changes(card), []);
     assert.deepEqual(levels.changes(card), [{ provider: 'codex', level: 'low' }]);
+  });
+});
+
+suite('card model picker content', () => {
+  test('a CLI with nothing configured still opens, with an explanation instead of a dead list', () => {
+    // mwnn-kanban.agentCliModels defaults to {}, so this is the fresh-install case.
+    const suggestions = agentCliModelSuggestions(readAgentCliModelCatalog({}));
+    const content = modelPickerContent(modelSuggestionsFor(suggestions, 'claude-code'), '', '');
+
+    assert.deepEqual(content, { models: [], offerDefault: false, note: 'unconfigured' });
+  });
+
+  test('an unconfigured CLI with a typed model still offers going back to the default', () => {
+    const content = modelPickerContent([], '', 'my-byok-model');
+
+    assert.equal(content.note, 'unconfigured');
+    assert.equal(content.offerDefault, true);
+  });
+
+  test('opens with the whole list even when the field already names a model', () => {
+    const models = ['claude-opus-5', 'claude-sonnet-5'];
+    const content = modelPickerContent(models, '', 'claude-sonnet-5');
+
+    assert.deepEqual(content, { models, offerDefault: true, note: '' });
+  });
+
+  test('narrows case-insensitively on text typed after opening', () => {
+    const content = modelPickerContent(['claude-opus-5', 'claude-sonnet-5'], ' SONNET ', 'sonnet');
+
+    assert.deepEqual(content.models, ['claude-sonnet-5']);
+    assert.equal(content.note, '');
+  });
+
+  test('a typed name outside the list reports no match rather than rejecting it', () => {
+    const content = modelPickerContent(['gpt-5-codex'], 'gpt-6-preview', 'gpt-6-preview');
+
+    assert.deepEqual(content, { models: [], offerDefault: true, note: 'no-match' });
+  });
+
+  test('the thinking list opens with every configured level when the card already saves one', () => {
+    // The datalist this replaced filtered on the saved value, so `high` showed only `high`.
+    const levels = readAgentCliThinkingLevelSuggestions({ codex: ['low', 'medium', 'high'] });
+    const content = modelPickerContent(modelSuggestionsFor(levels, 'codex'), '', 'high');
+
+    assert.deepEqual(content, { models: ['low', 'medium', 'high'], offerDefault: true, note: '' });
+  });
+
+  test('the thinking list for a CLI with no levels configured explains itself', () => {
+    const levels = readAgentCliThinkingLevelSuggestions({ codex: ['high'] });
+    const content = modelPickerContent(modelSuggestionsFor(levels, 'claude-code'), '', '');
+
+    assert.deepEqual(content, { models: [], offerDefault: false, note: 'unconfigured' });
   });
 });

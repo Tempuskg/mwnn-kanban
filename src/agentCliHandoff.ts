@@ -74,7 +74,7 @@ interface AgentCliModelSpec {
  *
  * Two shapes cover every CLI seen so far, and both produce separate argv
  * entries: a plain flag taking the level as the next argument
- * (`--reasoning-effort high`), and a config-override flag taking one
+ * (`--effort high`), and a config-override flag taking one
  * `key=value` argument (`-c model_reasoning_effort=high`), which `valuePrefix`
  * selects. A provider that offers no effort selection at all simply omits
  * `thinking`, and a card that names a level is then run at that CLI's default
@@ -140,18 +140,18 @@ interface AgentCliProviderSpec {
  * configured workspace default produce exactly the argv below.
  *
  * The *thinking level* a dispatch runs at is resolved through the same layers
- * and spliced in the same way, from each provider's `thinking` spec. Only Codex
- * currently exposes reasoning effort on its command line, as the
- * `model_reasoning_effort` config override; Copilot, Claude Code, and Cursor
- * publish no such argument, so they carry no spec and a level resolved for them
- * is reported as not applied while the run proceeds on that CLI's own default
- * effort. Adding one later is a single entry here - nothing else changes.
+ * and spliced in the same way, from each provider's `thinking` spec. Codex
+ * exposes reasoning effort as the `model_reasoning_effort` config override;
+ * Copilot and Claude Code accept `--effort <level>`. Cursor has no effort
+ * argument, so it carries no spec and a level resolved for it is reported as
+ * not applied while the run proceeds on that CLI's own default effort.
  */
 const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   copilot: {
     defaultCommands: ['copilot'],
     args: ['--allow-all-tools', '--no-ask-user', '--silent'],
     model: { flag: '--model' },
+    thinking: { flag: '--effort' },
   },
   codex: {
     defaultCommands: ['codex'],
@@ -166,6 +166,7 @@ const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
     defaultCommands: ['claude'],
     args: ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
     model: { flag: '--model' },
+    thinking: { flag: '--effort' },
   },
   cursor: {
     defaultCommands: ['cursor-agent'],

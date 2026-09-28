@@ -62,6 +62,7 @@ const PER_PROVIDER: Record<AgentCliProviderId, string> = {
  * spec for another CLI does not quietly turn these assertions into no-ops.
  */
 const SUPPORTED: AgentCliProviderId = 'codex';
+const EFFORT_FLAG_PROVIDERS: readonly AgentCliProviderId[] = ['copilot', 'claude-code'];
 const UNSUPPORTED = AGENT_CLI_PROVIDER_IDS.filter(
   (provider) => AGENT_CLI_THINKING_FLAGS[provider] === undefined,
 );
@@ -401,6 +402,45 @@ suite('card thinking level: resolution precedence', () => {
 });
 
 suite('card thinking level: argument shaping', () => {
+  test('Copilot and Claude Code receive --effort as separate argv entries', () => {
+    for (const provider of EFFORT_FLAG_PROVIDERS) {
+      assert.equal(AGENT_CLI_THINKING_FLAGS[provider], '--effort');
+      const selection = resolveAgentCliThinkingSelection(provider, LEVEL);
+      assert.ok(selection);
+      assert.equal(selection.applied, true);
+      assert.deepEqual(selection.args, ['--effort', LEVEL]);
+
+      const invocation = buildAgentCliInvocation(
+        target(provider),
+        'prompt',
+        'E:\\workspace',
+        undefined,
+        selection,
+      );
+      assert.deepEqual(invocation.args, [...BASELINE_ARGS[provider], '--effort', LEVEL]);
+    }
+  });
+
+  test('gh copilot passthrough keeps --effort after its -- separator', () => {
+    const selection = resolveAgentCliThinkingSelection('copilot', LEVEL);
+    assert.ok(selection);
+
+    const invocation = buildAgentCliInvocation(
+      { ...target('copilot'), launcher: 'gh-copilot' },
+      'prompt',
+      'E:\\workspace',
+      undefined,
+      selection,
+    );
+    const copilotIndex = invocation.args.indexOf('copilot');
+    const separatorIndex = invocation.args.indexOf('--');
+    const effortIndex = invocation.args.indexOf('--effort');
+    assert.ok(copilotIndex >= 0);
+    assert.ok(separatorIndex > copilotIndex);
+    assert.ok(effortIndex > separatorIndex);
+    assert.equal(invocation.args[effortIndex + 1], LEVEL);
+  });
+
   test('spells the level as the supported provider spells it, as separate argv entries', () => {
     const selection = resolveAgentCliThinkingSelection(SUPPORTED, LEVEL);
     assert.ok(selection);

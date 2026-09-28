@@ -2,9 +2,63 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Prepare MWNN Kanban Debug",
+      "dependsOn": ["Bridge Extension Debugger", "Watch MWNN Kanban"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "Bridge Extension Debugger",
+      "type": "process",
+      "command": "node",
+      "args": ["${workspaceFolder}/.vscode/ipv6-debug-bridge.cjs", "53500"],
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "ipv6-debug-bridge",
+        "pattern": {
+          "regexp": "^(\\S+)\\((\\d+),(\\d+)\\):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^IPv6 debug bridge starting on port 53500$",
+          "endsPattern": "^IPv6 debug bridge ready on port 53500$"
+        }
+      }
+    },
+    {
+      "label": "Watch MWNN Kanban",
       "type": "npm",
       "script": "watch",
-      "problemMatcher": "$ts-webpack-watch",
+      "problemMatcher": {
+        "owner": "typescript",
+        "source": "ts",
+        "applyTo": "closedDocuments",
+        "fileLocation": "absolute",
+        "severity": "error",
+        "pattern": [
+          {
+            "regexp": "\\[tsl\\] (ERROR|WARNING) in (.*)?\\((\\d+),(\\d+)\\)",
+            "severity": 1,
+            "file": 2,
+            "line": 3,
+            "column": 4
+          },
+          {
+            "regexp": "\\s*TS(\\d+):\\s*(.*)$",
+            "code": 1,
+            "message": 2
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "[Cc]ompiling.*?|[Cc]ompil(ation|er) .*?starting",
+          "endsPattern": "[Cc]ompiled (.*?successfully|with .*?(error|warning))|[Cc]ompil(ation|er) .*?finished"
+        }
+      },
       "isBackground": true,
       "presentation": {
         "reveal": "never"

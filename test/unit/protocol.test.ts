@@ -7,6 +7,7 @@ suite('webview protocol', () => {
     assert.equal(isWebviewToHostMessage({ type: 'ready' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'requestAddCard', columnId: 'col-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'requestAddColumn' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'openModelSettings' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'addCard', columnId: 'col-1', title: 'Task' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'addColumn', title: 'Ready' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'editCard', cardId: 'card-1', title: 'Rename' }), true);

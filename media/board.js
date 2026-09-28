@@ -66,6 +66,36 @@
   }
 
   /**
+   * What the model picker shows for one CLI at one moment: the configured names
+   * that match what the user typed since opening, whether "use the CLI's
+   * default" belongs beside them, and which note - if any - replaces an empty
+   * list.
+   *
+   * The menu always opens, even for a CLI with nothing configured. The setting
+   * behind the list defaults to empty, so a picker that only opened for a
+   * configured CLI never opened at all on a fresh install; an explained empty
+   * menu tells the user what to do instead of looking broken.
+   * @param {ReadonlyArray<string>} models configured names for the CLI
+   * @param {string} filter narrowing text typed since the menu opened
+   * @param {string} currentValue what the model field holds now
+   * @returns {{ models: string[], offerDefault: boolean, note: '' | 'unconfigured' | 'no-match' }}
+   */
+  function modelPickerContent(models, filter, currentValue) {
+    const needle = filter.trim().toLowerCase();
+    const matches = models.filter(
+      (model) => needle.length === 0 || model.toLowerCase().includes(needle),
+    );
+    /** @type {'' | 'unconfigured' | 'no-match'} */
+    let note = '';
+    if (models.length === 0) {
+      note = 'unconfigured';
+    } else if (matches.length === 0) {
+      note = 'no-match';
+    }
+    return { models: matches, offerDefault: currentValue.trim().length > 0, note };
+  }
+
+  /**
    * The card's model per agent CLI while its details form is open.
    *
    * The form edits one provider at a time - the provider selector chooses which
@@ -165,6 +195,7 @@
       requestCardPathCopy,
       createCardPathCopyFeedback,
       modelSuggestionsFor,
+      modelPickerContent,
       createPreferredModelDrafts,
       createThinkingLevelDrafts,
     };
@@ -227,6 +258,13 @@
    * @type {Record<string, readonly string[]>}
    */
   let modelSuggestions = {};
+  /**
+   * Per-provider thinking levels the card UI's thinking field offers, mirroring
+   * `mwnn-kanban.agentCliThinkingLevels` as the host validated it. Presentation
+   * only, like the model suggestions.
+   * @type {Record<string, readonly string[]>}
+   */
+  let thinkingLevelSuggestions = {};
   let draggedCardId = null;
   let openCardId = null;
   let openColumnId = null;
@@ -274,6 +312,10 @@
       modelSuggestions =
         message.modelSuggestions && typeof message.modelSuggestions === 'object'
           ? message.modelSuggestions
+          : {};
+      thinkingLevelSuggestions =
+        message.thinkingLevelSuggestions && typeof message.thinkingLevelSuggestions === 'object'
+          ? message.thinkingLevelSuggestions
           : {};
       // Adopt the host's persisted zoom on the first state push only; after that
       // the webview owns the zoom and merely persists changes back, so later
@@ -1422,8 +1464,43 @@
     return { wrapper, select };
   }
 
-  /** @type {{ cleanup: () => void } | null} */
+  /** @type {{ cleanup: () => void, focusFirst: () => void, combo: HTMLElement } | null} */
   let activeModelPicker = null;
+
+  /**
+   * The wording that makes the shared picker menu a model list or a
+   * thinking-level list. Both fields hit the same datalist problem, so they
+   * share one menu and differ only in what it says.
+   * @typedef {{
+   *   noun: string,
+   *   defaultLabel: (provider: { label: string }) => string,
+   *   unconfigured: (provider: { label: string }) => string,
+   *   noMatch: string,
+   *   offerSettings: boolean,
+   * }} PickerCopy
+   */
+
+  /** @type {PickerCopy} */
+  const MODEL_PICKER_COPY = {
+    noun: 'Models',
+    defaultLabel: (provider) => 'Use ' + provider.label + "'s default",
+    unconfigured: (provider) =>
+      'No models are configured for ' + provider.label + ' in mwnn-kanban.agentCliModels. Type the name it uses - it is saved as typed.',
+    noMatch: 'No configured model matches what you typed; it is still saved as typed.',
+    offerSettings: true,
+  };
+
+  /** @type {PickerCopy} */
+  const THINKING_PICKER_COPY = {
+    noun: 'Thinking levels',
+    defaultLabel: (provider) => 'Use ' + provider.label + "'s default effort",
+    unconfigured: (provider) =>
+      'No thinking levels are configured for ' + provider.label + ' in mwnn-kanban.agentCliThinkingLevels. Type the level it uses - it is saved as typed.',
+    noMatch: 'No configured level matches what you typed; it is still saved as typed.',
+    // The settings shortcut opens the model setting; the level list has no
+    // message of its own, so its note names the setting instead.
+    offerSettings: false,
+  };
 
   function closeModelPicker() {
     if (activeModelPicker) {
@@ -1444,18 +1521,20 @@
    * typing, so the list is reachable whatever the field holds. It never changes
    * the value on its own: the field stays free-form, and picking is a shortcut,
    * not a constraint.
+   * @param {HTMLElement} combo the field's wrapper; the menu is placed inside it
    * @param {HTMLInputElement} input
    * @param {{ id: string, label: string }} provider
    * @param {string[]} models
    * @param {(model: string) => void} onPick
+   * @param {PickerCopy} [copy] wording; the thinking-level field reuses this menu
    */
-  function openModelPicker(input, provider, models, onPick) {
+  function openModelPicker(combo, input, provider, models, onPick, copy = MODEL_PICKER_COPY) {
     closeModelPicker();
 
     const menu = document.createElement('div');
     menu.className = 'assign-picker model-picker';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', 'Models configured for ' + provider.label);
+    menu.setAttribute('aria-label', copy.noun + ' configured for ' + provider.label);
 
     /** @type {HTMLButtonElement[]} */
     let options = [];
@@ -1468,53 +1547,70 @@
     let filter = '';
 
     /**
-     * @param {string} model
      * @param {string} text
+     * @param {boolean} checked
+     * @param {() => void} onChoose
      */
-    const makeOption = (model, text) => {
+    const makeOption = (text, checked, onChoose) => {
       const option = document.createElement('button');
       option.type = 'button';
       option.className = 'assign-picker-option';
       option.setAttribute('role', 'menuitemradio');
-      option.setAttribute('aria-checked', String(model === normalizeText(input.value)));
+      option.setAttribute('aria-checked', String(checked));
       option.textContent = text;
       option.addEventListener('click', (event) => {
         event.stopPropagation();
-        onPick(model);
-        closeModelPicker();
-        input.focus();
+        onChoose();
       });
       return option;
     };
 
+    /**
+     * @param {string} model
+     * @param {string} text
+     */
+    const makeModelOption = (model, text) =>
+      makeOption(text, model === normalizeText(input.value), () => {
+        onPick(model);
+        closeModelPicker();
+        input.focus();
+      });
+
     const fillMenu = () => {
-      const matches = models.filter(
-        (model) => filter.length === 0 || model.toLowerCase().includes(filter),
-      );
+      const content = modelPickerContent(models, filter, input.value);
       menu.textContent = '';
-      options = matches.map((model) => makeOption(model, model));
-      if (normalizeText(input.value).length > 0) {
+      options = content.models.map((model) => makeModelOption(model, model));
+      if (content.offerDefault) {
         // Clearing is a real choice - it hands the card back to the CLI's own
         // default - so it belongs in the menu beside the names.
-        options.push(makeOption('', "Use " + provider.label + "'s default"));
+        options.push(makeModelOption('', copy.defaultLabel(provider)));
       }
-      if (options.length === 0) {
+      if (content.note === 'unconfigured' && copy.offerSettings) {
+        // The setting that feeds this list is empty by default, so say so and
+        // offer the way to fill it, rather than a menu that looks broken.
+        options.push(makeOption('Configure model lists in settings…', false, () => {
+          closeModelPicker();
+          post({ type: 'openModelSettings' });
+        }));
+      }
+      if (content.note) {
         const empty = document.createElement('p');
         empty.className = 'model-picker-empty';
-        empty.textContent = 'No configured model matches what you typed; it is still saved as typed.';
+        empty.textContent = content.note === 'unconfigured' ? copy.unconfigured(provider) : copy.noMatch;
         menu.appendChild(empty);
-        return;
       }
       menu.append(...options);
     };
 
     fillMenu();
-    document.body.appendChild(menu);
-
-    const rect = input.getBoundingClientRect();
-    menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
-    menu.style.left = `${rect.left + window.scrollX}px`;
-    menu.style.minWidth = `${rect.width}px`;
+    // Anchored inside the combo box, not on document.body: the menu then sits
+    // directly below the field in the details dialog's own flow, so it scrolls
+    // with the form, ignores board zoom, and is removed together with the
+    // dialog when a state push re-renders the board.
+    combo.appendChild(menu);
+    if (typeof menu.scrollIntoView === 'function') {
+      menu.scrollIntoView({ block: 'nearest' });
+    }
 
     const dismiss = () => {
       closeModelPicker();
@@ -1547,9 +1643,11 @@
     };
     input.addEventListener('input', onTyping);
 
+    // Anything inside the combo - the field, the ▾ button, the menu - is not
+    // "outside": the button's own click toggles the menu, and closing it here
+    // first would make that same click reopen it.
     const onPointerDown = (event) => {
-      const target = /** @type {Node} */ (event.target);
-      if (!menu.contains(target) && target !== input) {
+      if (!combo.contains(/** @type {Node} */ (event.target))) {
         closeModelPicker();
       }
     };
@@ -1562,6 +1660,11 @@
     document.addEventListener('keydown', onDocKeydown);
 
     activeModelPicker = {
+      combo,
+      focusFirst() {
+        const checked = options.find((option) => option.getAttribute('aria-checked') === 'true');
+        (checked ?? options[0])?.focus();
+      },
       cleanup() {
         document.removeEventListener('mousedown', onPointerDown, true);
         document.removeEventListener('keydown', onDocKeydown);
@@ -1570,8 +1673,7 @@
       },
     };
 
-    const checked = options.find((option) => option.getAttribute('aria-checked') === 'true');
-    (checked ?? options[0])?.focus();
+    activeModelPicker.focusFirst();
   }
 
   /**
@@ -1600,10 +1702,9 @@
    * past remembering each CLI's spelling. Leaving a field blank is a real
    * state, not a missing value, so the placeholder and help text say what blank
    * means.
-   * The level is a plain free-form field with no list beside it, unlike the
-   * model: effort vocabularies are short and documented by each CLI, so there
-   * is nothing a curated suggestion setting would add that the placeholder and
-   * help text do not.
+   * The level is a combo box of the same kind, fed by
+   * mwnn-kanban.agentCliThinkingLevels and opening the same menu, so a card
+   * that already has a level can still browse every configured one.
    * @param {Record<string, string> | undefined} preferredModels
    * @param {Record<string, string> | undefined} thinkingLevels
    */
@@ -1651,9 +1752,22 @@
     thinkingInput.type = 'text';
     thinkingInput.setAttribute('aria-label', 'Thinking level for the selected agent CLI');
 
+    // The model picker's menu, not a native datalist: a datalist filters on the
+    // value already in the field, so a card with a saved level could only ever
+    // see that one level.
+    const thinkingSuggest = document.createElement('button');
+    thinkingSuggest.className = 'card-model-suggest';
+    thinkingSuggest.type = 'button';
+    thinkingSuggest.textContent = '▾';
+    thinkingSuggest.setAttribute('aria-haspopup', 'menu');
+
+    const thinkingCombo = document.createElement('div');
+    thinkingCombo.className = 'card-model-combo';
+    thinkingCombo.append(thinkingInput, thinkingSuggest);
+
     const thinking = document.createElement('div');
     thinking.className = 'card-model-thinking';
-    thinking.append(thinkingLabel, thinkingInput);
+    thinking.append(thinkingLabel, thinkingCombo);
 
     const drafts = createPreferredModelDrafts(AGENT_CLI_PROVIDER_IDS, preferredModels);
     const thinkingDrafts = createThinkingLevelDrafts(AGENT_CLI_PROVIDER_IDS, thinkingLevels);
@@ -1677,18 +1791,23 @@
       }
     };
 
-    // The button is the only affordance that opens the list, so it says which
-    // CLI's list it would open, and disables itself when that CLI has none.
+    // The button always opens the list, so it says which CLI's list it opens.
+    // It is never disabled: with nothing configured the menu explains that and
+    // links to the setting, instead of a dead button that looks broken.
     const syncSuggestions = () => {
       const provider = selectedProvider();
       const suggested = modelSuggestionsFor(modelSuggestions, provider.id).length;
-      suggest.disabled = suggested === 0;
       suggest.title = suggested > 0
         ? 'Show the ' + suggested + ' models configured for ' + provider.label
-        : 'No models are configured for ' + provider.label;
+        : 'No models are configured for ' + provider.label + ' - type a name, or open this to configure some';
       suggest.setAttribute('aria-label', suggest.title);
       input.placeholder = 'Uses ' + provider.label + "'s default model";
       thinkingInput.placeholder = 'Default effort';
+      const levels = modelSuggestionsFor(thinkingLevelSuggestions, provider.id).length;
+      thinkingSuggest.title = levels > 0
+        ? 'Show the ' + levels + ' thinking levels configured for ' + provider.label
+        : 'No thinking levels are configured for ' + provider.label + ' - type a level, or open this for details';
+      thinkingSuggest.setAttribute('aria-label', thinkingSuggest.title);
     };
 
     const syncHelp = () => {
@@ -1729,32 +1848,69 @@
       captureInput();
     };
 
+    /** @param {string} level */
+    const applyThinkingPick = (level) => {
+      thinkingInput.value = level;
+      captureThinkingInput();
+    };
+
+    // A menu open on the other field is closed and this one opened, so one
+    // click on either ▾ always shows that field's list.
     const toggleModelPicker = () => {
-      if (activeModelPicker) {
-        closeModelPicker();
+      const wasOpenHere = activeModelPicker?.combo === combo;
+      closeModelPicker();
+      if (wasOpenHere) {
         return;
       }
       const provider = selectedProvider();
-      const models = modelSuggestionsFor(modelSuggestions, provider.id);
-      if (models.length === 0) {
+      openModelPicker(combo, input, provider, modelSuggestionsFor(modelSuggestions, provider.id), applyPick);
+    };
+
+    const toggleThinkingPicker = () => {
+      const wasOpenHere = activeModelPicker?.combo === thinkingCombo;
+      closeModelPicker();
+      if (wasOpenHere) {
         return;
       }
-      openModelPicker(input, provider, models, applyPick);
+      const provider = selectedProvider();
+      openModelPicker(
+        thinkingCombo,
+        thinkingInput,
+        provider,
+        modelSuggestionsFor(thinkingLevelSuggestions, provider.id),
+        applyThinkingPick,
+        THINKING_PICKER_COPY,
+      );
     };
 
     suggest.addEventListener('click', (event) => {
       event.stopPropagation();
       toggleModelPicker();
     });
-
-    // Down-arrow from the field opens the list, the way a combo box is expected
-    // to behave; every other key just edits the text.
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowDown' && !activeModelPicker) {
-        event.preventDefault();
-        toggleModelPicker();
-      }
+    thinkingSuggest.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleThinkingPicker();
     });
+
+    // Down-arrow from a field opens its list, the way a combo box is expected
+    // to behave; every other key just edits the text.
+    /**
+     * @param {HTMLElement} ownCombo
+     * @param {() => void} toggle
+     */
+    const openOnArrowDown = (ownCombo, toggle) => (event) => {
+      if (event.key !== 'ArrowDown') {
+        return;
+      }
+      event.preventDefault();
+      if (activeModelPicker?.combo === ownCombo) {
+        activeModelPicker.focusFirst();
+      } else {
+        toggle();
+      }
+    };
+    input.addEventListener('keydown', openOnArrowDown(combo, toggleModelPicker));
+    thinkingInput.addEventListener('keydown', openOnArrowDown(thinkingCombo, toggleThinkingPicker));
 
     // `input` covers typing and picking from the list; `change` covers a commit
     // the browser reports only on blur. Both write straight through - nothing

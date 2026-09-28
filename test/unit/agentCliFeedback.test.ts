@@ -154,6 +154,17 @@ suite('CLI feedback formatting', () => {
     assert.ok(!lines.some((line) => line.includes(stdin)), 'the prompt must not be echoed verbatim');
   });
 
+  test('the output-channel start command shows the Claude Code effort flag and value', () => {
+    const lines = formatCliRunStart(
+      invocation({
+        args: ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text', '--effort', 'high'],
+      }),
+      'implementation',
+      'Effort smoke',
+    );
+    assert.match(lines[1] ?? '', /--effort high/);
+  });
+
   test('the echoed command line elides a long argument', () => {
     const argument = `Work the card. ${'details '.repeat(200)}`;
     const commandLine = formatCliCommandLine(invocation({ args: ['-p', argument] }));

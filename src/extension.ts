@@ -1,14 +1,22 @@
 import * as vscode from 'vscode';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
 import {
+  JEV_API_KEY_ENV,
+  formatRunSettingsActivityEntry,
+  requestJevRunSettings,
+  type DefinitionRunSettings,
+} from './cardRunSettings';
+import {
   createCliOutputFeed,
   formatCliRunExit,
   formatCliRunStart,
 } from './agentCliFeedback';
 import {
+  agentCliModelSuggestions,
   readAgentCliModelCatalog,
   readAgentCliStageModels,
   readAgentCliStageThinkingLevels,
+  readAgentCliThinkingLevelSuggestions,
   readAgentCliThinkingLevels,
   type AgentCliModelCatalog,
   type AgentCliStageModels,
@@ -102,6 +110,12 @@ import {
   type LoopSummary,
 } from './boardLoop';
 import { BoardPanel } from './boardPanel';
+import {
+  describeAgentCliDiscovery,
+  discoverAgentCliVocabularies,
+  planAgentCliPopulate,
+  type AgentCliPopulateMode,
+} from './agentCliDiscovery';
 import { BoardSidebarViewProvider } from './sidebarView';
 import { openProPortfolio } from './portfolioButton';
 import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from './boardStore';
@@ -258,6 +272,27 @@ function readAgentCliStageThinkingLevelRules(): AgentCliStageThinkingLevels {
       .getConfiguration('mwnn-kanban')
       .get<unknown>('agentCliStageThinkingLevels', {}),
   );
+}
+
+/**
+ * Settings the definition stage's run-settings recommendation reads. The
+ * candidates are the same validated lists the card UI suggests, so Jev and the
+ * defining agent can only pick names the workspace already lists.
+ */
+function readDefinitionRunSettingsConfig(): {
+  readonly candidates: DefinitionRunSettings['candidates'];
+  readonly overwriteExisting: boolean;
+  readonly jevEnabled: boolean;
+} {
+  const config = vscode.workspace.getConfiguration('mwnn-kanban');
+  return {
+    candidates: {
+      models: agentCliModelSuggestions(readAgentCliModels()),
+      thinkingLevels: readAgentCliThinkingLevelSuggestions(config.get<unknown>('agentCliThinkingLevels', {})),
+    },
+    overwriteExisting: config.get<boolean>('defineOverwriteRunSettings', false),
+    jevEnabled: config.get<boolean>('defineUseJev', true),
+  };
 }
 
 function getImplicitWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
@@ -500,6 +535,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
   };
 
+  /**
+   * Recommend how a card being defined should be run. With Jev available the
+   * typed picks are written to the card here (never over an existing value
+   * unless the workspace opts in); either way the outcome is recorded in
+   * Activity and handed to the definition prompt. Never throws: Jev is an
+   * enhancement and a definition must not fail because of it.
+   */
+  const prepareDefinitionRunSettings = async (cardId: string): Promise<DefinitionRunSettings> => {
+    const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig();
+    const card = findCardById(store.getState(), cardId);
+    if (!card) {
+      return { candidates, overwriteExisting, recommendation: { kind: 'fallback', reason: 'card not found' } };
+    }
+    const apiKey = process.env[JEV_API_KEY_ENV];
+    let recommendation = await requestJevRunSettings(card, candidates, {
+      enabled: jevEnabled,
+      overwriteExisting,
+      ...(apiKey === undefined ? {} : { apiKey }),
+    });
+    try {
+      if (recommendation.kind === 'jev') {
+        for (const provider of AGENT_CLI_PROVIDER_IDS) {
+          const model = recommendation.recommendation.models[provider];
+          const level = recommendation.recommendation.thinkingLevels[provider];
+          if (model !== undefined) {
+            await store.setPreferredModel(cardId, provider, model);
+          }
+          if (level !== undefined) {
+            await store.setThinkingLevel(cardId, provider, level);
+          }
+        }
+      }
+    } catch (error) {
+      recommendation = {
+        kind: 'fallback',
+        reason: `Jev picks could not be saved (${error instanceof Error ? error.message : String(error)})`,
+      };
+    }
+    try {
+      await store.appendActivity(cardId, formatRunSettingsActivityEntry(recommendation));
+      BoardPanel.postStateIfOpen();
+    } catch {
+      // The Activity note is best-effort; the definition still proceeds.
+    }
+    return { candidates, overwriteExisting, recommendation };
+  };
+
   const fillCardDefinitionWithAI = async (cardId: string): Promise<void> => {
     if (!readEnableRunWithAI()) {
       void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to let AI fill in card definitions.');
@@ -517,7 +599,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return false;
       }
 
-      const prompt = buildCardDefinitionPrompt(card, boardCapability.cardFilePath(card.id));
+      const runSettings = await prepareDefinitionRunSettings(card.id);
+      const definedCard = findCardById(store.getState(), card.id) ?? card;
+      const prompt = buildCardDefinitionPrompt(definedCard, boardCapability.cardFilePath(card.id), runSettings);
 
       if (choice.kind === 'cli') {
         return runCardWithAgentCli(
@@ -722,13 +806,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             (current) => buildCardHandoffPrompt(current, cardFilePath(current)),
             formatHandoffEntry,
           ),
-        requestDefinition: (card) =>
-          runChatHandoff(
+        requestDefinition: async (card) => {
+          const runSettings = await prepareDefinitionRunSettings(card.id);
+          return runChatHandoff(
             'definition',
-            card,
-            (current) => buildCardDefinitionPrompt(current, cardFilePath(current)),
+            findCardById(store.getState(), card.id) ?? card,
+            (current) => buildCardDefinitionPrompt(current, cardFilePath(current), runSettings),
             formatDefinitionHandoffEntry,
-          ),
+          );
+        },
         decideDoability: decideCardDoability,
         requestTriage: (card) =>
           runChatHandoff(
@@ -875,9 +961,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         dispatchCard: (card) =>
           runCliHandoff('implementation', card, (current) =>
             buildCardHandoffPrompt(current, cardFilePath(current))),
-        requestDefinition: (card) =>
-          runCliHandoff('definition', card, (current) =>
-            buildCardDefinitionPrompt(current, cardFilePath(current))),
+        requestDefinition: async (card) => {
+          const runSettings = await prepareDefinitionRunSettings(card.id);
+          return runCliHandoff('definition', findCardById(store.getState(), card.id) ?? card, (current) =>
+            buildCardDefinitionPrompt(current, cardFilePath(current), runSettings));
+        },
         decideDoability: decideCardDoability,
         requestTriage: (card) =>
           runCliHandoff('triage', card, (current) =>
@@ -955,14 +1043,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(registerBoardWatcher(workspaceRoot, boardFolder, store));
   context.subscriptions.push(
-    // The webview renders from the state message, and two of that message's
-    // fields come from settings rather than the store: the card UI's model
-    // suggestions and whether Run with AI is offered. Re-push on a change to
-    // either so an edited model list reaches an already-open board instead of
-    // waiting for a window reload or the next board edit.
+    // The webview renders from the state message, and some of that message's
+    // fields come from settings rather than the store: the card UI's model and
+    // thinking-level suggestions and whether Run with AI is offered. Re-push on
+    // a change to any of them so an edited list reaches an already-open board
+    // instead of waiting for a window reload or the next board edit.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
         event.affectsConfiguration('mwnn-kanban.agentCliModels') ||
+        event.affectsConfiguration('mwnn-kanban.agentCliThinkingLevels') ||
         event.affectsConfiguration('mwnn-kanban.enableRunWithAI')
       ) {
         BoardPanel.postStateIfOpen();
@@ -1099,6 +1188,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', async () => {
       await importPlan();
+    }),
+    vscode.commands.registerCommand('mwnn-kanban.populateAgentCliModels', async () => {
+      await populateAgentCliModels();
     }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', async () => {
       const choice = await vscode.window.showWarningMessage(
@@ -1240,6 +1332,11 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.stopCardRun', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', showWorkspaceMessage),
+    // Settings are not board state, so this one works without a folder open
+    // and simply offers only the user scope.
+    vscode.commands.registerCommand('mwnn-kanban.populateAgentCliModels', async () => {
+      await populateAgentCliModels();
+    }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', showWorkspaceMessage),
   );
 }
@@ -1776,4 +1873,103 @@ async function promptForLimit(
     cancelled: false,
     value: trimmed.length === 0 ? null : Number(trimmed),
   };
+}
+
+/**
+ * Fill `agentCliModels` and `agentCliThinkingLevels` from what each installed
+ * CLI reports (or the bundled lists), after the user has seen the result and
+ * picked a scope and merge mode. Discovery, parsing, and merge rules live in
+ * `agentCliDiscovery`; this only asks and writes. The configuration listener
+ * re-pushes an open board's state after the write, so its pickers update.
+ */
+async function populateAgentCliModels(): Promise<void> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  const scopes: (vscode.QuickPickItem & { target: vscode.ConfigurationTarget })[] = [
+    ...(workspaceFolder
+      ? [{
+          label: 'Workspace',
+          description: 'Only this workspace',
+          target: vscode.ConfigurationTarget.Workspace,
+        }]
+      : []),
+    { label: 'User', description: 'Every workspace', target: vscode.ConfigurationTarget.Global },
+  ];
+  const scope = await vscode.window.showQuickPick(scopes, {
+    title: 'Populate Agent CLI Models and Thinking Levels',
+    placeHolder: 'Which settings should receive the discovered models and thinking levels?',
+  });
+  if (!scope) {
+    return;
+  }
+
+  const cwd = workspaceFolder?.uri.fsPath ?? process.cwd();
+  const discoveries = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'MWNN Kanban: asking each agent CLI for its models and thinking levels…',
+    },
+    () => discoverAgentCliVocabularies({ cwd, configuredPaths: readAgentCliPaths() }),
+  );
+
+  const config = vscode.workspace.getConfiguration('mwnn-kanban');
+  const scopedValue = (key: string): unknown => {
+    const inspected = config.inspect<unknown>(key);
+    return scope.target === vscode.ConfigurationTarget.Workspace
+      ? inspected?.workspaceValue
+      : inspected?.globalValue;
+  };
+  const existingModels = scopedValue('agentCliModels');
+  const existingLevels = scopedValue('agentCliThinkingLevels');
+  const plans: Record<AgentCliPopulateMode, ReturnType<typeof planAgentCliPopulate>> = {
+    merge: planAgentCliPopulate(existingModels, existingLevels, discoveries, 'merge'),
+    replace: planAgentCliPopulate(existingModels, existingLevels, discoveries, 'replace'),
+  };
+
+  const detail = discoveries
+    .map((discovery) =>
+      describeAgentCliDiscovery(
+        discovery,
+        plans.merge.providers.find((plan) => plan.provider === discovery.provider),
+      ),
+    )
+    .join('\n\n');
+  const mergeLabel = 'Merge (keep my entries)';
+  const replaceLabel = 'Replace';
+  const choice = await vscode.window.showInformationMessage(
+    `Write the discovered models and thinking levels to ${scope.label.toLowerCase()} settings?`,
+    {
+      modal: true,
+      detail:
+        `${detail}\n\nMerge keeps each list you already have, including its first entry (the default a run uses), ` +
+        'and appends new names. Replace writes the discovered lists instead. For a CLI with nothing configured, ' +
+        'the first discovered entry becomes its default. The defaults shown above are for Merge.',
+    },
+    mergeLabel,
+    replaceLabel,
+  );
+  if (choice !== mergeLabel && choice !== replaceLabel) {
+    return;
+  }
+
+  const plan = plans[choice === mergeLabel ? 'merge' : 'replace'];
+  if (!plan.changed) {
+    void vscode.window.showInformationMessage(
+      'MWNN Kanban: agent CLI models and thinking levels are already up to date.',
+    );
+    return;
+  }
+  try {
+    await config.update('agentCliModels', plan.models, scope.target);
+    await config.update('agentCliThinkingLevels', plan.thinkingLevels, scope.target);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    void vscode.window.showErrorMessage(`MWNN Kanban: could not write the settings: ${message}`);
+    return;
+  }
+  const fromCli = discoveries.filter(
+    (discovery) => discovery.models.source === 'cli' || discovery.thinkingLevels.source === 'cli',
+  ).length;
+  void vscode.window.showInformationMessage(
+    `MWNN Kanban: updated agent CLI models and thinking levels in ${scope.label.toLowerCase()} settings (${fromCli} of ${discoveries.length} CLIs listed their own).`,
+  );
 }

@@ -345,11 +345,11 @@ export function resolveAgentCliModel(
  * 4. otherwise nothing - no argument is added and the CLI runs at whatever
  *    effort it defaults to, byte-identically to before this axis existed.
  *
- * The workspace default is one string per provider rather than a list, which
- * is where it differs from the model catalog: a model list doubles as the card
- * UI's suggestion set because model names are unguessable and change between
- * releases, while a provider's effort levels are a small vocabulary the CLI
- * documents. There is nothing a second entry would be for.
+ * The workspace default is one string per provider, or a list whose *first*
+ * entry is that default - the same shape rule as the model catalog. The rest of
+ * a list is presentation only: the card UI offers it as the provider's known
+ * levels, which is what lets the populate command write the whole vocabulary a
+ * CLI reports without the extra entries ever changing a dispatch.
  * ------------------------------------------------------------------------ */
 
 /** The user-facing id of the per-provider workspace default this module reads. */
@@ -372,8 +372,9 @@ export const EMPTY_AGENT_CLI_THINKING_LEVELS: AgentCliThinkingLevelDefaults = Ob
  * Read `mwnn-kanban.agentCliThinkingLevels` from an unvalidated configuration
  * value. Nothing here throws: a malformed setting degrades to "no default
  * configured" for the affected provider instead of breaking a dispatch.
- * Non-object values, unknown provider keys, non-string values, and blank or
- * otherwise unusable levels are all dropped.
+ * Non-object values, unknown provider keys, values that are neither a string
+ * nor a list, and blank or otherwise unusable levels are all dropped. For a
+ * list, the first usable entry is the default.
  */
 export function readAgentCliThinkingLevels(value: unknown): AgentCliThinkingLevelDefaults {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -385,16 +386,54 @@ export function readAgentCliThinkingLevels(value: unknown): AgentCliThinkingLeve
   // rather than an error: a stale or misspelled key simply never matches.
   const defaults: { -readonly [K in AgentCliProviderId]?: string } = {};
   for (const provider of AGENT_CLI_PROVIDER_IDS) {
-    const configuredLevel = configured[provider];
-    if (typeof configuredLevel !== 'string') {
-      continue;
-    }
-    const level = normalizeThinkingLevel(configuredLevel);
+    const level = readThinkingLevelList(configured[provider])[0];
     if (level !== undefined) {
       defaults[provider] = level;
     }
   }
   return Object.freeze(defaults);
+}
+
+/**
+ * Every thinking level configured per provider, in configured order, as the
+ * card UI's thinking field suggests them. A bare string is a one-entry list.
+ * Providers with nothing usable stay absent, exactly as in
+ * {@link agentCliModelSuggestions}.
+ */
+export function readAgentCliThinkingLevelSuggestions(value: unknown): AgentCliModelSuggestions {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return Object.freeze({});
+  }
+  const configured = value as Record<string, unknown>;
+  const suggestions: { -readonly [K in AgentCliProviderId]?: readonly string[] } = {};
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const levels = readThinkingLevelList(configured[provider]);
+    if (levels.length > 0) {
+      suggestions[provider] = Object.freeze(levels);
+    }
+  }
+  return Object.freeze(suggestions);
+}
+
+/**
+ * One provider's levels: a string or a list of strings, trimmed, blanks and
+ * unusable values dropped, duplicates dropped keeping the first occurrence so
+ * the configured default is stable.
+ */
+function readThinkingLevelList(value: unknown): string[] {
+  const entries = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+  const levels: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string') {
+      continue;
+    }
+    const level = normalizeThinkingLevel(entry);
+    if (level === undefined || levels.includes(level)) {
+      continue;
+    }
+    levels.push(level);
+  }
+  return levels;
 }
 
 /** The provider's workspace default level, or undefined when it has none. */

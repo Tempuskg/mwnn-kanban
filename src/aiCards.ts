@@ -1,4 +1,7 @@
+import { AGENT_CLI_PROVIDER_IDS } from './agentCliProviders';
+import { recommendableProviders, type DefinitionRunSettings } from './cardRunSettings';
 import type { BoardState } from './types';
+import { cardPreferredModelFor, cardThinkingLevelFor } from './utils';
 
 type BoardColumn = BoardState['columns'][number];
 type BoardCard = BoardColumn['cards'][number];
@@ -128,7 +131,11 @@ export function buildCardVerificationPrompt(card: BoardCard, cardFilePath: strin
   ].join('\n');
 }
 
-export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string): string {
+export function buildCardDefinitionPrompt(
+  card: BoardCard,
+  cardFilePath: string,
+  runSettings: DefinitionRunSettings = DEFAULT_DEFINITION_RUN_SETTINGS,
+): string {
   return [
     'You are an AI assistant defining a Methodology With No Name (MWNN) Kanban card so it is ready to start.',
     'Write a clear Description and a concrete, testable Acceptance criteria checklist for this card based on its title and any existing context. Do not implement the work — only define it.',
@@ -137,7 +144,10 @@ export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string)
     'Edit that file in place:',
     '  - Fill in the "## Description" section with a concise explanation of the slice of work.',
     '  - Fill in the "## Acceptance criteria" section with a markdown checklist (- [ ] ...) of specific, verifiable conditions.',
-    '  - Do not change the frontmatter, the title, or the Activity section.',
+    '  - Set the run settings described under "Run settings" below. The only frontmatter keys you may add or change are `preferredModel.<provider>` and `thinkingLevel.<provider>`.',
+    '  - Do not change any other frontmatter, the title, or existing Activity entries.',
+    '',
+    ...buildRunSettingsSection(card, runSettings),
     '',
     `Title: ${card.title}`,
     '',
@@ -147,6 +157,84 @@ export function buildCardDefinitionPrompt(card: BoardCard, cardFilePath: string)
     'Current acceptance criteria:',
     card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
   ].join('\n');
+}
+
+const DEFAULT_DEFINITION_RUN_SETTINGS: DefinitionRunSettings = {
+  candidates: { models: {}, thinkingLevels: {} },
+  overwriteExisting: false,
+  recommendation: { kind: 'fallback', reason: 'Jev was not consulted' },
+};
+
+/**
+ * The run-settings part of the definition prompt: which per-provider keys the
+ * agent may write, from which known-valid names, and whether Jev already did.
+ * Providers without at least two known candidates are named as "leave unset"
+ * so the agent never has to guess a CLI's spelling.
+ */
+function buildRunSettingsSection(card: BoardCard, runSettings: DefinitionRunSettings): string[] {
+  const { candidates, overwriteExisting, recommendation } = runSettings;
+  const open = recommendableProviders(card, candidates, overwriteExisting);
+  const existing: string[] = [];
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const model = cardPreferredModelFor(card, provider);
+    const level = cardThinkingLevelFor(card, provider);
+    if (model !== undefined) {
+      existing.push(`preferredModel.${provider}: ${model}`);
+    }
+    if (level !== undefined) {
+      existing.push(`thinkingLevel.${provider}: ${level}`);
+    }
+  }
+
+  const lines = [
+    '## Run settings',
+    'Size how this card should be run to its scope and difficulty: small doc, copy, or config tweaks → a cheaper model and a low thinking level; ordinary feature work → a mid-range model and medium effort; cross-boundary, architectural, or ambiguous work → the strongest model and a high thinking level.',
+    'Write the choice as per-provider frontmatter keys, one line per key, e.g. `preferredModel.claude-code: opus` and `thinkingLevel.claude-code: high`. Rules:',
+    '  - Pick only names from the candidate lists below, spelled exactly as listed. Never invent a model or level name.',
+    '  - Write per-provider keys only. Never write the legacy bare `preferredModel` key, and never write a key with an empty value — omit the key instead.',
+    '  - JSON-quote a value that is empty, starts or ends with whitespace, or contains any of : { } [ ] " # (for example `preferredModel.codex: "openai/gpt-5: preview"`). Never quote the key.',
+    '  - A provider with no candidate list here has no known-valid names: leave its keys unset. Its runs then use the AI loop stage rule, then the workspace default, then that CLI\'s own default.',
+    '  - Cursor Agent CLI ignores thinking levels: a `thinkingLevel.cursor` value may be recorded but is reported as not applied, which is not an error.',
+  ];
+  lines.push(
+    overwriteExisting
+      ? '  - The workspace allows replacing existing run settings on this card when your judgment differs.'
+      : '  - Keep every existing non-empty `preferredModel.*` / `thinkingLevel.*` value exactly as it is: it is a human\'s explicit choice. Only fill in providers that have none.',
+  );
+  if (existing.length > 0) {
+    lines.push('', 'Existing run settings on this card:', ...existing.map((entry) => `  - ${entry}`));
+  }
+
+  if (recommendation.kind === 'jev') {
+    lines.push(
+      '',
+      `Jev (TypeSafe) already judged this card's difficulty tier as "${recommendation.recommendation.tier}" and wrote its model and thinking-level picks into the frontmatter. Keep those values; do not re-choose them. Only fill in a provider Jev left unset if a candidate list below covers it.`,
+    );
+  } else {
+    lines.push(
+      '',
+      `Jev was not used (${recommendation.reason}), so choose the run settings yourself. In your Activity entry, note that Jev was unavailable and name the run settings you chose.`,
+    );
+  }
+
+  const candidateLines: string[] = [];
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    const models = open.models.includes(provider) ? candidates.models[provider] ?? [] : [];
+    const levels = open.thinkingLevels.includes(provider) ? candidates.thinkingLevels[provider] ?? [] : [];
+    if (models.length > 0) {
+      candidateLines.push(`  - ${provider} models: ${models.join(', ')}`);
+    }
+    if (levels.length > 0) {
+      candidateLines.push(`  - ${provider} thinking levels: ${levels.join(', ')}`);
+    }
+  }
+  lines.push(
+    '',
+    ...(candidateLines.length > 0
+      ? ['Candidates you may set (from the workspace settings):', ...candidateLines]
+      : ['No provider has candidates you may set, so leave all run-settings keys as they are.']),
+  );
+  return lines;
 }
 
 export type PlanImportSource =

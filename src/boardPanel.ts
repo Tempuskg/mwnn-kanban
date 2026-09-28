@@ -10,7 +10,12 @@ import { BoardPanelLifecycle } from './boardPanelLifecycle';
 import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { copyCardPathToClipboard } from './cardPath';
-import { agentCliModelSuggestions, readAgentCliModelCatalog } from './agentCliModels';
+import {
+  AGENT_CLI_MODELS_SETTING,
+  agentCliModelSuggestions,
+  readAgentCliModelCatalog,
+  readAgentCliThinkingLevelSuggestions,
+} from './agentCliModels';
 import { canMoveCardToColumn } from './utils';
 import {
   isWebviewToHostMessage,
@@ -223,12 +228,16 @@ export class BoardPanel {
     const modelSuggestions = agentCliModelSuggestions(
       readAgentCliModelCatalog(config.get<unknown>('agentCliModels', {})),
     );
+    const thinkingLevelSuggestions = readAgentCliThinkingLevelSuggestions(
+      config.get<unknown>('agentCliThinkingLevels', {}),
+    );
     const message: HostToWebviewMessage = {
       type: 'state',
       board: this.deps.store.getState(),
       enableRunWithAI,
       zoom: clampZoom(this.deps.zoomMemento.get<number>(ZOOM_MEMENTO_KEY, ZOOM_DEFAULT)),
       modelSuggestions,
+      thinkingLevelSuggestions,
     };
     void this.panel.webview.postMessage(message);
 
@@ -279,6 +288,11 @@ export class BoardPanel {
         await this.deps.store.addColumn(normalizedTitle);
         break;
       }
+      case 'openModelSettings':
+        // The webview cannot reach settings itself; its model picker offers
+        // this when the selected CLI has no configured suggestions.
+        await vscode.commands.executeCommand('workbench.action.openSettings', AGENT_CLI_MODELS_SETTING);
+        break;
       case 'addCard':
         await this.deps.store.addCard(message.columnId, message.title);
         break;

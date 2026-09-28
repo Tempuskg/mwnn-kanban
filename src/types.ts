@@ -100,6 +100,8 @@ export type WebviewToHostMessage =
   | { readonly type: 'ready' }
   | { readonly type: 'requestAddCard'; readonly columnId: string }
   | { readonly type: 'requestAddColumn' }
+  /** Open the settings editor on the per-CLI model list behind the card model picker. */
+  | { readonly type: 'openModelSettings' }
   | { readonly type: 'addCard'; readonly columnId: string; readonly title: string }
   | { readonly type: 'addColumn'; readonly title: string }
   | { readonly type: 'editCard'; readonly cardId: string; readonly title: string }
@@ -226,6 +228,13 @@ export type HostToWebviewMessage =
        * the board rather than be read from settings on the webview side.
        */
       readonly modelSuggestions: AgentCliModelSuggestions;
+      /**
+       * Per-provider thinking levels to offer in the card UI's thinking field,
+       * from `mwnn-kanban.agentCliThinkingLevels`. Presentation only, exactly
+       * like `modelSuggestions`: a level absent from the list is still saved
+       * and dispatched as typed.
+       */
+      readonly thinkingLevelSuggestions: AgentCliModelSuggestions;
     }
   | { readonly type: 'openCard'; readonly cardId: string }
   | {
@@ -266,6 +275,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'requestAddCard':
       return typeof value['columnId'] === 'string';
     case 'requestAddColumn':
+      return true;
+    case 'openModelSettings':
       return true;
     case 'addCard':
       return typeof value['columnId'] === 'string' && typeof value['title'] === 'string';
