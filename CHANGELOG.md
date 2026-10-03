@@ -5,6 +5,22 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-10-03
+
+### Added
+- New command `MWNN Kanban: Populate Agent CLI Models and Thinking Levels` finds the models and thinking levels offered by the agent CLIs installed on this machine, and fills `mwnn-kanban.agentCliModels` and `mwnn-kanban.agentCliThinkingLevels` from them. It works without a folder open, in which case only user settings are offered.
+- Thinking levels now reach GitHub Copilot CLI and Claude Code CLI, as `--effort <level>`, as well as OpenAI Codex CLI. Cursor Agent CLI still takes no effort argument: a level set for it is reported on the card and the run uses that CLI's default effort. Each CLI in `mwnn-kanban.agentCliThinkingLevels` takes either one level or a list. The first entry in a list is the level used, and the rest are offered as suggestions in the card's thinking field.
+- When a card is defined with AI, TypeSafe's Jev model can choose its preferred model and thinking level for each CLI, picking only from names already in `mwnn-kanban.agentCliModels` and `mwnn-kanban.agentCliThinkingLevels`. Jev runs only once the card has a Description and Acceptance criteria, so its difficulty judgment uses the written scope rather than the title alone. It runs once per definition, and later card edits never trigger it again. Turn it on or off with `mwnn-kanban.defineUseJev`; it also requires the `TYPESAFE_API_KEY` environment variable. Without Jev, the defining agent picks from the same names. If Jev fails, the card's run settings are left as they were and the definition still stands. A model or level already set on a card is kept unless `mwnn-kanban.defineOverwriteRunSettings` is on.
+- Pro: new command **Export Review Digest** saves a local Markdown summary of the Portfolio for a weekly, fortnightly, or monthly review. Tracked hours and completed cards get separate sections, and each compares against the previous period. Requires `@tempuskg/mwnn-kanban-pro` 0.1.13.
+- Pro: projects can be opened directly from the Portfolio. A click opens the project in the current window, and Ctrl-click or Cmd-click opens it in a new window. Requires `@tempuskg/mwnn-kanban-pro` 0.1.12.
+
+### Changed
+- The card model and thinking-level pickers on the board are easier to use.
+- Pro: **Export Timesheet** and **Export Review Digest** open the saved file in an editor once it has been written. Requires `@tempuskg/mwnn-kanban-pro` 0.1.13.
+
+### Security
+- The board and sidebar webviews now accept messages only from their own origin.
+
 ## [0.0.12] - 2026-09-26
 
 ### Added

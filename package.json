@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -190,6 +190,12 @@
         "title": "Export Timesheet",
         "category": "MWNN Kanban Pro",
         "icon": "$(export)"
+      },
+      {
+        "command": "mwnn-kanban-pro.exportReviewDigest",
+        "title": "Export Review Digest",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(notebook)"
       },
       {
         "command": "mwnn-kanban-pro.startFocusSession",
@@ -402,7 +408,7 @@
         "mwnn-kanban.defineUseJev": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "When a card is defined with AI, ask TypeSafe's Jev model to judge the card's difficulty and pick each agent CLI's `preferredModel.<provider>` and `thinkingLevel.<provider>` from the names in `#mwnn-kanban.agentCliModels#` and `#mwnn-kanban.agentCliThinkingLevels#`. Jev is used only when the `TYPESAFE_API_KEY` environment variable is set; otherwise, or if Jev fails or times out, the defining agent chooses from the same names and the definition proceeds normally."
+          "markdownDescription": "When a card is defined with AI, ask TypeSafe's Jev model — once the card has a Description and Acceptance criteria — to judge the card's difficulty and pick each agent CLI's `preferredModel.<provider>` and `thinkingLevel.<provider>` from the names in `#mwnn-kanban.agentCliModels#` and `#mwnn-kanban.agentCliThinkingLevels#`. Jev is used only when the `TYPESAFE_API_KEY` environment variable is set; otherwise the defining agent chooses from the same names. If Jev fails or times out after the definition, the card keeps its run settings unchanged and the definition stands."
         },
         "mwnn-kanban.defineOverwriteRunSettings": {
           "type": "boolean",
@@ -805,6 +811,10 @@
           "when": "mwnn-kanban.hasProLicense"
         },
         {
+          "command": "mwnn-kanban-pro.exportReviewDigest",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
           "command": "mwnn-kanban-pro.startFocusSession",
           "when": "mwnn-kanban.hasProLicense"
         },
@@ -878,7 +888,7 @@
     "smoke:populate-models": "node ./scripts/smoke-populate-models.cjs"
   },
   "dependencies": {
-    "@tempuskg/mwnn-kanban-pro": "^0.1.11"
+    "@tempuskg/mwnn-kanban-pro": "^0.1.13"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",
