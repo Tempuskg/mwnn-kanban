@@ -3,13 +3,22 @@ import { suite, test } from 'node:test';
 import { buildCardDefinitionPrompt } from '../../src/aiCards';
 import {
   JEV_ENDPOINT,
+  JevPendingDefinitions,
   buildJevRunSettingsRequest,
+  planDefinitionRunSettings,
   formatRunSettingsActivityEntry,
   requestJevRunSettings,
   type JevFetch,
   type RunSettingCandidates,
 } from '../../src/cardRunSettings';
-import { addCard, defaultBoard, setPreferredModel, setThinkingLevel } from '../../src/utils';
+import {
+  addCard,
+  defaultBoard,
+  setAcceptanceCriteria,
+  setDescription,
+  setPreferredModel,
+  setThinkingLevel,
+} from '../../src/utils';
 
 const candidates: RunSettingCandidates = {
   models: {
@@ -23,10 +32,20 @@ const candidates: RunSettingCandidates = {
   },
 };
 
-function makeCard(configure?: (board: ReturnType<typeof defaultBoard>, cardId: string) => ReturnType<typeof defaultBoard>) {
+function makeCard(
+  configure?: (board: ReturnType<typeof defaultBoard>, cardId: string) => ReturnType<typeof defaultBoard>,
+  defined = true,
+) {
   let board = defaultBoard(['Backlog']);
   board = addCard(board, board.columns[0]!.id, 'Rework the store protocol');
   const cardId = board.columns[0]!.cards[0]!.id;
+  if (defined) {
+    board = setAcceptanceCriteria(
+      setDescription(board, cardId, 'Split the store into reader and writer modules.'),
+      cardId,
+      '- [ ] Store tests pass',
+    );
+  }
   if (configure) {
     board = configure(board, cardId);
   }
@@ -46,7 +65,7 @@ suite('card run settings on definition', () => {
     const prompt = buildCardDefinitionPrompt(card, '.mwnn/cards/x.md', {
       candidates,
       overwriteExisting: false,
-      recommendation: { kind: 'fallback', reason: 'Jev is not configured (TYPESAFE_API_KEY is not set)' },
+      mode: { kind: 'agent', reason: 'Jev is not configured (TYPESAFE_API_KEY is not set)' },
     });
 
     assert.match(prompt, /only frontmatter keys you may add or change are `preferredModel\.<provider>` and `thinkingLevel\.<provider>`/);
@@ -73,7 +92,7 @@ suite('card run settings on definition', () => {
     const settings = {
       candidates,
       overwriteExisting: false,
-      recommendation: { kind: 'fallback', reason: 'off' } as const,
+      mode: { kind: 'agent', reason: 'off' } as const,
     };
 
     const kept = buildCardDefinitionPrompt(card, '.mwnn/cards/x.md', settings);
@@ -122,13 +141,6 @@ suite('card run settings on definition', () => {
     assert.match(entry, /Run settings recommended by Jev/);
     assert.match(entry, /difficulty tier: \*\*heavy\*\*/);
     assert.match(entry, /codex: model `openai\/gpt-5: preview`/);
-
-    const prompt = buildCardDefinitionPrompt(card, '.mwnn/cards/x.md', {
-      candidates,
-      overwriteExisting: false,
-      recommendation: result,
-    });
-    assert.match(prompt, /Jev \(TypeSafe\) already judged this card's difficulty tier as "heavy"/);
   });
 
   test('overwrite opt-in asks Jev about providers the card already sets', () => {
@@ -180,6 +192,105 @@ suite('card run settings on definition', () => {
 
     const entry = formatRunSettingsActivityEntry(timedOut, new Date('2026-09-27T00:00:00.000Z'));
     assert.match(entry, /Run settings: Jev fallback/);
-    assert.match(entry, /the defining agent chooses/);
+    assert.match(entry, /no run settings were changed/);
+  });
+
+  test('Jev is never called for a card without both a Description and Acceptance criteria', async () => {
+    const answers = { answers: { tier: { type: 'choice', choice: 'light' } } };
+    for (const [description, criteria] of [['', ''], ['Some scope', ''], ['', '- [ ] Done'], ['  ', '\n']] as const) {
+      let board = defaultBoard(['Backlog']);
+      board = addCard(board, board.columns[0]!.id, 'Untitled scope');
+      const cardId = board.columns[0]!.cards[0]!.id;
+      board = setAcceptanceCriteria(setDescription(board, cardId, description), cardId, criteria);
+      const card = board.columns[0]!.cards[0]!;
+      const calls: { url: string; body: unknown }[] = [];
+      const result = await requestJevRunSettings(card, candidates, {
+        apiKey: 'k',
+        enabled: true,
+        overwriteExisting: false,
+        fetch: fakeFetch(answers, calls),
+      });
+      assert.equal(calls.length, 0, `Jev was called for description=${JSON.stringify(description)}`);
+      assert.deepEqual(result, { kind: 'fallback', reason: 'the card has no Description and Acceptance criteria yet' });
+    }
+
+    const calls: { url: string; body: unknown }[] = [];
+    await requestJevRunSettings(makeCard(), candidates, {
+      apiKey: 'k',
+      enabled: true,
+      overwriteExisting: false,
+      fetch: fakeFetch(answers, calls),
+    });
+    assert.equal(calls.length, 1);
+  });
+
+  test('definition plan defers to Jev only when it is enabled and configured', () => {
+    assert.deepEqual(planDefinitionRunSettings({ enabled: true, apiKey: 'k' }), { kind: 'jev-after-definition' });
+    assert.deepEqual(planDefinitionRunSettings({ enabled: true, apiKey: '  ' }), {
+      kind: 'agent',
+      reason: 'Jev is not configured (TYPESAFE_API_KEY is not set)',
+    });
+    assert.deepEqual(planDefinitionRunSettings({ enabled: false, apiKey: 'k' }), {
+      kind: 'agent',
+      reason: 'Jev recommendations are turned off in settings',
+    });
+  });
+
+  test('definition prompt tells the agent to leave run settings to Jev when Jev runs afterward', () => {
+    const card = makeCard(undefined, false);
+    const prompt = buildCardDefinitionPrompt(card, '.mwnn/cards/x.md', {
+      candidates,
+      overwriteExisting: false,
+      mode: { kind: 'jev-after-definition' },
+    });
+    assert.doesNotMatch(prompt, /already judged/);
+    assert.match(prompt, /Do not set run settings/);
+    assert.match(prompt, /After you finish the Description and Acceptance criteria, Jev \(TypeSafe\) will judge/);
+    assert.match(prompt, /Do not change the frontmatter \(including any `preferredModel\.\*` \/ `thinkingLevel\.\*`/);
+    assert.doesNotMatch(prompt, /only frontmatter keys you may add or change/);
+    assert.doesNotMatch(prompt, /Candidates you may set/);
+    assert.doesNotMatch(prompt, /claude-code models:/);
+  });
+
+  test('chat definitions fire Jev once, when the card first becomes newly defined', () => {
+    let board = defaultBoard(['Backlog']);
+    board = addCard(board, board.columns[0]!.id, 'Pending card');
+    board = addCard(board, board.columns[0]!.id, 'Gone card');
+    const [pendingCard, goneCard] = board.columns[0]!.cards;
+    const tracker = new JevPendingDefinitions();
+    tracker.add(pendingCard!);
+    tracker.add(goneCard!);
+
+    // Partial definition: not ready yet.
+    board = setDescription(board, pendingCard!.id, 'Scope');
+    assert.deepEqual(tracker.takeReady(board), []);
+
+    board = setAcceptanceCriteria(board, pendingCard!.id, '- [ ] Works');
+    const withoutGone = {
+      ...board,
+      columns: board.columns.map((column) => ({
+        ...column,
+        cards: column.cards.filter((card) => card.id !== goneCard!.id),
+      })),
+    };
+    assert.deepEqual(tracker.takeReady(withoutGone), [pendingCard!.id]);
+
+    // Later edits never re-trigger, and the vanished card was forgotten.
+    const edited = setDescription(withoutGone, pendingCard!.id, 'Scope, refined');
+    assert.deepEqual(tracker.takeReady(edited), []);
+    assert.deepEqual(tracker.takeReady(board), []);
+  });
+
+  test('a card already defined at hand-off waits for the agent to change its definition', () => {
+    let board = defaultBoard(['Backlog']);
+    board = addCard(board, board.columns[0]!.id, 'Redefine me');
+    const cardId = board.columns[0]!.cards[0]!.id;
+    board = setAcceptanceCriteria(setDescription(board, cardId, 'Old scope'), cardId, '- [ ] Old');
+    const tracker = new JevPendingDefinitions();
+    tracker.add(board.columns[0]!.cards[0]!);
+
+    assert.deepEqual(tracker.takeReady(board), []);
+    board = setDescription(board, cardId, 'New scope');
+    assert.deepEqual(tracker.takeReady(board), [cardId]);
   });
 });

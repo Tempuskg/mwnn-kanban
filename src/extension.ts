@@ -1,8 +1,11 @@
 import * as vscode from 'vscode';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
+import { isCardDefined } from './cardDefinition';
 import {
   JEV_API_KEY_ENV,
+  JevPendingDefinitions,
   formatRunSettingsActivityEntry,
+  planDefinitionRunSettings,
   requestJevRunSettings,
   type DefinitionRunSettings,
 } from './cardRunSettings';
@@ -356,6 +359,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const boardChangeEmitter = new vscode.EventEmitter<BoardChangeEvent>();
   context.subscriptions.push(boardChangeEmitter);
   const workspaceFs = createWorkspaceFileSystem(workspaceRoot);
+  // Chat definitions waiting for their card to become defined before Jev picks
+  // its run settings; drained by the store observer below (see cardRunSettings).
+  const jevPendingDefinitions = new JevPendingDefinitions();
   const store = await createBoardStore({
     fileSystem: workspaceFs,
     boardFolder,
@@ -368,6 +374,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         workspaceRoot.fsPath,
         boardFolder,
       ));
+      // The file watcher's reloads land here, which makes this the completion
+      // signal for fire-and-forget chat definitions. Each card fires once.
+      for (const cardId of jevPendingDefinitions.takeReady(change.current)) {
+        void applyJevRunSettingsAfterDefinition(cardId);
+      }
     },
   });
 
@@ -536,17 +547,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   /**
-   * Recommend how a card being defined should be run. With Jev available the
-   * typed picks are written to the card here (never over an existing value
-   * unless the workspace opts in); either way the outcome is recorded in
-   * Activity and handed to the definition prompt. Never throws: Jev is an
-   * enhancement and a definition must not fail because of it.
+   * Decide, before the defining agent runs, who chooses the card's run
+   * settings: Jev after the definition when it is enabled and configured,
+   * otherwise the agent from the candidate lists. No network call.
    */
-  const prepareDefinitionRunSettings = async (cardId: string): Promise<DefinitionRunSettings> => {
+  const planDefinitionRunSettingsForCard = (): DefinitionRunSettings => {
     const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig();
-    const card = findCardById(store.getState(), cardId);
-    if (!card) {
-      return { candidates, overwriteExisting, recommendation: { kind: 'fallback', reason: 'card not found' } };
+    const apiKey = process.env[JEV_API_KEY_ENV];
+    return {
+      candidates,
+      overwriteExisting,
+      mode: planDefinitionRunSettings({ enabled: jevEnabled, ...(apiKey === undefined ? {} : { apiKey }) }),
+    };
+  };
+
+  /**
+   * Ask Jev how a freshly defined card should be run, judging the Description
+   * and Acceptance criteria re-read from disk. The typed picks are written to
+   * the card (never over an existing value unless the workspace opts in) and
+   * the outcome is recorded in Activity, after the definition entries. A card
+   * that is still undefined is skipped without calling Jev. Never throws: Jev
+   * is an enhancement and a definition must not fail because of it.
+   */
+  const applyJevRunSettingsAfterDefinition = async (cardId: string): Promise<void> => {
+    const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig();
+    let card: BoardCard | undefined;
+    try {
+      card = findCardById(await store.reload(), cardId);
+    } catch {
+      return;
+    }
+    if (!card || !isCardDefined(card)) {
+      return;
     }
     const apiKey = process.env[JEV_API_KEY_ENV];
     let recommendation = await requestJevRunSettings(card, candidates, {
@@ -577,9 +609,46 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await store.appendActivity(cardId, formatRunSettingsActivityEntry(recommendation));
       BoardPanel.postStateIfOpen();
     } catch {
-      // The Activity note is best-effort; the definition still proceeds.
+      // The Activity note is best-effort; the definition already stands.
     }
-    return { candidates, overwriteExisting, recommendation };
+  };
+
+  /**
+   * Hand a definition to chat. Chat hand-offs are fire-and-forget, so when Jev
+   * owes the card run settings the card is registered with
+   * `jevPendingDefinitions`; the board-store observer fires Jev once, the
+   * first time a reload shows the card newly defined.
+   */
+  const handOffDefinitionToChat = async (
+    card: BoardCard,
+    runSettings: DefinitionRunSettings,
+    handOff: () => Promise<boolean>,
+  ): Promise<boolean> => {
+    if (runSettings.mode.kind !== 'jev-after-definition') {
+      return handOff();
+    }
+    // Registered before the hand-off so a fast agent cannot finish unseen.
+    jevPendingDefinitions.add(card);
+    let handedOff = false;
+    try {
+      handedOff = await handOff();
+      return handedOff;
+    } finally {
+      if (!handedOff) {
+        jevPendingDefinitions.delete(card.id);
+      }
+    }
+  };
+
+  /** A completed CLI definition gets its Jev run settings straight away. */
+  const finishCliDefinition = async (
+    cardId: string,
+    runSettings: DefinitionRunSettings,
+    completed: boolean,
+  ): Promise<void> => {
+    if (completed && runSettings.mode.kind === 'jev-after-definition') {
+      await applyJevRunSettingsAfterDefinition(cardId);
+    }
   };
 
   const fillCardDefinitionWithAI = async (cardId: string): Promise<void> => {
@@ -599,22 +668,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return false;
       }
 
-      const runSettings = await prepareDefinitionRunSettings(card.id);
-      const definedCard = findCardById(store.getState(), card.id) ?? card;
-      const prompt = buildCardDefinitionPrompt(definedCard, boardCapability.cardFilePath(card.id), runSettings);
+      const runSettings = planDefinitionRunSettingsForCard();
+      const current = findCardById(store.getState(), card.id) ?? card;
+      const prompt = buildCardDefinitionPrompt(current, boardCapability.cardFilePath(card.id), runSettings);
 
       if (choice.kind === 'cli') {
-        return runCardWithAgentCli(
+        const completed = await runCardWithAgentCli(
           { provider: choice.provider, kind: 'definition', card, prompt },
           agentCliRunDeps(),
         );
+        await finishCliDefinition(card.id, runSettings, completed);
+        return completed;
       }
 
-      const handedOff = await handOffPromptToChat(
+      const handedOff = await handOffDefinitionToChat(current, runSettings, () => handOffPromptToChat(
         choice.target,
         withPreferredModelNote(prompt, cardPreferredModelFor(card, choice.target.provider)),
         `"${card.title}"`,
-      );
+      ));
       if (!handedOff) {
         return false;
       }
@@ -806,14 +877,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             (current) => buildCardHandoffPrompt(current, cardFilePath(current)),
             formatHandoffEntry,
           ),
-        requestDefinition: async (card) => {
-          const runSettings = await prepareDefinitionRunSettings(card.id);
-          return runChatHandoff(
+        requestDefinition: (card) => {
+          const runSettings = planDefinitionRunSettingsForCard();
+          const current = findCardById(store.getState(), card.id) ?? card;
+          return handOffDefinitionToChat(current, runSettings, () => runChatHandoff(
             'definition',
-            findCardById(store.getState(), card.id) ?? card,
-            (current) => buildCardDefinitionPrompt(current, cardFilePath(current), runSettings),
+            current,
+            (latest) => buildCardDefinitionPrompt(latest, cardFilePath(latest), runSettings),
             formatDefinitionHandoffEntry,
-          );
+          ));
         },
         decideDoability: decideCardDoability,
         requestTriage: (card) =>
@@ -962,9 +1034,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           runCliHandoff('implementation', card, (current) =>
             buildCardHandoffPrompt(current, cardFilePath(current))),
         requestDefinition: async (card) => {
-          const runSettings = await prepareDefinitionRunSettings(card.id);
-          return runCliHandoff('definition', findCardById(store.getState(), card.id) ?? card, (current) =>
+          const runSettings = planDefinitionRunSettingsForCard();
+          const result = await runCliHandoff('definition', findCardById(store.getState(), card.id) ?? card, (current) =>
             buildCardDefinitionPrompt(current, cardFilePath(current), runSettings));
+          await finishCliDefinition(card.id, runSettings, result.started);
+          return result;
         },
         decideDoability: decideCardDoability,
         requestTriage: (card) =>

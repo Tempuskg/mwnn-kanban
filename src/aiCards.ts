@@ -144,8 +144,12 @@ export function buildCardDefinitionPrompt(
     'Edit that file in place:',
     '  - Fill in the "## Description" section with a concise explanation of the slice of work.',
     '  - Fill in the "## Acceptance criteria" section with a markdown checklist (- [ ] ...) of specific, verifiable conditions.',
-    '  - Set the run settings described under "Run settings" below. The only frontmatter keys you may add or change are `preferredModel.<provider>` and `thinkingLevel.<provider>`.',
-    '  - Do not change any other frontmatter, the title, or existing Activity entries.',
+    ...(runSettings.mode.kind === 'jev-after-definition'
+      ? ['  - Do not change the frontmatter (including any `preferredModel.*` / `thinkingLevel.*` run-settings keys), the title, or existing Activity entries.']
+      : [
+        '  - Set the run settings described under "Run settings" below. The only frontmatter keys you may add or change are `preferredModel.<provider>` and `thinkingLevel.<provider>`.',
+        '  - Do not change any other frontmatter, the title, or existing Activity entries.',
+      ]),
     '',
     ...buildRunSettingsSection(card, runSettings),
     '',
@@ -162,17 +166,25 @@ export function buildCardDefinitionPrompt(
 const DEFAULT_DEFINITION_RUN_SETTINGS: DefinitionRunSettings = {
   candidates: { models: {}, thinkingLevels: {} },
   overwriteExisting: false,
-  recommendation: { kind: 'fallback', reason: 'Jev was not consulted' },
+  mode: { kind: 'agent', reason: 'Jev was not consulted' },
 };
 
 /**
  * The run-settings part of the definition prompt: which per-provider keys the
- * agent may write, from which known-valid names, and whether Jev already did.
+ * agent may write and from which known-valid names - or, when Jev will choose
+ * them once the definition is written, that the agent must leave them alone.
  * Providers without at least two known candidates are named as "leave unset"
  * so the agent never has to guess a CLI's spelling.
  */
 function buildRunSettingsSection(card: BoardCard, runSettings: DefinitionRunSettings): string[] {
-  const { candidates, overwriteExisting, recommendation } = runSettings;
+  const { candidates, overwriteExisting, mode } = runSettings;
+  if (mode.kind === 'jev-after-definition') {
+    return [
+      '## Run settings',
+      'Do not set run settings. After you finish the Description and Acceptance criteria, Jev (TypeSafe) will judge the card\'s difficulty from them and write the model and thinking-level choices itself.',
+      'Leave every `preferredModel.*` / `thinkingLevel.*` key exactly as it is, and do not add new ones.',
+    ];
+  }
   const open = recommendableProviders(card, candidates, overwriteExisting);
   const existing: string[] = [];
   for (const provider of AGENT_CLI_PROVIDER_IDS) {
@@ -205,17 +217,10 @@ function buildRunSettingsSection(card: BoardCard, runSettings: DefinitionRunSett
     lines.push('', 'Existing run settings on this card:', ...existing.map((entry) => `  - ${entry}`));
   }
 
-  if (recommendation.kind === 'jev') {
-    lines.push(
-      '',
-      `Jev (TypeSafe) already judged this card's difficulty tier as "${recommendation.recommendation.tier}" and wrote its model and thinking-level picks into the frontmatter. Keep those values; do not re-choose them. Only fill in a provider Jev left unset if a candidate list below covers it.`,
-    );
-  } else {
-    lines.push(
-      '',
-      `Jev was not used (${recommendation.reason}), so choose the run settings yourself. In your Activity entry, note that Jev was unavailable and name the run settings you chose.`,
-    );
-  }
+  lines.push(
+    '',
+    `Jev was not used (${mode.reason}), so choose the run settings yourself. In your Activity entry, note that Jev was unavailable and name the run settings you chose.`,
+  );
 
   const candidateLines: string[] = [];
   for (const provider of AGENT_CLI_PROVIDER_IDS) {
