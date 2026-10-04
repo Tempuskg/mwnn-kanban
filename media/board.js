@@ -730,7 +730,26 @@
     meta.className = 'card-meta';
     meta.append(renderAssigneeBadge(card));
     if (!isCardDefined(card)) {
-      meta.appendChild(renderChip('Needs definition', 'card-chip-warning'));
+      const chip = renderChip('Needs definition', 'card-chip-warning card-chip-action');
+      /** @param {Event} event */
+      const offerDefinition = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        post({ type: 'offerCardDefinition', cardId: card.id });
+      };
+      chip.setAttribute('role', 'button');
+      chip.tabIndex = 0;
+      chip.draggable = false;
+      chip.title = 'Fill in Description and Acceptance criteria with AI';
+      chip.addEventListener('mousedown', (event) => event.stopPropagation());
+      chip.addEventListener('dblclick', (event) => event.stopPropagation());
+      chip.addEventListener('click', offerDefinition);
+      chip.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          offerDefinition(event);
+        }
+      });
+      meta.appendChild(chip);
     }
     const blockedByDependency = isCardBlocked(card);
     const blockedByStatus = hasBlockedStatus(card.activity);
@@ -740,6 +759,14 @@
       chip.title = blockedByDependency
         ? `Blocked by ${blockerCount} unfinished ${blockerCount === 1 ? 'dependency' : 'dependencies'}`
         : 'Latest card status is BLOCKED';
+      if (blockedByDependency) {
+        chip.tabIndex = 0;
+        const showBlockers = () => highlightBlockingCards(card);
+        chip.addEventListener('mouseenter', showBlockers);
+        chip.addEventListener('focus', showBlockers);
+        chip.addEventListener('mouseleave', clearBlockerHighlights);
+        chip.addEventListener('blur', clearBlockerHighlights);
+      }
       meta.appendChild(chip);
     }
     if (hasDoneStatus(card.activity)) {
@@ -2585,6 +2612,26 @@
    */
   function countBlockingDependencies(card) {
     return blockingDependencies(card).length;
+  }
+
+  /**
+   * Highlights the cards that are blocking `card` (its unfinished dependencies).
+   * @param {Card} card
+   */
+  function highlightBlockingCards(card) {
+    clearBlockerHighlights();
+    for (const id of blockingDependencies(card)) {
+      const element = document.querySelector(`.card[data-card-id="${CSS.escape(id)}"]`);
+      if (element) {
+        element.classList.add('card-blocker-highlight');
+      }
+    }
+  }
+
+  function clearBlockerHighlights() {
+    for (const element of document.querySelectorAll('.card-blocker-highlight')) {
+      element.classList.remove('card-blocker-highlight');
+    }
   }
 
   function formatLimitValue(value) {

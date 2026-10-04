@@ -21,6 +21,7 @@ import {
   type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
 import {
+  autoStartAiCardFromReady,
   checkAllAcceptanceCriteria,
   hasWipCapacity,
   isVerifyColumn,
@@ -185,6 +186,10 @@ export async function runCardWithAgentCli(
     return false;
   }
 
+  if (request.kind === 'implementation' && await startReadyCardForImplementation(deps.store, request.card.id)) {
+    deps.refreshBoard();
+  }
+
   const runHandoff = deps.runHandoff ?? runAgentCliCardHandoff;
   const target = resolution.target;
   const progressTitle = request.kind === 'definition'
@@ -251,6 +256,27 @@ export async function runCardWithAgentCli(
     deps.showInformation(outcome.message);
   }
   return result.completed;
+}
+
+/**
+ * Starting an implementation run hands a Ready card to AI: assign it to AI
+ * and move it to In Progress under the same admission rules as a board
+ * assignment. A refused move keeps the card in Ready (the reason goes to its
+ * Activity) and the requested run still proceeds. Returns whether the card
+ * changed, so the open board can be refreshed before the run starts.
+ */
+async function startReadyCardForImplementation(store: RunWithAiBoardStore, cardId: string): Promise<boolean> {
+  const state = await store.reload();
+  const column = state.columns.find((candidate) => candidate.cards.some((card) => card.id === cardId));
+  const card = column?.cards.find((candidate) => candidate.id === cardId);
+  if (!column || !card || column.role !== 'ready') {
+    return false;
+  }
+  if (card.assignee?.kind !== 'ai') {
+    await store.setAssignee(cardId, { kind: 'ai' });
+  }
+  await autoStartAiCardFromReady(store, cardId);
+  return true;
 }
 
 /**

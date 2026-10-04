@@ -258,7 +258,7 @@ export function hasWipCapacity(column: Column): boolean {
  * with it. Human-owned cards and cards blocked by unfinished dependencies do
  * not count: the loop cannot implement either one.
  */
-function hasAvailableBacklogCard(state: BoardState, session: LoopSession): boolean {
+function hasAvailableBacklogCard(state: BoardState, session: Pick<LoopSession, 'skipped'>): boolean {
   const backlog = state.columns.find((column) => column.role === 'backlog');
   if (!backlog) {
     return false;
@@ -278,14 +278,28 @@ function hasAvailableBacklogCard(state: BoardState, session: LoopSession): boole
  * defined cards, while still allowing the last available backlog card to run
  * when there is nothing left to replenish Ready.
  */
-function canStartImplementation(state: BoardState, session: LoopSession): boolean {
+function canStartImplementation(state: BoardState, session: Pick<LoopSession, 'skipped'>): boolean {
+  return describeImplementationAdmission(state, session) === undefined;
+}
+
+/**
+ * The reason Ready reverse-WIP admission refuses to start implementation, or
+ * undefined when work may start. Shared by the loop and the Ready auto-start.
+ */
+function describeImplementationAdmission(
+  state: BoardState,
+  session: Pick<LoopSession, 'skipped'>,
+): string | undefined {
   const ready = state.columns.find((column) => column.role === 'ready');
   if (!ready || ready.reverseWip === undefined || ready.reverseWip === null) {
-    return true;
+    return undefined;
   }
 
   const readyWip = readyState(state, ready);
-  return !readyWip.under || !hasAvailableBacklogCard(state, session);
+  if (!readyWip.under || !hasAvailableBacklogCard(state, session)) {
+    return undefined;
+  }
+  return `"${ready.title}" has ${readyWip.defined} of its ${readyWip.min} defined cards (reverse WIP) and Backlog still has cards to define`;
 }
 
 function canAdvanceIntoColumn(state: BoardState, session: LoopSession, target: Column): boolean {
@@ -293,6 +307,74 @@ function canAdvanceIntoColumn(state: BoardState, session: LoopSession, target: C
     return false;
   }
   return target.role !== 'in-progress' || canStartImplementation(state, session);
+}
+
+/** Store surface the Ready auto-start mutates through. */
+export interface ReadyAutoStartStore {
+  reload(): Promise<BoardState>;
+  moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<unknown>;
+  appendActivity(cardId: string, entry: string): Promise<unknown>;
+}
+
+export type ReadyAutoStartResult =
+  | { readonly kind: 'not-applicable' }
+  | { readonly kind: 'moved'; readonly columnTitle: string }
+  | { readonly kind: 'refused'; readonly reason: string };
+
+/**
+ * When an AI-assigned card sits in the Ready column, move it to the end of the
+ * In Progress column, applying the same admission rules as a manual or loop
+ * move: unfinished `dependsOn`, the In Progress WIP limit, and Ready's
+ * reverse-WIP admission. A refusal leaves the card in Ready and records the
+ * reason in Activity. Cards outside Ready, cards not assigned to AI, and
+ * boards without an In Progress column are left alone.
+ */
+export async function autoStartAiCardFromReady(
+  store: ReadyAutoStartStore,
+  cardId: string,
+  now: Date = new Date(),
+): Promise<ReadyAutoStartResult> {
+  const state = await store.reload();
+  const column = state.columns.find((candidate) => candidate.cards.some((card) => card.id === cardId));
+  const card = column?.cards.find((candidate) => candidate.id === cardId);
+  const target = state.columns.find((candidate) => candidate.role === 'in-progress');
+  if (!column || !card || column.role !== 'ready' || card.assignee?.kind !== 'ai' || !target) {
+    return { kind: 'not-applicable' };
+  }
+
+  const reason = describeReadyAutoStartRefusal(state, cardId, target);
+  if (reason !== undefined) {
+    await store.appendActivity(cardId, formatReadyAutoStartHeldEntry(column.title, reason, now));
+    return { kind: 'refused', reason };
+  }
+
+  await store.moveCard(cardId, target.id, target.cards.length);
+  await store.appendActivity(cardId, formatReadyAutoStartEntry(column.title, target.title, now));
+  return { kind: 'moved', columnTitle: target.title };
+}
+
+function describeReadyAutoStartRefusal(state: BoardState, cardId: string, target: Column): string | undefined {
+  if (isCardBlocked(state, cardId)) {
+    return 'it is blocked by unfinished dependencies';
+  }
+  if (!hasWipCapacity(target)) {
+    return `"${target.title}" is at its WIP limit of ${target.wipLimit}`;
+  }
+  return describeImplementationAdmission(state, { skipped: new Set() });
+}
+
+export function formatReadyAutoStartEntry(fromTitle: string, toTitle: string, timestamp: Date = new Date()): string {
+  return [
+    `### ${timestamp.toISOString()} - Auto-started in ${toTitle}`,
+    `Assigned to AI in ${fromTitle}; moved to ${toTitle} automatically.`,
+  ].join('\n');
+}
+
+export function formatReadyAutoStartHeldEntry(columnTitle: string, reason: string, timestamp: Date = new Date()): string {
+  return [
+    `### ${timestamp.toISOString()} - Auto-start held in ${columnTitle}`,
+    `Assigned to AI, but the card stays in ${columnTitle}: ${reason}.`,
+  ].join('\n');
 }
 
 /**

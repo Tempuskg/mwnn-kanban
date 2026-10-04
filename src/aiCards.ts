@@ -151,6 +151,8 @@ export function buildCardDefinitionPrompt(
         '  - Do not change any other frontmatter, the title, or existing Activity entries.',
       ]),
     '',
+    ...buildSplitSection(card, cardFilePath, runSettings),
+    '',
     ...buildRunSettingsSection(card, runSettings),
     '',
     `Title: ${card.title}`,
@@ -161,6 +163,42 @@ export function buildCardDefinitionPrompt(
     'Current acceptance criteria:',
     card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
   ].join('\n');
+}
+
+/**
+ * The split part of the definition prompt. A card whose title covers several
+ * independently deliverable slices is better as several cards than as one
+ * oversized definition, so the agent may split it: the original card keeps the
+ * first slice in place (same id, column, position, frontmatter, and Activity)
+ * and each further slice becomes a new card file beside it. Completion
+ * detection only checks the original card, and the board folder watcher picks
+ * up the new files, so neither needs to know a split happened.
+ */
+function buildSplitSection(card: BoardCard, cardFilePath: string, runSettings: DefinitionRunSettings): string[] {
+  const separator = Math.max(cardFilePath.lastIndexOf('/'), cardFilePath.lastIndexOf('\\'));
+  const cardsDir = separator >= 0 ? cardFilePath.slice(0, separator) : '.';
+  const runSettingsRule = runSettings.mode.kind === 'jev-after-definition'
+    ? '    - Do not write any `preferredModel.*` / `thinkingLevel.*` keys on new cards.'
+    : '    - Apply the same "Run settings" rules below to each new card, sized to that card\'s own slice.';
+
+  return [
+    '## Splitting into multiple cards',
+    'First judge whether this card is one coherent slice or covers several independently deliverable slices. Split it only when the parts are genuinely independent deliverables — each could ship, be reviewed, and be verified on its own. Do not split sequential steps of one change (e.g. "add the type, then use it, then test it"), and do not split for the sake of it. When in doubt, keep one card.',
+    'If the card is a single coherent slice, define it in place as described above and create no new cards.',
+    'If it warrants splitting:',
+    '  - Keep the first (most foundational) slice on this card: narrow its Description and Acceptance criteria to cover only that slice. Leave its id, title, column, position, every other frontmatter key, and its existing Activity entries unchanged.',
+    `  - Write each further slice as a new card file in ${cardsDir}/<id>.md, following the MWNN Card Authoring contract:`,
+    `    - id: \`card-<base36 epoch ms>-<n>\`, unique across every existing file in ${cardsDir}; the filename base name must equal the id.`,
+    '    - column: exactly the same column id as this card\'s `column` frontmatter.',
+    '    - position: read this card\'s `position` and the next-higher position among the other cards in the same column, then give the new cards ascending values strictly between the two, in slice order (step ~1000 after this card when it is the last in its column). Never renumber or edit existing cards; if no integer gap remains, use decimal values strictly between them.',
+    '    - title: a concise imperative (JSON-quote it if it contains : { } [ ] " # or edge whitespace).',
+    '    - assignee: copy this card\'s `assignee` line when it has one; otherwise omit it.',
+    '    - createdAt and updatedAt: the current Unix epoch milliseconds.',
+    runSettingsRule,
+    '    - Body: the three sections `## Description` (non-empty), `## Acceptance criteria` (a non-empty - [ ] checklist), and `## Activity` (left empty).',
+    '  - dependsOn: add `dependsOn: [card-<id>, …]` to a new card only when it genuinely cannot start until another slice is done, and list only this card\'s id or ids of new cards written earlier in this split. Never make a card depend on itself or form a cycle, and do not add or change `dependsOn` on this card. Omit the line when there is no real prerequisite.',
+    '  - Append a dated entry to this card\'s "## Activity" section, e.g. `### <ISO timestamp> - Split into multiple cards`, listing the ids of every card split from it.',
+  ];
 }
 
 const DEFAULT_DEFINITION_RUN_SETTINGS: DefinitionRunSettings = {

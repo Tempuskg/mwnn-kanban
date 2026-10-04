@@ -48,6 +48,8 @@ suite('webview protocol', () => {
     );
     assert.equal(isWebviewToHostMessage({ type: 'runCardWithAI', cardId: 'card-1' }), true);
     assert.equal(isWebviewToHostMessage({ type: 'fillCardDefinition', cardId: 'card-1' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'offerCardDefinition', cardId: 'card-1' }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'offerCardDefinition', cardId: 1 }), false);
     assert.equal(isWebviewToHostMessage({ type: 'deleteCard', cardId: 'card-1' }), true);
     assert.equal(
       isWebviewToHostMessage({ type: 'moveCard', cardId: 'card-1', toColumnId: 'col-2', toIndex: 0 }),

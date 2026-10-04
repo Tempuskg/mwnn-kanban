@@ -482,6 +482,87 @@ suite('Run with AI agent CLI dispatch', () => {
     assert.match(harness.infos[0] ?? '', /now in Verify and assigned to Human/);
   });
 
+  test('an implementation run moves a Ready card to In Progress before dispatch, then parks it in Verify on DONE', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(setAssignee(moveCard(state, cardId, state.columns[1]!.id, 0), cardId, undefined));
+    let columnAtDispatch: string | undefined;
+    let assigneeAtDispatch: Assignee | undefined;
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        columnAtDispatch = board.columnOf(cardId).title;
+        assigneeAtDispatch = board.card(cardId).assignee;
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+
+    const completed = await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(columnAtDispatch, 'In Progress');
+    assert.deepEqual(assigneeAtDispatch, { kind: 'ai' });
+    assert.equal(board.columnOf(cardId).title, 'Verify');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'human' });
+    assert.equal(board.card(cardId).acceptanceCriteria, '- [x] The CLI completes the work');
+    const activity = board.card(cardId).activity ?? '';
+    assert.match(activity, /Auto-started in In Progress/);
+    assert.match(activity, /Run with AI parked in Verify/);
+  });
+
+  test('a Ready card moved to In Progress by a run that ends BLOCKED stays in In Progress', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(moveCard(state, cardId, state.columns[1]!.id, 0));
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: BLOCKED: needs a human'));
+        return successfulProcess();
+      }),
+    });
+
+    await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(board.columnOf(cardId).title, 'In Progress');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
+  });
+
+  test('a definition run leaves a Ready card in Ready', async () => {
+    const { state, cardId } = boardWithCard(false);
+    const board = fakeStore(moveCard(state, cardId, state.columns[1]!.id, 0));
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => successfulProcess()),
+    });
+
+    await runCardWithAgentCli(request('claude-code', cardId, 'Define it', 'definition'), harness.deps);
+
+    assert.equal(board.columnOf(cardId).title, 'Ready');
+    assert.doesNotMatch(board.card(cardId).activity ?? '', /Auto-start/);
+  });
+
+  test('a refused start keeps the card in Ready with a logged reason and still runs it', async () => {
+    const { state, cardId } = boardWithCard();
+    let next = addCard(state, state.columns[2]!.id, 'Occupying In Progress');
+    next = setColumnConfig(next, next.columns[2]!.id, { wipLimit: 1 });
+    const board = fakeStore(moveCard(next, cardId, next.columns[1]!.id, 0));
+    let dispatched = false;
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        dispatched = true;
+        return successfulProcess();
+      }),
+    });
+
+    await runCardWithAgentCli(request('claude-code', cardId), harness.deps);
+
+    assert.equal(dispatched, true);
+    assert.equal(board.columnOf(cardId).title, 'Ready');
+    assert.deepEqual(board.card(cardId).assignee, { kind: 'ai' });
+    assert.match(board.card(cardId).activity ?? '', /Auto-start held in Ready\n.*"In Progress" is at its WIP limit of 1/);
+  });
+
   test('a finished card already sitting in Verify is reassigned to Human without moving', async () => {
     const { state, cardId } = boardWithCard();
     const verifyColumnId = state.columns[3]!.id;

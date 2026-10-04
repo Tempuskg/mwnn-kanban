@@ -121,6 +121,52 @@ suite('ai card helpers', () => {
     assert.match(prompt, /No acceptance criteria provided\./);
   });
 
+  test('buildCardDefinitionPrompt tells the agent when and how to split a card into several', () => {
+    let board = defaultBoard(['Backlog']);
+    board = addCard(board, board.columns[0]!.id, 'Add login and export reports');
+    const card = board.columns[0]!.cards[0]!;
+    const prompt = buildCardDefinitionPrompt(card, `.mwnn/cards/${card.id}.md`);
+
+    assert.match(prompt, /## Splitting into multiple cards/);
+    // Judgment first, independent deliverables only, never sequential steps.
+    assert.match(prompt, /judge whether this card is one coherent slice/);
+    assert.match(prompt, /genuinely independent deliverables/);
+    assert.match(prompt, /Do not split sequential steps of one change/);
+    assert.match(prompt, /single coherent slice, define it in place .* create no new cards/);
+    // The original keeps its identity and existing Activity.
+    assert.match(prompt, /Leave its id, title, column, position, every other frontmatter key, and its existing Activity entries unchanged/);
+    // New cards follow the card authoring contract, beside the original card.
+    assert.match(prompt, /new card file in \.mwnn\/cards\/<id>\.md/);
+    assert.match(prompt, /card-<base36 epoch ms>-<n>/);
+    assert.match(prompt, /filename base name must equal the id/);
+    assert.match(prompt, /same column id as this card/);
+    assert.match(prompt, /strictly between the two/);
+    assert.match(prompt, /Never renumber or edit existing cards/);
+    assert.match(prompt, /`## Description` \(non-empty\), `## Acceptance criteria` \(a non-empty - \[ \] checklist\), and `## Activity` \(left empty\)/);
+    // Dependencies only for real prerequisites, never self or cycles.
+    assert.match(prompt, /only when it genuinely cannot start until another slice is done/);
+    assert.match(prompt, /Never make a card depend on itself or form a cycle/);
+    // The original records which cards were split from it.
+    assert.match(prompt, /Split into multiple cards`, listing the ids of every card split from it/);
+    // Default (agent-chosen) run settings apply to the new cards too.
+    assert.match(prompt, /Apply the same "Run settings" rules below to each new card/);
+  });
+
+  test('buildCardDefinitionPrompt keeps run settings off split cards when Jev chooses them', () => {
+    let board = defaultBoard(['Backlog']);
+    board = addCard(board, board.columns[0]!.id, 'Split me');
+    const card = board.columns[0]!.cards[0]!;
+    const prompt = buildCardDefinitionPrompt(card, 'C:\\ws\\.mwnn\\cards\\x.md', {
+      candidates: { models: {}, thinkingLevels: {} },
+      overwriteExisting: false,
+      mode: { kind: 'jev-after-definition' },
+    });
+
+    assert.match(prompt, /new card file in C:\\ws\\\.mwnn\\cards\/<id>\.md/);
+    assert.match(prompt, /Do not write any `preferredModel\.\*` \/ `thinkingLevel\.\*` keys on new cards/);
+    assert.doesNotMatch(prompt, /Apply the same "Run settings" rules below to each new card/);
+  });
+
   test('buildCardVerificationPrompt requires evidence without implementing and one terminal marker', () => {
     let board = defaultBoard(['Verify']);
     const verifyId = board.columns[0]!.id;

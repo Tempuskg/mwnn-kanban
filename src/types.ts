@@ -137,6 +137,7 @@ export type WebviewToHostMessage =
     }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
   | { readonly type: 'fillCardDefinition'; readonly cardId: string }
+  | { readonly type: 'offerCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
   | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number }
   | { readonly type: 'setZoom'; readonly zoom: number };
@@ -337,6 +338,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'runCardWithAI':
       return typeof value['cardId'] === 'string';
     case 'fillCardDefinition':
+    case 'offerCardDefinition':
       return typeof value['cardId'] === 'string';
     case 'deleteCard':
       return typeof value['cardId'] === 'string';

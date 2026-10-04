@@ -381,10 +381,31 @@ body {
   color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
 }
 
+.card-chip-action {
+  cursor: pointer;
+}
+
+.card-chip-action:hover,
+.card-chip-action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
 .card-chip-blocked {
   background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground, #5a1d1d) 92%, transparent);
   border-color: color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #be1100) 60%, transparent);
   color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+}
+
+.card-chip-blocked:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.card.card-blocker-highlight {
+  outline: 2px solid var(--vscode-inputValidation-errorBorder, var(--vscode-focusBorder));
+  outline-offset: 1px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #be1100) 30%, transparent);
 }
 
 .card-chip-done {

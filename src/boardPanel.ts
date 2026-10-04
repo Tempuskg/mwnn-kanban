@@ -17,6 +17,7 @@ import {
   readAgentCliThinkingLevelSuggestions,
 } from './agentCliModels';
 import { canMoveCardToColumn } from './utils';
+import { autoStartAiCardFromReady } from './boardLoop';
 import {
   isWebviewToHostMessage,
   sanitizeCardBadges,
@@ -394,6 +395,9 @@ export class BoardPanel {
         break;
       case 'setAssignee':
         await this.deps.store.setAssignee(message.cardId, message.assignee);
+        if (message.assignee?.kind === 'ai') {
+          await autoStartAiCardFromReady(this.deps.store, message.cardId);
+        }
         break;
       case 'setDependencies':
         await this.deps.store.setDependencies(message.cardId, message.dependsOn);
@@ -410,6 +414,9 @@ export class BoardPanel {
       case 'fillCardDefinition':
         await this.deps.fillCardDefinition(message.cardId);
         break;
+      case 'offerCardDefinition':
+        await this.offerDefinition(message.cardId);
+        return;
       case 'deleteCard': {
         if (this.deps.confirmDeletion()) {
           const choice = await vscode.window.showWarningMessage('Delete this card?', { modal: true }, 'Delete');
@@ -458,11 +465,23 @@ export class BoardPanel {
       return;
     }
 
-    const card = column.cards.find((candidate) => candidate.id === cardId);
+    await this.offerDefinition(cardId);
+  }
+
+  /**
+   * Opens the card details and offers (on the host, since webviews block
+   * `window.confirm`) to have the AI fill in the definition.
+   */
+  private async offerDefinition(cardId: string): Promise<void> {
+    const card = this.deps.store
+      .getState()
+      .columns.flatMap((column) => column.cards)
+      .find((candidate) => candidate.id === cardId);
     if (!card || !cardNeedsDefinition(card)) {
       return;
     }
 
+    void this.panel.webview.postMessage({ type: 'openCard', cardId } satisfies HostToWebviewMessage);
     const choice = await vscode.window.showInformationMessage(
       `"${card.title}" needs a definition before it's ready. Have AI fill in the Description and Acceptance criteria?`,
       'Fill with AI',
@@ -472,7 +491,6 @@ export class BoardPanel {
       return;
     }
 
-    void this.panel.webview.postMessage({ type: 'openCard', cardId } satisfies HostToWebviewMessage);
     await this.deps.fillCardDefinition(cardId);
   }
 
