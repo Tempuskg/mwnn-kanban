@@ -5,6 +5,14 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-10-04
+
+### Added
+- The AI loop can be paused. The sidebar now has Play, Pause, and Stop controls under an "AI Loop" label, and there is a new command `MWNN Kanban: Pause AI Loop`. Pausing never interrupts work: the card stage in progress finishes first, and the loop then holds before its next action. Play resumes the same run, and Stop ends it whether it is running or paused. The controls enable and disable to match the loop's state.
+
+### Changed
+- Changing a card's column in the card editor now puts the card at the top of the new column instead of the bottom.
+
 ## [0.0.13] - 2026-10-03
 
 ### Added

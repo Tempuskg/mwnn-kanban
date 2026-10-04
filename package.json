@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -97,6 +97,11 @@
       {
         "command": "mwnn-kanban.runBoardLoop",
         "title": "Run Board with AI Loop",
+        "category": "MWNN Kanban"
+      },
+      {
+        "command": "mwnn-kanban.pauseBoardLoop",
+        "title": "Pause AI Loop",
         "category": "MWNN Kanban"
       },
       {
@@ -745,6 +750,10 @@
         },
         {
           "command": "mwnn-kanban.runBoardLoop",
+          "when": "config.mwnn-kanban.enableRunWithAI"
+        },
+        {
+          "command": "mwnn-kanban.pauseBoardLoop",
           "when": "config.mwnn-kanban.enableRunWithAI"
         },
         {
