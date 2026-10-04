@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",

@@ -5,6 +5,15 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-10-04
+
+### Added
+- Assigning a card in Ready to AI now starts it automatically: the card moves to the end of In Progress. The move follows the same admission rules as any other move: unfinished dependencies, the In Progress WIP limit, and Ready's reverse WIP. If the move is refused, the card stays in Ready and the reason is recorded in its Activity.
+- Starting an implementation run on a Ready card assigns the card to AI and moves it to In Progress under the same rules. If the move is refused, the run still goes ahead.
+- When a card is defined with AI, the agent may split a card that covers several independently deliverable slices. The original card keeps the first slice, and each further slice becomes a new card next to it in the same column.
+- Clicking the "Needs definition" chip on a card opens the card and offers to fill in its definition with AI.
+- Hovering over or focusing a blocked card's chip highlights the cards that are blocking it.
+
 ## [0.0.14] - 2026-10-04
 
 ### Added
