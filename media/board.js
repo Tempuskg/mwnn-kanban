@@ -23,6 +23,18 @@
   }
 
   /**
+   * The message for saving a card editor whose column select changed, or null
+   * when the column is unchanged. A column change lands the card at the top of
+   * the destination column; the store gives it a position below its neighbour.
+   */
+  function columnChangeMove(cardId, currentColumnId, nextColumnId) {
+    if (!nextColumnId || nextColumnId === currentColumnId) {
+      return null;
+    }
+    return { type: 'moveCard', cardId, toColumnId: nextColumnId, toIndex: 0 };
+  }
+
+  /**
    * @param {string} cardId
    * @param {(message: { type: 'copyCardPath', cardId: string }) => void} postMessage
    */
@@ -193,6 +205,7 @@
     module.exports = {
       createActivityDraft,
       requestCardPathCopy,
+      columnChangeMove,
       createCardPathCopyFeedback,
       modelSuggestionsFor,
       modelPickerContent,
@@ -2410,11 +2423,9 @@
     }
 
     if (fields.columnSelect && fields.currentColumnId) {
-      const nextColumnId = fields.columnSelect.value;
-      if (nextColumnId && nextColumnId !== fields.currentColumnId) {
-        const targetColumn = board ? board.columns.find((col) => col.id === nextColumnId) : null;
-        const toIndex = targetColumn ? targetColumn.cards.length : 0;
-        post({ type: 'moveCard', cardId: card.id, toColumnId: nextColumnId, toIndex });
+      const move = columnChangeMove(card.id, fields.currentColumnId, fields.columnSelect.value);
+      if (move) {
+        post(move);
       }
     }
   }

@@ -16,15 +16,15 @@ concurrency:
 jobs:
   package:
     name: Validate and package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Verify tag matches extension version
@@ -67,7 +67,7 @@ jobs:
         run: npm run package:vsix
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mwnn-kanban-${{ github.sha }}
           path: mwnn-kanban.vsix
@@ -76,10 +76,10 @@ jobs:
   publish-vs-marketplace:
     name: Publish to VS Marketplace
     needs: package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mwnn-kanban-${{ github.sha }}
 
@@ -97,10 +97,10 @@ jobs:
   publish-open-vsx:
     name: Publish to Open VSX
     needs: package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download VSIX artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mwnn-kanban-${{ github.sha }}
 

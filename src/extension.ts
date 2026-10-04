@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
+import { createAiLoopPauseGate, type AiLoopPauseGate } from './aiLoopPause';
+import type { AiLoopState } from './sidebarMessages';
 import { isCardDefined } from './cardDefinition';
 import {
   JEV_API_KEY_ENV,
@@ -165,6 +167,9 @@ function readDefaultReadyReverseWip(): number {
 function confirmDeletion(): boolean {
   return vscode.workspace.getConfiguration('mwnn-kanban').get<boolean>('confirmCardDeletion', true);
 }
+
+/** Without a workspace no AI loop can run, so its state never changes. */
+const noAiLoopStateChange: vscode.Event<void> = () => ({ dispose: () => undefined });
 
 function readEnableRunWithAI(): boolean {
   return vscode.workspace.getConfiguration('mwnn-kanban').get<boolean>('enableRunWithAI', true);
@@ -752,7 +757,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // At most one AI loop runs at a time. The flag stops either execution mode;
   // for CLI mode, the AbortController also terminates the active child process.
-  let activeLoop: { cancelled: boolean; abortController: AbortController } | undefined;
+  // The pause gate holds the run between actions without touching either.
+  let activeLoop:
+    | { cancelled: boolean; abortController: AbortController; pauseGate: AiLoopPauseGate }
+    | undefined;
+  // The host owns the loop state; the sidebar re-reads it on every change.
+  const aiLoopStateEmitter = new vscode.EventEmitter<void>();
+  context.subscriptions.push(aiLoopStateEmitter);
+  const aiLoopState = (): AiLoopState =>
+    !activeLoop ? 'idle' : activeLoop.pauseGate.isPaused() ? 'paused' : 'running';
 
   const runBoardLoopCommand = async (): Promise<void> => {
     if (!readEnableRunWithAI()) {
@@ -770,8 +783,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     const cardFilePath = (card: BoardCard): string => boardCapability.cardFilePath(card.id);
-    const loop = { cancelled: false, abortController: new AbortController() };
+    // Rebound to the live progress reporter once the loop's withProgress
+    // starts; CLI handoffs stream their latest output line through it.
+    let reportLoopProgress: (message: string) => void = () => {};
+    const pauseGate = createAiLoopPauseGate(() => {
+      reportLoopProgress(
+        pauseGate.isPaused()
+          ? 'Paused after the current card stage. Press Play to resume or Stop to end the run.'
+          : 'Resuming',
+      );
+      aiLoopStateEmitter.fire();
+    });
+    const loop = { cancelled: false, abortController: new AbortController(), pauseGate };
     activeLoop = loop;
+    aiLoopStateEmitter.fire();
 
     // One ledger per run: it counts every handoff this run launches and, when
     // the user configured a cap, refuses the one that would exceed it. Read
@@ -806,10 +831,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       BoardPanel.postStateIfOpen();
     };
-
-    // Rebound to the live progress reporter once the loop's withProgress
-    // starts; CLI handoffs stream their latest output line through it.
-    let reportLoopProgress: (message: string) => void = () => {};
 
     let gateways: LoopGateways;
     if (selectedTarget.kind === 'chat') {
@@ -1058,11 +1079,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           token.onCancellationRequested(() => {
             loop.cancelled = true;
             loop.abortController.abort();
+            loop.pauseGate.release();
           });
           return runBoardLoop(
             store,
             gateways,
-            { isCancelled: () => loop.cancelled, delay: waitForMilliseconds },
+            {
+              isCancelled: () => loop.cancelled,
+              delay: waitForMilliseconds,
+              waitWhilePaused: () => loop.pauseGate.waitWhilePaused(),
+            },
             {
               onEvent: (message) => progress.report({ message }),
               reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(),
@@ -1091,7 +1117,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         `${headline} ${formatAiLoopBudgetTally(budget.tally(), outcome)}`,
       );
     } finally {
+      loop.pauseGate.release();
       activeLoop = undefined;
+      aiLoopStateEmitter.fire();
     }
   };
 
@@ -1102,6 +1130,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     activeLoop.cancelled = true;
     activeLoop.abortController.abort();
+    // Wakes a paused run so it sees the cancellation and ends.
+    activeLoop.pauseGate.release();
+  };
+
+  // Lets the in-flight stage finish, then holds before the next action. The
+  // active CLI process is never aborted and no card is moved.
+  const pauseBoardLoopCommand = (): void => {
+    if (!activeLoop) {
+      void vscode.window.showInformationMessage('The MWNN AI loop is not running.');
+      return;
+    }
+    if (!activeLoop.pauseGate.pause()) {
+      void vscode.window.showInformationMessage('The MWNN AI loop is already paused.');
+    }
+  };
+
+  // Resumes a paused run in place (same ledger, budget, and fallback state, no
+  // target picker); otherwise starts a new run exactly like runBoardLoop.
+  const playBoardLoopCommand = async (): Promise<void> => {
+    if (activeLoop?.pauseGate.isPaused()) {
+      activeLoop.pauseGate.resume();
+      return;
+    }
+    await runBoardLoopCommand();
   };
 
   const boardPanelDeps = {
@@ -1130,6 +1182,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ) {
         BoardPanel.postStateIfOpen();
       }
+      if (event.affectsConfiguration('mwnn-kanban.enableRunWithAI')) {
+        aiLoopStateEmitter.fire();
+      }
     }),
   );
   context.subscriptions.push(
@@ -1150,7 +1205,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         context.extensionUri,
         openBoard,
         () => void importPlan(),
-        () => void runBoardLoopCommand(),
+        {
+          play: () => void playBoardLoopCommand(),
+          pause: pauseBoardLoopCommand,
+          stop: stopBoardLoopCommand,
+          state: aiLoopState,
+          runWithAiEnabled: readEnableRunWithAI,
+          onDidChange: aiLoopStateEmitter.event,
+        },
         openPortfolioDashboard,
         () => BoardPanel.status(),
         proLicenseStatus,
@@ -1253,6 +1315,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('mwnn-kanban.runBoardLoop', async () => {
       await runBoardLoopCommand();
+    }),
+    vscode.commands.registerCommand('mwnn-kanban.pauseBoardLoop', () => {
+      pauseBoardLoopCommand();
     }),
     vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', () => {
       stopBoardLoopCommand();
@@ -1384,7 +1449,15 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
         context.extensionUri,
         () => void showWorkspaceMessage(),
         () => void showWorkspaceMessage(),
-        () => void showWorkspaceMessage(),
+        {
+          play: () => void showWorkspaceMessage(),
+          pause: () => void showWorkspaceMessage(),
+          stop: () => void showWorkspaceMessage(),
+          // No board means no loop can ever run.
+          state: () => 'idle',
+          runWithAiEnabled: readEnableRunWithAI,
+          onDidChange: noAiLoopStateChange,
+        },
         // The Portfolio dashboard is workspace-independent, so it stays wired
         // even without a folder open; license gating still decides visibility.
         openPortfolioDashboard,
@@ -1403,6 +1476,7 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mwnn-kanban.setColumnLimits', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.runCardWithAI', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.runBoardLoop', showWorkspaceMessage),
+    vscode.commands.registerCommand('mwnn-kanban.pauseBoardLoop', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.stopBoardLoop', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.stopCardRun', showWorkspaceMessage),
     vscode.commands.registerCommand('mwnn-kanban.importPlan', showWorkspaceMessage),

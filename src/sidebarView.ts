@@ -8,6 +8,10 @@
  * A Pro-only "Portfolio" button sits alongside the secondary buttons. It is
  * rendered only while a Pro license (or live trial) is active, and appears or
  * disappears live as a key is entered or cleared.
+ *
+ * Play, Pause, and Stop buttons drive the AI board loop. The extension host owns
+ * the loop state (idle / running / paused) and pushes which buttons are usable;
+ * the sidebar only posts commands back.
  */
 
 import * as vscode from 'vscode';
@@ -19,7 +23,23 @@ import {
   type PortfolioButtonMode,
   type ProLicenseStatus,
 } from './portfolioButton';
-import { routeSidebarMessage } from './sidebarMessages';
+import {
+  createSidebarAiLoopStateMessage,
+  routeSidebarMessage,
+  type AiLoopControls,
+  type AiLoopState,
+} from './sidebarMessages';
+
+/** The host-side AI loop hooks behind the sidebar's Play, Pause, and Stop buttons. */
+export interface SidebarAiLoopHooks {
+  readonly play: () => void;
+  readonly pause: () => void;
+  readonly stop: () => void;
+  readonly state: () => AiLoopState;
+  readonly runWithAiEnabled: () => boolean;
+  /** Fires when the loop state or the Run With AI setting changes. */
+  readonly onDidChange: vscode.Event<void>;
+}
 
 export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'mwnn-kanban.sidebar';
@@ -30,7 +50,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly openBoard: () => void,
     private readonly importPlan: () => void,
-    private readonly runAiLoop: () => void,
+    private readonly aiLoop: SidebarAiLoopHooks,
     private readonly openPortfolio: () => void,
     private readonly boardStatus: () => BoardPanelStatus,
     private readonly proLicenseStatus: () => ProLicenseStatus,
@@ -48,6 +68,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       webviewView.webview,
       boardButtonMode(this.boardStatus()),
       portfolioButtonMode(this.proLicenseStatus()),
+      createSidebarAiLoopStateMessage(this.aiLoop.state(), this.aiLoop.runWithAiEnabled()).controls,
     );
 
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
@@ -56,8 +77,13 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
         // so an existing panel is revealed rather than duplicated.
         openBoard: () => this.openBoard(),
         importPlan: () => this.importPlan(),
-        runAiLoop: () => this.runAiLoop(),
+        playAiLoop: () => this.aiLoop.play(),
+        pauseAiLoop: () => this.aiLoop.pause(),
+        stopAiLoop: () => this.aiLoop.stop(),
         openPortfolio: () => this.openPortfolio(),
+        // A hidden view's document is torn down and reloaded from the HTML
+        // set at resolve time, so re-push everything once its script is back.
+        sidebarReady: () => this.postAllState(),
       });
     });
 
@@ -67,9 +93,11 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     // Entering or clearing a license key flips the Portfolio button in the
     // already-open sidebar; no window reload or view re-open needed.
     const licenseSubscription = this.onProLicenseChange(() => this.postPortfolioButtonState());
+    const aiLoopSubscription = this.aiLoop.onDidChange(() => this.postAiLoopState());
     webviewView.onDidDispose(() => {
       stateSubscription.dispose();
       licenseSubscription.dispose();
+      aiLoopSubscription.dispose();
       if (this.view === webviewView) {
         this.view = undefined;
       }
@@ -79,9 +107,23 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     this.openBoard();
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
+        this.postAllState();
         this.openBoard();
       }
     });
+  }
+
+  private postAllState(): void {
+    this.postButtonState();
+    this.postPortfolioButtonState();
+    this.postAiLoopState();
+  }
+
+  /** Push the host-owned AI loop state and button enablement into the sidebar. */
+  private postAiLoopState(): void {
+    void this.view?.webview.postMessage(
+      createSidebarAiLoopStateMessage(this.aiLoop.state(), this.aiLoop.runWithAiEnabled()),
+    );
   }
 
   /** Push the current button mode into the sidebar webview. */
@@ -107,7 +149,9 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     webview: vscode.Webview,
     mode: BoardButtonMode,
     portfolioMode: PortfolioButtonMode,
+    loopControls: AiLoopControls,
   ): string {
+    const disabled = (usable: boolean): string => (usable ? '' : ' disabled');
     const nonce = makeNonce();
     const csp = [
       `default-src 'none'`,
@@ -135,6 +179,7 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       font-family: inherit;
     }
     button:hover { background: var(--vscode-button-hoverBackground); }
+    button:disabled { opacity: 0.5; cursor: default; }
     /* Hidden entirely so it leaves no empty control or leftover spacing. */
     button[hidden] { display: none; }
     button.secondary {
@@ -142,7 +187,10 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-button-secondaryForeground);
       background: var(--vscode-button-secondaryBackground);
     }
-    button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    button.secondary:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+    .loop-controls { display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+    .loop-controls .loop-label { flex: 0 0 auto; margin-right: 4px; font-size: 12px; white-space: nowrap; }
+    .loop-controls button.secondary { margin-top: 0; flex: 1; min-width: 0; padding: 6px 4px; line-height: 1; }
     /* Drop the gap above "Import plan" when it is the only visible button. */
     button#open[hidden] + button.secondary { margin-top: 0; }
   </style>
@@ -152,7 +200,12 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
   <p>The MWNN Kanban board opens in the editor area.</p>
   <button id="open" type="button"${mode === 'hidden' ? ' hidden' : ''}>${boardButtonLabel(mode)}</button>
   <button id="import" type="button" class="secondary" title="Hand a written plan to AI to import as Backlog cards">Import plan</button>
-  <button id="run-loop" type="button" class="secondary" title="Automatically triage and run AI-assigned and unassigned cards, parking finished work in Verify for human sign-off">Run AI loop</button>
+  <div class="loop-controls" role="group" aria-label="AI loop controls" title="Automatically triage and run AI-assigned and unassigned cards, parking finished work in Verify for human sign-off">
+    <span class="loop-label" aria-hidden="true">AI Loop</span>
+    <button id="loop-play" type="button" class="secondary" title="Play: start the AI loop" aria-label="Play: start the AI loop"${disabled(loopControls.play)}>&#9654;</button>
+    <button id="loop-pause" type="button" class="secondary" title="Pause: let the current card stage finish, then hold the AI loop" aria-label="Pause the AI loop after the current card stage"${disabled(loopControls.pause)}>&#10074;&#10074;</button>
+    <button id="loop-stop" type="button" class="secondary" title="Stop: cancel the AI loop and end its active run" aria-label="Stop the AI loop"${disabled(loopControls.stop)}>&#9632;</button>
+  </div>
   <button id="portfolio" type="button" class="secondary" title="${PORTFOLIO_BUTTON_TOOLTIP}"${portfolioMode === 'hidden' ? ' hidden' : ''}>${PORTFOLIO_BUTTON_LABEL}</button>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -163,9 +216,35 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
     document.getElementById('import').addEventListener('click', () => {
       vscode.postMessage({ type: 'importPlan' });
     });
-    document.getElementById('run-loop').addEventListener('click', () => {
-      vscode.postMessage({ type: 'runAiLoop' });
+    const playButton = document.getElementById('loop-play');
+    const pauseButton = document.getElementById('loop-pause');
+    const stopButton = document.getElementById('loop-stop');
+    playButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'playAiLoop' });
     });
+    pauseButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'pauseAiLoop' });
+    });
+    stopButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'stopAiLoop' });
+    });
+
+    function applyAiLoopState(message) {
+      const controls = message.controls;
+      if (!controls || typeof controls !== 'object') {
+        return;
+      }
+      playButton.disabled = controls.play !== true;
+      pauseButton.disabled = controls.pause !== true;
+      stopButton.disabled = controls.stop !== true;
+      const playLabel = !message.enabled
+        ? 'Play: enable "MWNN Kanban: Run With AI" in settings to use the AI loop'
+        : message.state === 'paused'
+          ? 'Play: resume the paused AI loop'
+          : 'Play: start the AI loop';
+      playButton.title = playLabel;
+      playButton.setAttribute('aria-label', playLabel);
+    }
     const portfolioButton = document.getElementById('portfolio');
     portfolioButton.addEventListener('click', () => {
       vscode.postMessage({ type: 'openPortfolio' });
@@ -191,8 +270,12 @@ export class BoardSidebarViewProvider implements vscode.WebviewViewProvider {
         applyButtonMode(message.mode);
       } else if (message && message.type === 'portfolioButton') {
         portfolioButton.hidden = message.mode === 'hidden';
+      } else if (message && message.type === 'aiLoopState') {
+        applyAiLoopState(message);
       }
     });
+
+    vscode.postMessage({ type: 'sidebarReady' });
   </script>
 </body>
 </html>`;

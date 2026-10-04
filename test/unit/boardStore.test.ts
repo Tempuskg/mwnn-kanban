@@ -692,6 +692,36 @@ suite('board store', () => {
     );
   });
 
+  test('persists a move into an empty column with a valid integer position', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [
+        { id: 'col-verify', title: 'Verify', role: 'verify', wipLimit: null, reverseWip: null },
+        { id: 'col-done', title: 'Done', role: 'done', wipLimit: null, reverseWip: null },
+      ],
+    };
+    const cards = [
+      { columnId: 'col-verify', position: 1000, card: { id: 'card-moving', title: 'Moving', createdAt: 1 } },
+      { columnId: 'col-verify', position: 2000, card: { id: 'card-stay', title: 'Stay', createdAt: 2 } },
+    ] satisfies CardDocument[];
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      ...Object.fromEntries(cards.map((card) => [`.mwnn/cards/${card.card.id}.md`, serializeCard(card)])),
+    });
+    const before = fileSystem.snapshot();
+    const store = await createBoardStore(createDeps({ fileSystem }));
+
+    await store.moveCard('card-moving', 'col-done', 0);
+
+    const after = fileSystem.snapshot();
+    assert.equal(after.get('.mwnn/cards/card-stay.md'), before.get('.mwnn/cards/card-stay.md'));
+    const moved = parseCard(after.get('.mwnn/cards/card-moving.md') ?? '');
+    assert.equal(moved.columnId, 'col-done');
+    assert.ok(Number.isInteger(moved.position));
+    const reloaded = await createBoardStore(createDeps({ fileSystem }));
+    assert.deepEqual(reloaded.getState().columns[1]!.cards.map((card) => card.title), ['Moving']);
+  });
+
   test('repairs duplicate existing positions deterministically when the next card is added', async () => {
     const columnsDocument: ColumnsDocument = {
       version: BOARD_FILE_VERSION,

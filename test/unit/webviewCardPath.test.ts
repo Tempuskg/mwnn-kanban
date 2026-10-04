@@ -45,3 +45,22 @@ suite('card path webview action', () => {
     );
   });
 });
+
+suite('card editor column change', () => {
+  const { columnChangeMove } = require('../../../media/board.js') as {
+    columnChangeMove(cardId: string, current: string, next: string): unknown;
+  };
+
+  test('moves a card whose column changed to the top of the destination column', () => {
+    assert.deepEqual(columnChangeMove('card-a', 'col-ready', 'col-done'), {
+      type: 'moveCard',
+      cardId: 'card-a',
+      toColumnId: 'col-done',
+      toIndex: 0,
+    });
+  });
+
+  test('posts nothing when the column is unchanged so the position is preserved', () => {
+    assert.equal(columnChangeMove('card-a', 'col-ready', 'col-ready'), null);
+  });
+});

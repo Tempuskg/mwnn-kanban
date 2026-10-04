@@ -85,6 +85,12 @@ export interface LoopGateways {
 export interface LoopControl {
   isCancelled(): boolean;
   delay(ms: number): Promise<void>;
+  /**
+   * Optional pause hold, awaited before every iteration. It resolves at once
+   * unless the run is paused, so an in-flight stage always finishes first and
+   * a resumed run continues with the same session. A stop must also resolve it.
+   */
+  waitWhilePaused?(): Promise<void>;
 }
 
 export interface LoopOptions {
@@ -618,6 +624,12 @@ export async function runBoardLoop(
   };
 
   while (!control.isCancelled()) {
+    if (control.waitWhilePaused) {
+      await control.waitWhilePaused();
+      if (control.isCancelled()) {
+        break;
+      }
+    }
     const state = await store.reload();
     pruneLoopSession(state, session);
 

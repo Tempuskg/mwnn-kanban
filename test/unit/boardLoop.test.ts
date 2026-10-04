@@ -27,6 +27,7 @@ import {
   setDescription,
 } from '../../src/utils';
 import type { Assignee, BoardState, Card } from '../../src/types';
+import { createAiLoopPauseGate } from '../../src/aiLoopPause';
 
 const FULL_COLUMNS = ['Backlog', 'Ready', 'In Progress', 'Verify', 'Done'] as const;
 
@@ -1245,5 +1246,102 @@ suite('doability prompt and parsing', () => {
 
     const noReason = parseDoabilityDecision('DOABLE_BY_AI');
     assert.deepEqual(noReason, { decision: 'ai' });
+  });
+});
+
+suite('runBoardLoop pause gate', () => {
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+
+  function twoAiCardsInProgress(): { state: BoardState; first: string; second: string } {
+    const { state: initial, cardId: first } = boardWithCard([...FULL_COLUMNS], 2, 'First', { kind: 'ai' });
+    const columnId = initial.columns[2]!.id;
+    let state = addCard(initial, columnId, 'Second');
+    const second = state.columns[2]!.cards[1]!.id;
+    state = setDescription(state, second, 'A description');
+    state = setAcceptanceCriteria(state, second, '- [ ] A criterion');
+    state = setAssignee(state, second, { kind: 'ai' });
+    return { state, first, second };
+  }
+
+  test('a pause during a stage lets it finish, holds further dispatch, and resume continues the same run', async () => {
+    const { state, first, second } = twoAiCardsInProgress();
+    const board = fakeBoard(state);
+    const { gateways, log } = instantGateways(board);
+    const gate = createAiLoopPauseGate();
+    const dispatchCard = gateways.dispatchCard;
+    let processKilled = false;
+    const control: LoopControl = {
+      isCancelled: () => false,
+      delay: async () => undefined,
+      waitWhilePaused: () => gate.waitWhilePaused(),
+    };
+
+    const run = runBoardLoop(board.store, {
+      ...gateways,
+      dispatchCard: async (card) => {
+        if (log.dispatched.length === 0) {
+          // The user presses Pause while this stage's process is running.
+          gate.pause();
+        }
+        const result = await dispatchCard(card);
+        // The in-flight stage completes normally; nothing aborted it.
+        processKilled = control.isCancelled();
+        return result;
+      },
+    }, control, { pollIntervalMs: 0 });
+
+    await settle();
+    assert.deepEqual(log.dispatched, [first]);
+    assert.equal(processKilled, false);
+    assert.equal(gate.isPaused(), true);
+    // Paused before the next action: the finished card has not been advanced.
+    assert.equal(board.columnTitleOf(first), 'In Progress');
+    assert.equal(board.columnTitleOf(second), 'In Progress');
+
+    gate.resume();
+    const summary = await run;
+
+    // Same session: the finished card advances rather than being re-dispatched.
+    assert.deepEqual(log.dispatched, [first, second]);
+    assert.equal(board.columnTitleOf(first), 'Verify');
+    assert.equal(board.columnTitleOf(second), 'Verify');
+    assert.equal(summary.cancelled, false);
+  });
+
+  test('stop while paused ends the run as cancelled without dispatching again', async () => {
+    const { state, first } = twoAiCardsInProgress();
+    const board = fakeBoard(state);
+    const { gateways, log } = instantGateways(board);
+    const gate = createAiLoopPauseGate();
+    let cancelled = false;
+    const dispatchCard = gateways.dispatchCard;
+
+    const run = runBoardLoop(board.store, {
+      ...gateways,
+      dispatchCard: async (card) => {
+        gate.pause();
+        return dispatchCard(card);
+      },
+    }, {
+      isCancelled: () => cancelled,
+      delay: async () => undefined,
+      waitWhilePaused: () => gate.waitWhilePaused(),
+    }, { pollIntervalMs: 0 });
+
+    await settle();
+    assert.deepEqual(log.dispatched, [first]);
+
+    // The Stop path: cancel, then release the gate so the held run wakes.
+    cancelled = true;
+    gate.release();
+    const summary = await run;
+
+    assert.equal(summary.cancelled, true);
+    assert.deepEqual(log.dispatched, [first]);
+    assert.equal(gate.isPaused(), false);
   });
 });
