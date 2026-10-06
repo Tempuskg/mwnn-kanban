@@ -121,6 +121,48 @@ suite('ai card helpers', () => {
     assert.match(prompt, /No acceptance criteria provided\./);
   });
 
+  test('buildCardDefinitionPrompt interactive variant asks clarifying questions and waits for answers first', () => {
+    let board = defaultBoard(['Backlog']);
+    board = addCard(board, board.columns[0]!.id, 'Improve search');
+    const card = board.columns[0]!.cards[0]!;
+    const path = `.mwnn/cards/${card.id}.md`;
+    const prompt = buildCardDefinitionPrompt(card, path, undefined, { interactive: true });
+
+    assert.match(prompt, /planning mode/);
+    assert.match(prompt, /Read the card file and the code/);
+    assert.match(prompt, /ask the user clarifying questions/i);
+    assert.match(prompt, /before you edit the card file/);
+    assert.match(prompt, /Wait for the user's answers/);
+    assert.match(prompt, /Only then write the Description and Acceptance criteria/);
+    assert.match(prompt, /skip the questions and go straight to defining the card/);
+    assert.match(prompt, /few and specific/);
+    assert.match(prompt, /generic questionnaire/);
+    // Still carries the file-edit, split, and run-settings instructions.
+    assert.match(prompt, /Edit that file in place/);
+    assert.match(prompt, /## Splitting into multiple cards/);
+    assert.match(prompt, /## Run settings|Run settings/);
+    assert.match(prompt, /do not implement the work/i);
+  });
+
+  test('buildCardDefinitionPrompt default variant stays non-interactive and byte-identical', () => {
+    let board = defaultBoard(['Backlog']);
+    board = addCard(board, board.columns[0]!.id, 'Improve search');
+    const card = board.columns[0]!.cards[0]!;
+    const path = `.mwnn/cards/${card.id}.md`;
+    const prompt = buildCardDefinitionPrompt(card, path);
+
+    assert.doesNotMatch(prompt, /clarifying question/i);
+    assert.doesNotMatch(prompt, /Wait for the user/i);
+    assert.doesNotMatch(prompt, /planning mode/i);
+    assert.equal(buildCardDefinitionPrompt(card, path, undefined, {}), prompt);
+    assert.equal(buildCardDefinitionPrompt(card, path, undefined, { interactive: false }), prompt);
+
+    // The interactive variant only inserts its own section; everything else is unchanged.
+    const interactive = buildCardDefinitionPrompt(card, path, undefined, { interactive: true });
+    const stripped = interactive.replace(/## Clarify with the user first[\s\S]*?\n\n/, '');
+    assert.equal(stripped, prompt);
+  });
+
   test('buildCardDefinitionPrompt tells the agent when and how to split a card into several', () => {
     let board = defaultBoard(['Backlog']);
     board = addCard(board, board.columns[0]!.id, 'Add login and export reports');

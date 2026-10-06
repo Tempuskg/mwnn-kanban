@@ -47,6 +47,20 @@ Treat acceptance evidence and the current board state as authoritative workflow
 state. A prior assistant response, a timestamp, or an unchecked box by itself
 does not prove completion.
 
+### Superseding a terminal marker
+
+The AI loop reads only `STATUS:` lines appended to `## Activity` since the
+dispatch, and any `STATUS: BLOCKED` line outranks `STATUS: DONE`. When a card
+that already reported `STATUS: BLOCKED` in the current dispatch is later
+completed (for example, after a human confirms a smoke test):
+
+1. Reword the earlier marker into a plain note that no longer starts a line
+   with `STATUS:`, e.g. `Initially reported as blocked: <reason>; resolved
+   below.`
+2. Append a new dated entry that ends with `STATUS: DONE` on its own line.
+
+Never leave both markers in place, or the card stays blocked.
+
 ## Card file shape
 
 ```md

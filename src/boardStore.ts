@@ -120,6 +120,12 @@ export interface BoardStore {
   removeColumn(columnId: string, targetColumnId?: string): Promise<BoardState>;
   reorderColumns(columnId: string, toIndex: number): Promise<BoardState>;
   reset(): Promise<BoardState>;
+  /**
+   * Writes the in-memory board to disk if `columns.json` is still missing
+   * (e.g. a brand-new workspace that has never had a mutation). No-ops, and
+   * never rewrites existing files, when a board is already persisted.
+   */
+  ensurePersisted(): Promise<BoardState>;
 }
 
 export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore> {
@@ -210,6 +216,22 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
       runQueued((current) => removeColumn(current, columnId, targetColumnId)),
     reorderColumns: (columnId, toIndex) => runQueued((current) => reorderColumns(current, columnId, toIndex)),
     reset: () => runQueued(() => createInitialBoard(deps.defaultColumns, deps.defaultReadyReverseWip)),
+    ensurePersisted: (): Promise<BoardState> => {
+      const next = commitQueue.then(async () => {
+        const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
+        if (!(await deps.fileSystem.exists(columnsPath))) {
+          await writeBoardState(deps, state);
+        } else {
+          await refreshFromDisk();
+        }
+
+        const current = cloneBoard(state);
+        notify(current, 'reload');
+        return current;
+      });
+      commitQueue = next.catch(() => undefined);
+      return next;
+    },
   };
 }
 

@@ -1,6 +1,6 @@
 ---
 name: github-instructions-vscode-extension-release-instructions
-description: "Imported repository guidance from .github/instructions/vscode-extension-release.instructions.md. Use when working in this repository and the original guidance is relevant."
+description: "Imported repository guidance from .github/instructions/vscode-extension-release.instructions.md. Use when versioning, packaging, or publishing a release, or when packaging and installing a local test VSIX of the working tree."
 ---
 
 Follow this imported repository guidance from `.github/instructions/vscode-extension-release.instructions.md` when the task overlaps with its original scope.
@@ -23,3 +23,10 @@ Follow this imported repository guidance from `.github/instructions/vscode-exten
 - Re-read the current version and workspace state before release steps, especially on resumed chats.
 - Keep versioning guidance separate from commit or tag advice; do not assume automatic git tags or commits unless the user explicitly requests them.
 - In the closeout, list changed release files, commands run, remaining unpublished steps, and anything not yet verified.
+
+## Local test install
+
+- To install a working-tree build for manual testing, package with dependencies, as `npm run package:vsix` does. Never pass `--no-dependencies`: the optional `@tempuskg/mwnn-kanban-pro` package is loaded from `node_modules` at runtime, and omitting it silently drops Pro features such as MWNN Portfolio.
+- Write the VSIX to a temp path, e.g. `npx --yes @vscode/vsce package --out "$env:TEMP\mwnn-kanban-test.vsix"`, and confirm the archive contains `extension/node_modules/@tempuskg/mwnn-kanban-pro/` before installing.
+- Install with `code --install-extension <vsix> --force`, then tell the user to reload the window.
+- Tell the user the build carries the same version number as the current release and includes any uncommitted changes. A local test install is not a release: do not bump the version or publish.

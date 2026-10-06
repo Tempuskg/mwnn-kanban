@@ -1,11 +1,11 @@
 ---
 id: card-mushzfv3-1
 title: Upgrade GitHub Actions off deprecated Node 20
-column: col-mqwk2njn-3
-position: 1000
+column: col-mqwk2njn-4
+position: 33000
 assignee: { kind: ai }
 createdAt: 1791038340111
-updatedAt: 1791038411178
+updatedAt: 1791226552340
 ---
 
 ## Description
@@ -14,8 +14,8 @@ The v0.0.13 release run (Actions run 37130023405) warned that Node.js 20 is depr
 ## Acceptance criteria
 - [x] `ci.yml` and `release.yml` use action majors that run on Node 24 (checkout, setup-node, upload-artifact, download-artifact)
 - [x] `node-version` in both workflows is a supported LTS, or the reason for keeping 20 is recorded in Activity
-- [ ] A CI run on the change completes with no Node 20 deprecation annotation
-- [ ] Release workflow still packages one VSIX and publishes it to both VS Marketplace and Open VSX (verified on the next release or a dry run)
+- [x] A CI run on the change completes with no Node 20 deprecation annotation
+- [x] Release workflow still packages one VSIX and publishes it to both VS Marketplace and Open VSX (verified on the next release or a dry run)
 
 ## Activity
 ### 2026-10-03T14:40:11.013Z - Handed off to Claude Code
@@ -25,3 +25,6 @@ Dispatched this card to Claude Code. The agent should append its completion note
 Bumped actions in `.github/workflows/ci.yml` and `release.yml` to Node 24 majors: checkout@v7, setup-node@v7, upload-artifact@v7, download-artifact@v8 (verified each `action.yml` declares `using: node24`). Moved `node-version` 20 -> 24 (LTS) in both workflows; locally on Node 24.11 `npm run compile-tests`, `npm run compile`, `npm test` pass (562/562). `package.json` engines left unchanged (extension still supports Node 20+ at runtime; only CI moved).
 Unmet (need a pushed CI run / next release): no-deprecation-annotation check, and the dual-registry publish verification; both criteria left unchecked.
 STATUS: BLOCKED: remaining two criteria require a pushed CI run and a release/dry run, which can't be done from this workspace
+
+### 2026-10-05 Claude Code
+Verified remaining criteria on release run 37245132243 (v0.0.15, built from commit 18f438c, which includes the workflow bump from 34b1e29): Validate and package, Publish to Open VSX, and Publish to VS Marketplace all succeeded, and none of the jobs has any annotations, so there is no Node 20 deprecation warning. One VSIX artifact was published to both registries. Moved to Done.

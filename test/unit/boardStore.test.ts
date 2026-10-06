@@ -1061,4 +1061,49 @@ suite('board store', () => {
       0,
     );
   });
+
+  test('ensurePersisted writes the in-memory default board when columns.json is absent', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Backlog', 'Ready', 'Done'] }));
+    const backlogColumnId = store.getState().columns[0]!.id;
+
+    assert.equal(fileSystem.snapshot().size, 0);
+
+    const persisted = await store.ensurePersisted();
+
+    assert.equal(persisted.columns[0]!.id, backlogColumnId);
+    assert.equal(await fileSystem.exists('.mwnn/columns.json'), true);
+    assert.equal(await fileSystem.exists('.mwnn/cards'), true);
+    assert.equal(await fileSystem.exists('.mwnn/README.md'), true);
+
+    const columnsDocument = parseColumns(fileSystem.snapshot().get('.mwnn/columns.json') ?? '');
+    assert.equal(columnsDocument.columns[0]!.id, backlogColumnId);
+    assert.deepEqual(
+      store.getState().columns.map((column) => column.title),
+      ['Backlog', 'Ready', 'Done'],
+    );
+  });
+
+  test('ensurePersisted is a no-op when columns.json already exists', async () => {
+    const columnsDocument: ColumnsDocument = {
+      version: BOARD_FILE_VERSION,
+      columns: [{ id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 }],
+    };
+    const cardDocument: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: { id: 'card-a', title: 'Task', createdAt: 1 },
+    };
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columnsDocument),
+      '.mwnn/cards/card-a.md': serializeCard(cardDocument),
+    });
+    const store = await createBoardStore(createDeps({ fileSystem }));
+    const before = new Map(fileSystem.snapshot());
+
+    const persisted = await store.ensurePersisted();
+
+    assert.equal(persisted.columns[0]!.cards[0]!.title, 'Task');
+    assert.deepEqual(fileSystem.snapshot(), before);
+  });
 });

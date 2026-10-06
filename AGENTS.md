@@ -14,7 +14,7 @@ For `/implement`, `/proceed`, direct implementation requests, or generated imple
 6. After preflight, make the smallest safe edit in the same turn or state one concrete blocker. Investigation-only implementation turns are not sufficient.
 7. Once an owner file is identified, stop adjacent filename fishing and only reopen the same hotspot with a new hypothesis.
 8. If workspace access is unavailable, reply once with the blocker and one recovery path: request full access, ask for pasted files, or generate a handoff prompt.
-9. Validate in this order when applicable: touched-file diagnostics, `npm run compile-tests`, `npm run compile`, focused relevant tests, `npm test` (Node built-in runner over `dist-test/`), `npm run lint`, then a Development Host smoke test for interactive board/webview behavior. If `dist-test` disagrees with source, rebuild before diagnosing deeper.
+9. Validate in this order when applicable: touched-file diagnostics, `npm run compile-tests`, `npm run compile`, focused relevant tests, `npm test` (Node built-in runner over `dist-test/`), `npm run lint`, then a Development Host smoke test for interactive board/webview behavior. If `dist-test` disagrees with source, rebuild before diagnosing deeper. If the only unmet criterion is a Development Host or manual smoke test, report it with `STATUS: BLOCKED`, give exact test steps, and offer to package and install the working-tree build for the user (see the local test install rule in `.github/instructions/vscode-extension-release.instructions.md`).
 10. For renames, enumerate command-palette commands, view/menu titles, configuration keys, webview message types, tests, docs/wiki, plans, and AI control files. Ask whether the rename applies to all surfaces before editing. Do one final stale-reference sweep before reporting done.
 11. Delay `README`, `wiki`, and `CHANGELOG` edits until command names and UX are stable unless the user explicitly asks for docs now.
 12. Batch progress into milestone summaries instead of progress-only narration unless blocked or waiting for input.
@@ -398,6 +398,20 @@ Before creating, editing, or dispatching work for an existing card:
 Treat acceptance evidence and the current board state as authoritative workflow
 state. A prior assistant response, a timestamp, or an unchecked box by itself
 does not prove completion.
+
+### Superseding a terminal marker
+
+The AI loop reads only `STATUS:` lines appended to `## Activity` since the
+dispatch, and any `STATUS: BLOCKED` line outranks `STATUS: DONE`. When a card
+that already reported `STATUS: BLOCKED` in the current dispatch is later
+completed (for example, after a human confirms a smoke test):
+
+1. Reword the earlier marker into a plain note that no longer starts a line
+   with `STATUS:`, e.g. `Initially reported as blocked: <reason>; resolved
+   below.`
+2. Append a new dated entry that ends with `STATUS: DONE` on its own line.
+
+Never leave both markers in place, or the card stays blocked.
 
 ## Card file shape
 

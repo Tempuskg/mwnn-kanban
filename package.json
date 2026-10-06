@@ -125,6 +125,11 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.manageAgentCliModels",
+        "title": "Manage Agent CLI Models and Thinking Levels",
+        "category": "MWNN Kanban"
+      },
+      {
         "command": "mwnn-kanban.resetBoard",
         "title": "Reset Board",
         "category": "MWNN Kanban"
@@ -201,6 +206,12 @@
         "title": "Export Review Digest",
         "category": "MWNN Kanban Pro",
         "icon": "$(notebook)"
+      },
+      {
+        "command": "mwnn-kanban-pro.showAiUsage",
+        "title": "Show AI Provider Usage",
+        "category": "MWNN Kanban Pro",
+        "icon": "$(dashboard)"
       },
       {
         "command": "mwnn-kanban-pro.startFocusSession",
@@ -772,6 +783,9 @@
           "command": "mwnn-kanban.populateAgentCliModels"
         },
         {
+          "command": "mwnn-kanban.manageAgentCliModels"
+        },
+        {
           "command": "mwnn-kanban.resetBoard"
         },
         {
@@ -821,6 +835,10 @@
         },
         {
           "command": "mwnn-kanban-pro.exportReviewDigest",
+          "when": "mwnn-kanban.hasProLicense"
+        },
+        {
+          "command": "mwnn-kanban-pro.showAiUsage",
           "when": "mwnn-kanban.hasProLicense"
         },
         {

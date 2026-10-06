@@ -135,11 +135,13 @@ export function buildCardDefinitionPrompt(
   card: BoardCard,
   cardFilePath: string,
   runSettings: DefinitionRunSettings = DEFAULT_DEFINITION_RUN_SETTINGS,
+  options: CardDefinitionPromptOptions = {},
 ): string {
   return [
     'You are an AI assistant defining a Methodology With No Name (MWNN) Kanban card so it is ready to start.',
     'Write a clear Description and a concrete, testable Acceptance criteria checklist for this card based on its title and any existing context. Do not implement the work — only define it.',
     '',
+    ...(options.interactive ? [...buildClarifyingQuestionsSection(), ''] : []),
     `This card is stored as a markdown file at: ${cardFilePath}`,
     'Edit that file in place:',
     '  - Fill in the "## Description" section with a concise explanation of the slice of work.',
@@ -163,6 +165,31 @@ export function buildCardDefinitionPrompt(
     'Current acceptance criteria:',
     card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
   ].join('\n');
+}
+
+export interface CardDefinitionPromptOptions {
+  /**
+   * A person is watching the session (the manual chat hand-off), so the agent
+   * may work like in planning mode and ask clarifying questions before editing
+   * the card. Headless CLI runs and the AI loop never set this: nobody is there
+   * to answer.
+   */
+  interactive?: boolean;
+}
+
+/** The planning-mode part of the interactive definition prompt. */
+function buildClarifyingQuestionsSection(): string[] {
+  return [
+    '## Clarify with the user first (planning mode)',
+    'The user is watching this chat session and can answer questions, so work as if you were in planning mode:',
+    '  1. Read the card file and the code, docs, and other cards relevant to it before asking anything.',
+    '  2. If the title and existing context leave the scope, intended behaviour, or important edge cases unsettled, ask the user clarifying questions about exactly those gaps before you edit the card file.',
+    '  3. Wait for the user\'s answers. Do not edit the card file or create any new card files until they reply.',
+    '  4. Only then write the Description and Acceptance criteria (and split the card if that applies) as described below, using the answers.',
+    'Keep questions few and specific to this card, each with a concrete reason to ask, and offer sensible options or a recommended default where you can. Do not send a generic questionnaire.',
+    'If the title and context are already unambiguous, skip the questions and go straight to defining the card.',
+    'Asking questions does not change the rules below: still do not implement the work — only define it.',
+  ];
 }
 
 /**

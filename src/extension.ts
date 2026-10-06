@@ -116,11 +116,24 @@ import {
 } from './boardLoop';
 import { BoardPanel } from './boardPanel';
 import {
+  BUNDLED_AGENT_CLI_MODELS,
+  BUNDLED_AGENT_CLI_THINKING_LEVELS,
   describeAgentCliDiscovery,
   discoverAgentCliVocabularies,
   planAgentCliPopulate,
   type AgentCliPopulateMode,
 } from './agentCliDiscovery';
+import {
+  addAgentCliSettingsEntry,
+  agentCliSettingsEntries,
+  agentCliSettingsEntryProblem,
+  clearAgentCliSettingsProvider,
+  makeAgentCliSettingsDefault,
+  removeAgentCliSettingsEntry,
+  summarizeAgentCliProvider,
+  type AgentCliSettingsEdit,
+  type AgentCliSettingsList,
+} from './agentCliSettingsEditor';
 import { BoardSidebarViewProvider } from './sidebarView';
 import { openProPortfolio } from './portfolioButton';
 import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from './boardStore';
@@ -675,9 +688,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       const runSettings = planDefinitionRunSettingsForCard();
       const current = findCardById(store.getState(), card.id) ?? card;
-      const prompt = buildCardDefinitionPrompt(current, boardCapability.cardFilePath(card.id), runSettings);
+      const cardFile = boardCapability.cardFilePath(card.id);
 
       if (choice.kind === 'cli') {
+        const prompt = buildCardDefinitionPrompt(current, cardFile, runSettings);
         const completed = await runCardWithAgentCli(
           { provider: choice.provider, kind: 'definition', card, prompt },
           agentCliRunDeps(),
@@ -686,6 +700,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return completed;
       }
 
+      // A person is watching the chat, so the agent may ask clarifying questions
+      // before defining the card. CLI runs and the AI loop stay non-interactive.
+      const prompt = buildCardDefinitionPrompt(current, cardFile, runSettings, { interactive: true });
       const handedOff = await handOffDefinitionToChat(current, runSettings, () => handOffPromptToChat(
         choice.target,
         withPreferredModelNote(prompt, cardPreferredModelFor(card, choice.target.provider)),
@@ -712,7 +729,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // The user cancelled at the source picker, file picker, or had no files.
       return;
     }
-    const state = store.getState();
+    // Materialize the board on disk first: an untouched workspace only has an
+    // in-memory default board, and the agent we hand the prompt to needs a
+    // real columns.json/cards dir with the same column ids we reference below.
+    const state = await store.ensurePersisted();
     const targetColumn = state.columns.find((column) => column.role === 'backlog') ?? state.columns[0];
     if (!targetColumn) {
       void vscode.window.showInformationMessage('Add a column before importing a plan.');
@@ -1331,6 +1351,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('mwnn-kanban.populateAgentCliModels', async () => {
       await populateAgentCliModels();
     }),
+    vscode.commands.registerCommand('mwnn-kanban.manageAgentCliModels', async () => {
+      await manageAgentCliModels();
+    }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', async () => {
       const choice = await vscode.window.showWarningMessage(
         'Reset the board? All cards will be removed.',
@@ -1484,6 +1507,9 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     // and simply offers only the user scope.
     vscode.commands.registerCommand('mwnn-kanban.populateAgentCliModels', async () => {
       await populateAgentCliModels();
+    }),
+    vscode.commands.registerCommand('mwnn-kanban.manageAgentCliModels', async () => {
+      await manageAgentCliModels();
     }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', showWorkspaceMessage),
   );
@@ -2120,4 +2146,327 @@ async function populateAgentCliModels(): Promise<void> {
   void vscode.window.showInformationMessage(
     `MWNN Kanban: updated agent CLI models and thinking levels in ${scope.label.toLowerCase()} settings (${fromCli} of ${discoveries.length} CLIs listed their own).`,
   );
+}
+
+const MANAGE_AGENT_CLI_TITLE = 'Manage Agent CLI Models and Thinking Levels';
+
+type ManageOverviewItem = vscode.QuickPickItem & {
+  readonly action?: { readonly kind: 'provider'; readonly provider: AgentCliProviderId } | { readonly kind: 'settings' };
+};
+
+type ManageProviderItem = vscode.QuickPickItem & {
+  readonly action?:
+    | 'addModel'
+    | 'defaultModel'
+    | 'removeModel'
+    | 'setLevel'
+    | 'addLevel'
+    | 'removeLevel'
+    | 'clearLevel'
+    | 'back';
+};
+
+/**
+ * List and edit `agentCliModels` and `agentCliThinkingLevels` for one settings
+ * scope with quick picks, so nobody has to hand-edit settings.json. The editing
+ * rules live in `agentCliSettingsEditor`; this only asks and writes. Each edit
+ * is written at once, and only to the chosen scope's own value (read through
+ * `inspect()`), so a value from the other scope is never copied in. The
+ * configuration listener re-pushes an open board's state after each write, so
+ * its model and effort pickers update. Escape at any step writes nothing more.
+ */
+async function manageAgentCliModels(): Promise<void> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  const scopes: (vscode.QuickPickItem & { target: vscode.ConfigurationTarget })[] = [
+    ...(workspaceFolder
+      ? [{
+          label: 'Workspace',
+          description: 'Only this workspace',
+          target: vscode.ConfigurationTarget.Workspace,
+        }]
+      : []),
+    { label: 'User', description: 'Every workspace', target: vscode.ConfigurationTarget.Global },
+  ];
+  const scope = await vscode.window.showQuickPick(scopes, {
+    title: MANAGE_AGENT_CLI_TITLE,
+    placeHolder: 'Which settings do you want to list and edit?',
+  });
+  if (!scope) {
+    return;
+  }
+  const scopeName = scope.label.toLowerCase();
+  const settingKey = (list: AgentCliSettingsList): string =>
+    list === 'models' ? 'agentCliModels' : 'agentCliThinkingLevels';
+  const readScoped = (list: AgentCliSettingsList): unknown => {
+    const inspected = vscode.workspace.getConfiguration('mwnn-kanban').inspect<unknown>(settingKey(list));
+    return scope.target === vscode.ConfigurationTarget.Workspace
+      ? inspected?.workspaceValue
+      : inspected?.globalValue;
+  };
+  const apply = async (list: AgentCliSettingsList, edit: AgentCliSettingsEdit): Promise<void> => {
+    if (!edit.ok) {
+      void vscode.window.showWarningMessage(`MWNN Kanban: ${edit.reason}`);
+      return;
+    }
+    try {
+      await vscode.workspace
+        .getConfiguration('mwnn-kanban')
+        .update(settingKey(list), edit.value, scope.target);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      void vscode.window.showErrorMessage(`MWNN Kanban: could not write the settings: ${message}`);
+      return;
+    }
+    vscode.window.setStatusBarMessage(`MWNN Kanban: updated ${scopeName} settings`, 3000);
+  };
+
+  for (;;) {
+    const choice = await pickManageOverview(scopeName, readScoped);
+    if (!choice) {
+      return;
+    }
+    if (choice.kind === 'settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'mwnn-kanban.agentCli');
+      return;
+    }
+    const keepGoing = await manageAgentCliProvider(choice.provider, scopeName, readScoped, apply);
+    if (!keepGoing) {
+      return;
+    }
+  }
+}
+
+/**
+ * The overview: each provider's default model, other-model count, and level
+ * from the chosen scope, then the effective stage overrides (read-only), then
+ * an Open in Settings item. Picking a read-only entry just shows it again.
+ */
+async function pickManageOverview(
+  scopeName: string,
+  readScoped: (list: AgentCliSettingsList) => unknown,
+): Promise<NonNullable<ManageOverviewItem['action']> | undefined> {
+  for (;;) {
+    const models = readScoped('models');
+    const levels = readScoped('thinkingLevels');
+    const effectiveModels = readAgentCliModels();
+    const effectiveLevels = readAgentCliThinkingLevelDefaults();
+    const items: ManageOverviewItem[] = [
+      { label: `Agent CLIs (${scopeName} settings)`, kind: vscode.QuickPickItemKind.Separator },
+      ...AGENT_CLI_PROVIDER_IDS.map((provider): ManageOverviewItem => {
+        const summary = summarizeAgentCliProvider(models, levels, provider);
+        const inherited = [
+          summary.models.length === 0 && effectiveModels[provider]?.[0] !== undefined
+            ? `model ${effectiveModels[provider]?.[0] ?? ''}`
+            : undefined,
+          summary.thinkingLevels.length === 0 && effectiveLevels[provider] !== undefined
+            ? `thinking ${effectiveLevels[provider] ?? ''}`
+            : undefined,
+        ].filter((part): part is string => part !== undefined);
+        return {
+          label: AGENT_CLI_LABELS[provider],
+          description: summary.description,
+          detail:
+            inherited.length > 0
+              ? `${summary.detail} · Set in another scope: ${inherited.join(', ')}`
+              : summary.detail,
+          action: { kind: 'provider', provider },
+        };
+      }),
+    ];
+
+    const stageModels = readAgentCliStageModelRules();
+    const stageLevels = readAgentCliStageThinkingLevelRules();
+    const stages = [...new Set([...Object.keys(stageModels), ...Object.keys(stageLevels)])] as AgentCliHandoffKind[];
+    if (stages.length > 0) {
+      items.push({ label: 'Stage overrides (read-only)', kind: vscode.QuickPickItemKind.Separator });
+      for (const stage of stages) {
+        items.push({
+          label: `$(lock) ${stage}`,
+          description: [
+            stageModels[stage] !== undefined ? `model: ${stageModels[stage] ?? ''}` : undefined,
+            stageLevels[stage] !== undefined ? `thinking: ${stageLevels[stage] ?? ''}` : undefined,
+          ]
+            .filter((part): part is string => part !== undefined)
+            .join(' · '),
+          detail: 'From agentCliStageModels / agentCliStageThinkingLevels; edit these in Settings.',
+        });
+      }
+    }
+    items.push(
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      { label: '$(gear) Open in Settings', action: { kind: 'settings' } },
+    );
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: MANAGE_AGENT_CLI_TITLE,
+      placeHolder: `Pick an agent CLI to edit its models and thinking level (${scopeName} settings)`,
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) {
+      return undefined;
+    }
+    if (picked.action) {
+      return picked.action;
+    }
+  }
+}
+
+/**
+ * One provider's edit menu. Returns false when the user pressed Escape (end
+ * the command) and true for Back (return to the overview).
+ */
+async function manageAgentCliProvider(
+  provider: AgentCliProviderId,
+  scopeName: string,
+  readScoped: (list: AgentCliSettingsList) => unknown,
+  apply: (list: AgentCliSettingsList, edit: AgentCliSettingsEdit) => Promise<void>,
+): Promise<boolean> {
+  const label = AGENT_CLI_LABELS[provider];
+  const title = `${MANAGE_AGENT_CLI_TITLE}: ${label}`;
+  const levelNotApplied = provider === 'cursor' ? ' (not applied by this CLI)' : '';
+  for (;;) {
+    const modelsValue = readScoped('models');
+    const levelsValue = readScoped('thinkingLevels');
+    const models = agentCliSettingsEntries(modelsValue, provider);
+    const levels = agentCliSettingsEntries(levelsValue, provider);
+    const summary = summarizeAgentCliProvider(modelsValue, levelsValue, provider);
+    const items: ManageProviderItem[] = [
+      { label: 'Models', kind: vscode.QuickPickItemKind.Separator },
+      { label: '$(add) Add a model…', action: 'addModel' },
+      ...(models.length > 1
+        ? [{ label: '$(star) Make a model the default…', description: `now ${models[0] ?? ''}`, action: 'defaultModel' as const }]
+        : []),
+      ...(models.length > 0 ? [{ label: '$(trash) Remove a model…', action: 'removeModel' as const }] : []),
+      { label: `Thinking level${levelNotApplied}`, kind: vscode.QuickPickItemKind.Separator },
+      {
+        label: '$(pulse) Set the thinking level used…',
+        description: `now ${levels[0] ?? 'CLI default'}`,
+        action: 'setLevel',
+      },
+      { label: '$(add) Add a suggested thinking level…', action: 'addLevel' },
+      ...(levels.length > 0
+        ? [
+            { label: '$(trash) Remove a thinking level…', action: 'removeLevel' as const },
+            { label: '$(clear-all) Clear the thinking level', description: 'use the CLI default', action: 'clearLevel' as const },
+          ]
+        : []),
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      { label: '$(arrow-left) Back to all agent CLIs', action: 'back' },
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      title,
+      placeHolder: `${summary.description} (${scopeName} settings)`,
+    });
+    if (!picked?.action) {
+      return false;
+    }
+
+    switch (picked.action) {
+      case 'back':
+        return true;
+      case 'addModel': {
+        const name = await pickOrEnterAgentCliName(title, 'model name', models, BUNDLED_AGENT_CLI_MODELS[provider], true);
+        if (name !== undefined) {
+          await apply('models', addAgentCliSettingsEntry(modelsValue, 'models', provider, name));
+        }
+        break;
+      }
+      case 'defaultModel': {
+        const name = await pickAgentCliName(title, 'Which model should be the default?', models.slice(1));
+        if (name !== undefined) {
+          await apply('models', makeAgentCliSettingsDefault(modelsValue, 'models', provider, name));
+        }
+        break;
+      }
+      case 'removeModel': {
+        const name = await pickAgentCliName(title, 'Which model should be removed?', models);
+        if (name !== undefined) {
+          await apply('models', removeAgentCliSettingsEntry(modelsValue, 'models', provider, name));
+        }
+        break;
+      }
+      case 'setLevel': {
+        const candidates = [...new Set([...levels.slice(1), ...BUNDLED_AGENT_CLI_THINKING_LEVELS[provider]])].filter(
+          (level) => level !== levels[0],
+        );
+        const name = await pickOrEnterAgentCliName(title, 'thinking level', levels, candidates, false);
+        if (name !== undefined) {
+          await apply('thinkingLevels', makeAgentCliSettingsDefault(levelsValue, 'thinkingLevels', provider, name));
+        }
+        break;
+      }
+      case 'addLevel': {
+        const name = await pickOrEnterAgentCliName(
+          title,
+          'thinking level',
+          levels,
+          BUNDLED_AGENT_CLI_THINKING_LEVELS[provider],
+          true,
+        );
+        if (name !== undefined) {
+          await apply('thinkingLevels', addAgentCliSettingsEntry(levelsValue, 'thinkingLevels', provider, name));
+        }
+        break;
+      }
+      case 'removeLevel': {
+        const name = await pickAgentCliName(title, 'Which thinking level should be removed?', levels);
+        if (name !== undefined) {
+          await apply('thinkingLevels', removeAgentCliSettingsEntry(levelsValue, 'thinkingLevels', provider, name));
+        }
+        break;
+      }
+      case 'clearLevel':
+        await apply('thinkingLevels', clearAgentCliSettingsProvider(levelsValue, 'thinkingLevels', provider));
+        break;
+    }
+  }
+}
+
+/** Pick one of `names`; undefined when cancelled. */
+async function pickAgentCliName(
+  title: string,
+  placeHolder: string,
+  names: readonly string[],
+): Promise<string | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    names.map((name) => ({ label: name })),
+    { title, placeHolder },
+  );
+  return picked?.label;
+}
+
+/**
+ * Offer the bundled names not already listed, plus a free-form entry. With
+ * `rejectExisting`, a name already in `existing` is refused, which is the
+ * add rule; without it only blanks are refused, which is the "set the one
+ * used" rule. Undefined when cancelled.
+ */
+async function pickOrEnterAgentCliName(
+  title: string,
+  noun: string,
+  existing: readonly string[],
+  suggestions: readonly string[],
+  rejectExisting: boolean,
+): Promise<string | undefined> {
+  const enterLabel = `$(edit) Enter a ${noun}…`;
+  const offered = rejectExisting ? suggestions.filter((name) => !existing.includes(name)) : suggestions;
+  if (offered.length > 0) {
+    const picked = await vscode.window.showQuickPick(
+      [...offered.map((name) => ({ label: name })), { label: enterLabel }],
+      { title, placeHolder: `Pick a ${noun}, or enter one as the CLI spells it` },
+    );
+    if (!picked) {
+      return undefined;
+    }
+    if (picked.label !== enterLabel) {
+      return picked.label;
+    }
+  }
+  return vscode.window.showInputBox({
+    title,
+    prompt: `Enter a ${noun}, spelled exactly as the CLI accepts it.`,
+    validateInput: (value) =>
+      agentCliSettingsEntryProblem(rejectExisting ? existing : [], value, noun) ?? null,
+  });
 }
