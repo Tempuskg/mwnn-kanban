@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -1181,7 +1181,7 @@
     "smoke:populate-models": "node ./scripts/smoke-populate-models.cjs"
   },
   "dependencies": {
-    "@tempuskg/mwnn-kanban-pro": "^1.0.0"
+    "@tempuskg/mwnn-kanban-pro": "^1.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",

@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-10
+
+### Fixed
+- Pro: the Portfolio dashboard now keeps tracked hours current. It refreshes when the shared store changes and when the window regains focus. While the dashboard is visible, it also re-reads every 30 seconds in case a change made in another editor or window was missed.
+
 ## [1.0.0] - 2026-10-10
 
 ### Added
