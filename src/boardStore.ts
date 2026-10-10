@@ -33,8 +33,8 @@ import {
   deleteCard,
   duplicateCard,
   editCard,
-  enforceBlockedCardPlacement,
   moveCard,
+  relocateBlockedCards,
   removeColumn,
   renameColumn,
   reorderColumns,
@@ -48,6 +48,7 @@ import {
   setThinkingLevel,
   normalizeCardPreferredModels,
   normalizeCardThinkingLevels,
+  type BlockedCardRelocation,
   type SetColumnConfig,
 } from './utils';
 
@@ -82,12 +83,23 @@ export interface BoardStoreChange {
   readonly reason: 'mutation' | 'reload';
 }
 
+/**
+ * Blocked cards the store pulled back to Ready. `reload` means external edits
+ * (picked up on load or by a watcher reload) blocked them; `mutation` means the
+ * store operation that was just applied did.
+ */
+export interface BlockedCardRelocationEvent {
+  readonly relocations: readonly BlockedCardRelocation[];
+  readonly reason: 'mutation' | 'reload';
+}
+
 export interface BoardStoreDeps extends BoardReaderDeps {
   readonly fileSystem: FileSystemLike;
   readonly defaultColumns: readonly string[];
   readonly defaultReadyReverseWip: number;
   readonly legacyMemento?: MementoLike;
   readonly onDidChange?: (change: BoardStoreChange) => void;
+  readonly onDidRelocateBlockedCards?: (event: BlockedCardRelocationEvent) => void;
 }
 
 export interface BoardStore {
@@ -130,6 +142,36 @@ export interface BoardStore {
 
 export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore> {
   let state = await loadOrInitializeState(deps);
+
+  function reportRelocations(
+    relocations: readonly BlockedCardRelocation[],
+    reason: BlockedCardRelocationEvent['reason'],
+  ): void {
+    if (relocations.length === 0) {
+      return;
+    }
+    try {
+      deps.onDidRelocateBlockedCards?.({ relocations, reason });
+    } catch {
+      // Observers are outside the persistence contract and cannot break its queue.
+    }
+  }
+
+  // Pull back any card that external edits blocked and persist the move now,
+  // so it is attributed to the edit that caused it rather than to whatever the
+  // user does next. Unchanged cards are skipped on write, so the watcher reload
+  // this triggers finds nothing left to move and settles.
+  async function enforceAfterReload(): Promise<void> {
+    const enforced = relocateBlockedCards(state);
+    if (enforced.relocations.length === 0) {
+      return;
+    }
+    state = enforced.state;
+    await writeBoardState(deps, state);
+    reportRelocations(enforced.relocations, 'reload');
+  }
+
+  await enforceAfterReload();
   let published = cloneBoard(state);
 
   async function refreshFromDisk(): Promise<void> {
@@ -167,16 +209,21 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     }
   }
 
-  // Pull in external edits before every operation. Mutations then apply and
-  // persist their change; reloads only publish the refreshed state.
+  // Pull in external edits before every operation and enforce blocked-card
+  // placement for them first, so an unrelated mutation never relocates a card
+  // it did not block. Mutations then apply and persist their change; reloads
+  // only publish the refreshed state.
   function runQueued(apply?: (current: BoardState) => BoardState): Promise<BoardState> {
     const next = commitQueue.then(async () => {
       await refreshFromDisk();
+      await enforceAfterReload();
       if (apply !== undefined) {
         // A mutation may block a card already in a work column, so pull it back
         // to Ready before the updated board is written.
-        state = cloneBoard(enforceBlockedCardPlacement(apply(state)));
+        const enforced = relocateBlockedCards(apply(state));
+        state = cloneBoard(enforced.state);
         await writeBoardState(deps, state);
+        reportRelocations(enforced.relocations, 'mutation');
       }
 
       const current = cloneBoard(state);
@@ -223,6 +270,7 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
           await writeBoardState(deps, state);
         } else {
           await refreshFromDisk();
+          await enforceAfterReload();
         }
 
         const current = cloneBoard(state);

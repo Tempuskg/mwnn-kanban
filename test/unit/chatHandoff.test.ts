@@ -6,6 +6,7 @@ import {
   deliverClipboardHandoff,
   formatChatHandoffFailure,
   listAvailableChatProviders,
+  positionalHandoffArgs,
   resolveChatHandoffTarget,
   shouldAutoPasteChatHandoff,
 } from '../../src/chatHandoff';
@@ -81,6 +82,32 @@ suite('chat handoff resolution', () => {
     );
   });
 
+  test('describes Claude Code positional handoffs without promising a new window', () => {
+    const target = resolveChatHandoffTarget('claude-code', ['claude-vscode.editor.open']);
+
+    assert.equal(
+      describeChatHandoffTarget(target!),
+      'Opens Claude Code chat pre-filled with the card prompt',
+    );
+  });
+
+  test('passes sidebar routing options to Claude Code editor.open only', () => {
+    const editorOpen = resolveChatHandoffTarget('claude-code', ['claude-vscode.editor.open']);
+    const primaryEditorOpen = resolveChatHandoffTarget('claude-code', ['claude-vscode.primaryEditor.open'], {
+      'claude-code': 'claude-vscode.primaryEditor.open',
+    });
+
+    assert.deepEqual(positionalHandoffArgs(editorOpen!, 'do the card'), [
+      undefined,
+      'do the card',
+      undefined,
+      undefined,
+      undefined,
+      { programmatic: 'honor-preferred-location' },
+    ]);
+    assert.deepEqual(positionalHandoffArgs(primaryEditorOpen!, 'do the card'), [undefined, 'do the card']);
+  });
+
   test('auto-paste is enabled only for Codex new-chat handoffs', () => {
     const codexNewChat = resolveChatHandoffTarget('codex', ['chatgpt.newChat']);
     const codexSidebar = resolveChatHandoffTarget('codex', ['chatgpt.openSidebar']);
@@ -132,10 +159,11 @@ suite('chat handoff resolution', () => {
     ]);
   });
 
-  test('delivers the complete prompt on the first attempt with one paste', async () => {
+  test('delivers immediately when the Codex composer is already loaded', async () => {
     const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
     const clipboard: string[] = [];
     const commands: string[] = [];
+    const waits: number[] = [];
     const result = await deliverClipboardHandoff(target, 'Title\nDescription\nAcceptance criteria', {
       writeClipboard: async (prompt) => {
         clipboard.push(prompt);
@@ -143,12 +171,130 @@ suite('chat handoff resolution', () => {
       executeCommand: async (commandId) => {
         commands.push(commandId);
       },
-      wait: async () => undefined,
-    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0 });
+      wait: async (delayMs) => {
+        waits.push(delayMs);
+      },
+    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0, pasteRetryDelayMs: 0 });
 
     assert.deepEqual(result, { delivered: true });
     assert.deepEqual(clipboard, ['Title\nDescription\nAcceptance criteria']);
     assert.deepEqual(commands, ['chatgpt.newChat', 'editor.action.clipboardPasteAction']);
+    assert.deepEqual(waits, [0]);
+  });
+
+  test('retains the prompt and retries paste until the Codex composer loads', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat', 'chatgpt.openSidebar'])!;
+    const clipboard: string[] = [];
+    const commands: string[] = [];
+    const waits: number[] = [];
+    let pasteAttempts = 0;
+    const result = await deliverClipboardHandoff(target, 'complete first-attempt prompt', {
+      writeClipboard: async (prompt) => {
+        clipboard.push(prompt);
+      },
+      executeCommand: async (commandId) => {
+        commands.push(commandId);
+        if (commandId === 'editor.action.clipboardPasteAction') {
+          pasteAttempts += 1;
+          if (pasteAttempts < 3) {
+            throw new Error('composer still loading');
+          }
+        }
+      },
+      wait: async (delayMs) => {
+        waits.push(delayMs);
+      },
+    }, { providerReadyDelayMs: 0, composerReadyDelayMs: 0, pasteRetryDelayMs: 0 });
+
+    assert.deepEqual(result, { delivered: true });
+    assert.deepEqual(clipboard, ['complete first-attempt prompt']);
+    assert.deepEqual(commands, [
+      'chatgpt.openSidebar',
+      'chatgpt.newChat',
+      'editor.action.clipboardPasteAction',
+      'editor.action.clipboardPasteAction',
+      'editor.action.clipboardPasteAction',
+    ]);
+    assert.equal(pasteAttempts, 3, 'the handoff stops retrying after the first successful paste');
+    assert.deepEqual(waits, [0, 0, 0, 0]);
+  });
+
+  test('keeps a long Codex request inline instead of creating a pasted-text attachment', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
+    const prompt = 'Title: Portfolio loop\nDescription:\n' + 'Implement the full workflow.\n'.repeat(320);
+    let clipboard = '';
+    let composer = '';
+    const attachments: string[] = [];
+    const pasted: string[] = [];
+    const result = await deliverClipboardHandoff(target, prompt, {
+      writeClipboard: async (text) => { clipboard = text; },
+      executeCommand: async (commandId) => {
+        if (commandId === 'editor.action.clipboardPasteAction') {
+          pasted.push(clipboard);
+          // The installed Codex composer converts an individual large paste
+          // into an attachment rather than including it in the user message.
+          if (clipboard.length >= 5_000) {
+            attachments.push(clipboard);
+          } else {
+            composer += clipboard;
+          }
+        }
+      },
+      wait: async () => undefined,
+    });
+
+    assert.deepEqual(result, { delivered: true });
+    assert.deepEqual(attachments, []);
+    assert.equal(composer, prompt);
+    assert.ok(pasted.length > 1);
+    assert.equal(clipboard, prompt, 'the complete prompt remains available for manual recovery');
+  });
+
+  test('preserves Unicode and CRLF boundaries across Codex paste chunks', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
+    const prompt = 'a'.repeat(3_999) + '\u{1F680}' + 'b'.repeat(3_997) + '\r\n' + 'c'.repeat(1_000);
+    let clipboard = '';
+    const pasted: string[] = [];
+    await deliverClipboardHandoff(target, prompt, {
+      writeClipboard: async (text) => { clipboard = text; },
+      executeCommand: async (commandId) => {
+        if (commandId === 'editor.action.clipboardPasteAction') {
+          pasted.push(clipboard);
+        }
+      },
+      wait: async () => undefined,
+    });
+
+    assert.equal(pasted.join(''), prompt);
+    for (const chunk of pasted) {
+      assert.doesNotMatch(chunk, /[\uD800-\uDBFF]$/);
+      assert.doesNotMatch(chunk, /^[\uDC00-\uDFFF]/);
+      assert.equal(chunk.endsWith('\r'), false);
+      assert.equal(chunk.startsWith('\n'), false);
+    }
+  });
+
+  test('restores the full prompt and stops after a later chunk cannot be pasted', async () => {
+    const target = resolveChatHandoffTarget('codex', ['chatgpt.newChat'])!;
+    const prompt = 'a'.repeat(9_000);
+    let clipboard = '';
+    const pasted: string[] = [];
+    const result = await deliverClipboardHandoff(target, prompt, {
+      writeClipboard: async (text) => { clipboard = text; },
+      executeCommand: async (commandId) => {
+        if (commandId === 'editor.action.clipboardPasteAction') {
+          pasted.push(clipboard);
+          if (pasted.length > 1) {
+            throw new Error('composer lost focus');
+          }
+        }
+      },
+      wait: async () => undefined,
+    }, { pasteMaxAttempts: 2, pasteRetryDelayMs: 0 });
+
+    assert.deepEqual(result, { delivered: false, error: 'composer lost focus after 2 paste attempts' });
+    assert.equal(pasted.length, 3, 'the final chunk is never attempted');
+    assert.equal(clipboard, prompt);
   });
 
   test('does not start a second handoff while the first is in progress', async () => {

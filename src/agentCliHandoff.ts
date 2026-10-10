@@ -25,6 +25,12 @@ import {
   type AgentCliThinkingLevelDefaults,
   type AgentCliThinkingLevelSource,
 } from './agentCliModels';
+import {
+  createAgentCliModelDiscovery,
+  type AgentCliActualModelEvidence,
+  type AgentCliModelDiscoveryOutcome,
+  type AgentCliModelDiscoverySession,
+} from './agentCliModelDiscovery';
 import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
 import type { AgentCliHandoffKind } from './agentCliStages';
 import { cardNeedsDefinition } from './cardDefinition';
@@ -101,6 +107,8 @@ interface AgentCliProviderSpec {
   readonly defaultCommands: readonly string[];
   /** Fixed, single-line argv. The prompt itself always travels over stdin. */
   readonly args: readonly string[];
+  /** Invocation shape needed to expose authoritative model metadata. */
+  readonly modelDiscoveryArgs?: readonly string[];
   readonly model?: AgentCliModelSpec;
   readonly thinking?: AgentCliThinkingSpec;
 }
@@ -150,12 +158,18 @@ const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   copilot: {
     defaultCommands: ['copilot'],
     args: ['--allow-all-tools', '--no-ask-user', '--silent'],
+    // The documented non-silent output includes the selected model; remove
+    // `--silent` only for Usage Orchestrator attempts that need discovery.
+    modelDiscoveryArgs: ['--allow-all-tools', '--no-ask-user'],
     model: { flag: '--model' },
     thinking: { flag: '--effort' },
   },
   codex: {
     defaultCommands: ['codex'],
     args: ['exec', '--sandbox', 'workspace-write', '-'],
+    // `--json` supplies this attempt's thread id; Codex's own rollout metadata
+    // then supplies the model where the installed version records it.
+    modelDiscoveryArgs: ['exec', '--json', '--sandbox', 'workspace-write', '-'],
     // After `exec`, and before the trailing `-` that names stdin as the prompt.
     model: { flag: '--model', insertAt: 1 },
     // Codex has no dedicated effort flag; the level is a config override, which
@@ -165,12 +179,15 @@ const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   'claude-code': {
     defaultCommands: ['claude'],
     args: ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
+    // Claude Code rejects `--print` with `stream-json` unless `--verbose` is set.
+    modelDiscoveryArgs: ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'stream-json', '--verbose'],
     model: { flag: '--model' },
     thinking: { flag: '--effort' },
   },
   cursor: {
     defaultCommands: ['cursor-agent'],
     args: ['-p', '--force', '--output-format', 'text'],
+    modelDiscoveryArgs: ['-p', '--force', '--output-format', 'stream-json'],
     model: { flag: '--model' },
   },
 };
@@ -416,9 +433,10 @@ function providerArgs(
   provider: AgentCliProviderId,
   selection: AgentCliModelSelection | undefined,
   thinkingSelection?: AgentCliThinkingSelection,
+  modelDiscovery = false,
 ): string[] {
   const spec = PROVIDER_SPECS[provider];
-  const args = [...spec.args];
+  const args = [...(modelDiscovery ? spec.modelDiscoveryArgs ?? spec.args : spec.args)];
   const clamp = (index: number | undefined): number =>
     Math.min(Math.max(index ?? args.length, 0), args.length);
 
@@ -813,8 +831,9 @@ export function buildAgentCliInvocation(
   cwd: string,
   modelSelection?: AgentCliModelSelection,
   thinkingSelection?: AgentCliThinkingSelection,
+  modelDiscovery = false,
 ): AgentCliInvocation {
-  const args = providerArgs(target.provider, modelSelection, thinkingSelection);
+  const args = providerArgs(target.provider, modelSelection, thinkingSelection, modelDiscovery);
   const invocation: AgentCliInvocation = {
     provider: target.provider,
     label: target.label,
@@ -837,6 +856,8 @@ export interface PreparedAgentCliInvocation {
 
 export interface PrepareAgentCliInvocationOptions {
   readonly platform?: NodeJS.Platform;
+  /** Add provider-specific metadata output only for Usage Orchestrator dispatches. */
+  readonly modelDiscovery?: boolean;
   /** Already-resolved model selection; omitted when no layer named one. */
   readonly modelSelection?: AgentCliModelSelection;
   /** Already-resolved thinking level; omitted when no layer named one. */
@@ -860,12 +881,13 @@ export async function prepareAgentCliInvocation(
     cwd,
     options.modelSelection,
     options.thinkingSelection,
+    options.modelDiscovery,
   );
   if (target.provider !== 'cursor') {
     return { invocation };
   }
 
-  const cursorArgs = providerArgs('cursor', options.modelSelection, options.thinkingSelection);
+  const cursorArgs = providerArgs('cursor', options.modelSelection, options.thinkingSelection, options.modelDiscovery);
   const platform = options.platform ?? process.platform;
   const unwrapped = await resolveCursorWindowsLaunch(target.executable, platform);
   if (unwrapped) {
@@ -1153,7 +1175,7 @@ function captureTail(current: string, chunk: Buffer | string): string {
     : combined.slice(combined.length - MAX_CAPTURED_OUTPUT);
 }
 
-function windowsLaunchCommand(
+export function windowsLaunchCommand(
   command: string,
   args: readonly string[],
 ): {
@@ -1200,7 +1222,7 @@ function quoteWindowsCommandArgument(value: string): string {
   return `"${escaped}"`;
 }
 
-function terminateProcess(child: ChildProcess): void {
+export function terminateProcess(child: ChildProcess): void {
   const pid = child.pid;
   if (process.platform === 'win32' && pid !== undefined) {
     const killer = spawn('taskkill.exe', ['/pid', String(pid), '/t', '/f'], {
@@ -1332,11 +1354,19 @@ export interface AgentCliCardHandoffResult {
    * proceeds at the CLI's own default effort.
    */
   readonly thinkingSelection?: AgentCliThinkingSelection;
+  /** Authoritative model metadata discovered for this process attempt. */
+  readonly actualModel?: AgentCliActualModelEvidence;
+  /** Explicit reason when the CLI did not expose a model name. */
+  readonly actualModelUnavailableReason?: string;
 }
 
 export interface AgentCliCardHandoffOptions {
   readonly runProcess?: AgentCliProcessRunner;
   readonly now?: () => Date;
+  /** True only when the Usage Orchestrator selected this attempt's CLI. */
+  readonly orchestrated?: boolean;
+  /** Ignore the card's preferred model and resolve from stage/workspace settings. */
+  readonly ignoreCardPreferredModel?: boolean;
   /** Forwarded to the process runner so callers can surface live CLI output. */
   readonly observer?: AgentCliProcessObserver;
   readonly platform?: NodeJS.Platform;
@@ -1375,7 +1405,9 @@ export async function runAgentCliCardHandoff(
   // inheriting the exhausted CLI's.
   const modelSelection = resolveAgentCliModelSelection(
     handoff.target.provider,
-    cardPreferredModelFor(before, handoff.target.provider),
+    options.ignoreCardPreferredModel
+      ? undefined
+      : cardPreferredModelFor(before, handoff.target.provider),
     {
       stage: handoff.kind,
       ...(handoff.modelCatalog !== undefined ? { catalog: handoff.modelCatalog } : {}),
@@ -1406,29 +1438,163 @@ export async function runAgentCliCardHandoff(
     ...(thinkingSelection ? { thinkingSelection } : {}),
   });
 
+  const startedAt = now();
+  const attemptId = options.orchestrated
+    ? createAgentCliDispatchAttemptId(startedAt)
+    : undefined;
+  const startEntry = attemptId !== undefined
+    ? formatAgentCliOrchestratedAttemptStartEntry(
+        attemptId,
+        handoff.cardId,
+        before.title,
+        handoff.target.label,
+        handoff.kind,
+        startedAt,
+        modelSelection,
+        thinkingSelection,
+      )
+    : formatAgentCliStartEntry(
+        handoff.target.label,
+        handoff.kind,
+        startedAt,
+        modelSelection,
+        thinkingSelection,
+      );
+
   await handoff.store.appendActivity(
     handoff.cardId,
-    formatAgentCliStartEntry(
-      handoff.target.label,
-      handoff.kind,
-      now(),
-      modelSelection,
-      thinkingSelection,
-    ),
+    startEntry,
   );
+  if (attemptId !== undefined) {
+    publishOrchestratorReport(options.observer, startEntry);
+  }
   const afterStart = findCard(await handoff.store.reload(), handoff.cardId);
   const activityBaseline = (afterStart?.activity ?? before.activity ?? '').length;
-  const prepared = await prepareAgentCliInvocation(handoff.target, handoff.prompt, handoff.cwd, {
-    ...(options.platform !== undefined ? { platform: options.platform } : {}),
-    ...(modelSelection !== undefined ? { modelSelection } : {}),
-    ...(thinkingSelection !== undefined ? { thinkingSelection } : {}),
-  });
-  let processResult: AgentCliProcessResult;
+  let reportQueue = Promise.resolve();
+  const queueModelReport = (entry: string): void => {
+    publishOrchestratorReport(options.observer, entry);
+    reportQueue = reportQueue
+      .then(() => appendIfCardExists(handoff.store, handoff.cardId, entry))
+      .catch(() => undefined);
+  };
+  const discovery: AgentCliModelDiscoverySession | undefined = attemptId === undefined
+    ? undefined
+    : createAgentCliModelDiscovery(handoff.target.provider, {
+        cwd: handoff.cwd,
+        signal: handoff.signal,
+        onEvidence: (evidence) => {
+          queueModelReport(formatAgentCliActualModelEntry(
+            attemptId,
+            handoff.cardId,
+            handoff.target.label,
+            handoff.kind,
+            evidence,
+            now(),
+          ));
+        },
+      });
+  const finishDiscovery = async (
+    processEnd: Parameters<AgentCliModelDiscoverySession['finish']>[0],
+  ): Promise<AgentCliModelDiscoveryOutcome | undefined> => {
+    if (!discovery || attemptId === undefined) {
+      return undefined;
+    }
+    const outcome = await discovery.finish(processEnd);
+    if (outcome.kind === 'unavailable') {
+      queueModelReport(formatAgentCliActualModelUnavailableEntry(
+        attemptId,
+        handoff.cardId,
+        handoff.target.label,
+        handoff.kind,
+        outcome.reason,
+        now(),
+      ));
+    }
+    await reportQueue;
+    return outcome;
+  };
+  let prepared: Awaited<ReturnType<typeof prepareAgentCliInvocation>>;
   try {
-    processResult = await runProcess(prepared.invocation, handoff.signal, options.observer);
+    prepared = await prepareAgentCliInvocation(handoff.target, handoff.prompt, handoff.cwd, {
+      ...(options.platform !== undefined ? { platform: options.platform } : {}),
+      ...(options.orchestrated ? { modelDiscovery: true } : {}),
+      ...(modelSelection !== undefined ? { modelSelection } : {}),
+      ...(thinkingSelection !== undefined ? { thinkingSelection } : {}),
+    });
+  } catch (error) {
+    await finishDiscovery({
+      started: false,
+      cancelled: handoff.signal.aborted,
+      exitCode: null,
+      ...(error instanceof Error ? { error: error.message } : {}),
+    });
+    throw error;
+  }
+  let processResult: AgentCliProcessResult | undefined;
+  let sawProcessOutput = false;
+  const observer: AgentCliProcessObserver | undefined = discovery
+    ? {
+        ...options.observer,
+        onOutput: (chunk, stream) => {
+          sawProcessOutput = true;
+          discovery.onOutput(chunk, stream);
+          options.observer?.onOutput?.(chunk, stream);
+        },
+      }
+    : options.observer;
+  let processRunnerError: unknown;
+  let processRunnerThrew = false;
+  try {
+    processResult = await runProcess(
+      prepared.invocation,
+      handoff.signal,
+      observer,
+    );
+  } catch (error) {
+    processRunnerThrew = true;
+    processRunnerError = error;
   } finally {
     await prepared.cleanup?.();
   }
+  if (processRunnerThrew) {
+    await finishDiscovery({
+      ...(sawProcessOutput ? { started: true } : {}),
+      cancelled: handoff.signal.aborted,
+      exitCode: null,
+      ...(processRunnerError instanceof Error ? { error: processRunnerError.message } : {}),
+    });
+    throw processRunnerError;
+  }
+  if (processResult === undefined) {
+    throw new Error('The agent CLI process runner returned no result.');
+  }
+
+  let modelOutcome: AgentCliModelDiscoveryOutcome | undefined;
+  if (discovery) {
+    // Injected runners may return captured output without invoking the observer;
+    // use that tail as a fallback, with duplicate evidence suppressed by the
+    // per-attempt discovery session.
+    if (!sawProcessOutput) {
+      discovery.onOutput(processResult.stdout, 'stdout');
+      discovery.onOutput(processResult.stderr, 'stderr');
+    }
+    const rejectedSelection = detectModelRejection(processResult, modelSelection) !== undefined;
+    modelOutcome = await finishDiscovery({
+      started: processResult.started,
+      cancelled: processResult.cancelled || handoff.signal.aborted,
+      exitCode: processResult.exitCode,
+      ...(processResult.error !== undefined ? { error: processResult.error } : {}),
+      rejectedSelection,
+    });
+  }
+
+  const withDiscovery = (result: AgentCliCardHandoffResult): AgentCliCardHandoffResult => ({
+    ...result,
+    ...(modelOutcome?.kind === 'observed' ? { actualModel: modelOutcome.evidence } : {}),
+    ...(modelOutcome?.kind === 'unavailable'
+      ? { actualModelUnavailableReason: modelOutcome.reason }
+      : {}),
+  });
 
   if (processResult.cancelled || handoff.signal.aborted) {
     await appendIfCardExists(
@@ -1436,7 +1602,7 @@ export async function runAgentCliCardHandoff(
       handoff.cardId,
       formatAgentCliCancellationEntry(handoff.target.label, handoff.kind, now()),
     );
-    return withModel({ completed: false, cancelled: true, activityBaseline });
+    return withDiscovery(withModel({ completed: false, cancelled: true, activityBaseline }));
   }
 
   // A CLI that refuses the card's model has a working allowance; treating that
@@ -1455,7 +1621,7 @@ export async function runAgentCliCardHandoff(
       handoff.cardId,
       formatAgentCliFailureEntry(handoff.target.label, handoff.kind, processFailure, now()),
     );
-    return withModel(
+    return withDiscovery(withModel(
       creditExhaustion
         ? {
             completed: false,
@@ -1475,18 +1641,18 @@ export async function runAgentCliCardHandoff(
             failure: modelRejection ? 'model-rejected' : 'process-failed',
             reason: processFailure,
           },
-    );
+    ));
   }
 
   const after = findCard(await handoff.store.reload(), handoff.cardId);
   if (!after) {
-    return withModel({
+    return withDiscovery(withModel({
       completed: false,
       cancelled: false,
       activityBaseline,
       failure: 'card-missing',
       reason: `${handoff.target.label} exited successfully, but card ${handoff.cardId} no longer exists.`,
-    });
+    }));
   }
 
   const evidence = validateCompletionEvidence(handoff.kind, after, activityBaseline);
@@ -1496,19 +1662,19 @@ export async function runAgentCliCardHandoff(
       handoff.cardId,
       formatAgentCliFailureEntry(handoff.target.label, handoff.kind, reason, now()),
     );
-    return withModel({
+    return withDiscovery(withModel({
       completed: false,
       cancelled: false,
       activityBaseline,
       failure: 'missing-evidence',
       reason,
-    });
+    }));
   }
 
   const baseResult = { completed: true, cancelled: false, activityBaseline } as const;
-  return withModel(
+  return withDiscovery(withModel(
     evidence.terminalStatus ? { ...baseResult, terminalStatus: evidence.terminalStatus } : baseResult,
-  );
+  ));
 }
 
 /**
@@ -1589,7 +1755,7 @@ function describeModelRejectionFix(
       return `set a model name ${target.label} accepts on the card, or clear the card's preferred model to use that CLI's default`;
     case 'stage-rule': {
       const stage = rejection.stage ?? 'affected';
-      return `set a model name ${target.label} accepts for "${stage}" in ${AGENT_CLI_STAGE_MODELS_SETTING}, or remove that stage's entry to fall back to ${AGENT_CLI_MODELS_SETTING} and the CLI's default`;
+      return `set a model name ${target.label} accepts for "${stage}" / "${target.provider}" in ${AGENT_CLI_STAGE_MODELS_SETTING}, or remove that CLI's stage entry to fall back to ${AGENT_CLI_MODELS_SETTING} and the CLI's default`;
     }
     case 'escalation':
       return `set a model name ${target.label} accepts in ${AGENT_CLI_ESCALATION_LADDER_SETTING} for that CLI, or remove that entry so the loop stops escalating to it`;
@@ -1749,6 +1915,85 @@ async function appendIfCardExists(
 ): Promise<void> {
   if (findCard(await store.reload(), cardId)) {
     await store.appendActivity(cardId, entry);
+  }
+}
+
+let agentCliDispatchAttemptSequence = 0;
+
+function createAgentCliDispatchAttemptId(timestamp: Date): string {
+  agentCliDispatchAttemptSequence += 1;
+  return `dispatch-${timestamp.getTime().toString(36)}-${agentCliDispatchAttemptSequence.toString(36)}`;
+}
+
+export function formatAgentCliOrchestratedAttemptStartEntry(
+  attemptId: string,
+  cardId: string,
+  cardTitle: string,
+  providerLabel: string,
+  kind: AgentCliHandoffKind,
+  timestamp: Date,
+  modelSelection?: AgentCliModelSelection,
+  thinkingSelection?: AgentCliThinkingSelection,
+): string {
+  const ordinaryStart = formatAgentCliStartEntry(
+    providerLabel,
+    kind,
+    timestamp,
+    modelSelection,
+    thinkingSelection,
+  ).split('\n').slice(1);
+  const requestedModel = modelSelection === undefined
+    ? 'none (source: CLI default; no model argument was supplied)'
+    : modelSelection.applied
+      ? `${JSON.stringify(modelSelection.requested)} (source: ${describeAgentCliModelSource(modelSelection.source)}; passed to the CLI exactly as shown)`
+      : `${JSON.stringify(modelSelection.requested)} (source: ${describeAgentCliModelSource(modelSelection.source)}; not applied: ${modelSelection.reason ?? `${providerLabel} does not accept a model selection.`})`;
+  return redactSecrets([
+    `### ${timestamp.toISOString()} - Usage Orchestrator dispatch ${attemptId} started`,
+    `Card: ${cardId} (${JSON.stringify(cardTitle)}). CLI: ${providerLabel}. Stage: ${kind}.`,
+    `Requested model: ${requestedModel}.`,
+    'Actual model: awaiting authoritative CLI/session metadata.',
+    ...ordinaryStart,
+  ].join('\n'));
+}
+
+export function formatAgentCliActualModelEntry(
+  attemptId: string,
+  cardId: string,
+  providerLabel: string,
+  kind: AgentCliHandoffKind,
+  evidence: AgentCliActualModelEvidence,
+  timestamp: Date = new Date(),
+): string {
+  return redactSecrets([
+    `### ${timestamp.toISOString()} - Usage Orchestrator dispatch ${attemptId} model observed`,
+    `Card: ${cardId}. CLI: ${providerLabel}. Stage: ${kind}.`,
+    `Actual model: ${JSON.stringify(evidence.model)} (source: ${evidence.source}; attempt: ${attemptId}).`,
+  ].join('\n'));
+}
+
+export function formatAgentCliActualModelUnavailableEntry(
+  attemptId: string,
+  cardId: string,
+  providerLabel: string,
+  kind: AgentCliHandoffKind,
+  reason: string,
+  timestamp: Date = new Date(),
+): string {
+  return redactSecrets([
+    `### ${timestamp.toISOString()} - Usage Orchestrator dispatch ${attemptId} runtime model unconfirmed`,
+    `Card: ${cardId}. CLI: ${providerLabel}. Stage: ${kind}.`,
+    `Runtime model not confirmed: ${reason}. The model request or CLI-default selection is recorded in the matching dispatch start entry. This entry reports model confirmation only; dispatch outcome is recorded separately. Attempt: ${attemptId}.`,
+  ].join('\n'));
+}
+
+function publishOrchestratorReport(
+  observer: AgentCliProcessObserver | undefined,
+  entry: string,
+): void {
+  try {
+    observer?.onOutput?.(`${entry}\n`, 'stdout');
+  } catch {
+    // Output-channel reporting is observational and must not affect a dispatch.
   }
 }
 

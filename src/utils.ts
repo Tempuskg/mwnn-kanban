@@ -952,39 +952,115 @@ export function canMoveCardToColumn(state: BoardState, cardId: string, toColumnI
   return targetIndex <= readyIndex;
 }
 
+/** One card that `relocateBlockedCards` pulled back to Ready, with why. */
+export interface BlockedCardRelocation {
+  readonly cardId: string;
+  readonly cardTitle: string;
+  readonly fromColumnId: string;
+  readonly fromColumnTitle: string;
+  readonly toColumnId: string;
+  readonly toColumnTitle: string;
+  readonly blockedBy: readonly { readonly id: string; readonly title: string }[];
+}
+
+/** Titles of a card's unfinished dependencies, in `dependsOn` order. */
+export function blockingDependencyTitles(state: BoardState, cardId: string): string[] {
+  const titles = new Map<string, string>();
+  for (const column of state.columns) {
+    for (const card of column.cards) {
+      titles.set(card.id, card.title);
+    }
+  }
+  return blockingDependencies(state, cardId).map((id) => titles.get(id) ?? id);
+}
+
+function quoteTitles(titles: readonly string[]): string {
+  return titles.map((title) => `"${title}"`).join(', ');
+}
+
+/** User-facing explanation of one enforced relocation, for notifications. */
+export function describeBlockedCardRelocation(relocation: BlockedCardRelocation): string {
+  return `"${relocation.cardTitle}" moved from ${relocation.fromColumnTitle} back to ${relocation.toColumnTitle}: `
+    + `blocked by unfinished ${relocation.blockedBy.length === 1 ? 'dependency' : 'dependencies'} `
+    + `${quoteTitles(relocation.blockedBy.map((dependency) => dependency.title))}.`;
+}
+
+/** Explanation shown when the board panel refuses to move a blocked card past Ready. */
+export function describeBlockedMove(state: BoardState, cardId: string): string {
+  const title = state.columns.flatMap((column) => column.cards).find((card) => card.id === cardId)?.title;
+  const blockers = blockingDependencyTitles(state, cardId);
+  const by = blockers.length > 0
+    ? `blocked by unfinished ${blockers.length === 1 ? 'dependency' : 'dependencies'} ${quoteTitles(blockers)}`
+    : 'blocked by unfinished dependencies';
+  return `"${title ?? 'This card'}" is ${by} and can't move past Ready.`;
+}
+
+export function formatBlockedRelocationEntry(
+  relocation: Pick<BlockedCardRelocation, 'fromColumnTitle' | 'toColumnTitle' | 'blockedBy'>,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - Moved back to ${relocation.toColumnTitle}`,
+    `Moved back to ${relocation.toColumnTitle} from "${relocation.fromColumnTitle}": blocked by `
+      + `${quoteTitles(relocation.blockedBy.map((dependency) => dependency.title))}.`,
+  ].join('\n');
+}
+
 /**
  * Pull any blocked card that sits past the Ready column back to the end of the
- * Ready column. A card can become blocked while already in a work column (e.g.
- * a dependency was added, or a finished dependency was reopened); this keeps the
- * "blocked cards can't advance past Ready" rule true after every mutation.
- * Returns a board with any such cards relocated; a no-op otherwise.
+ * Ready column, appending an Activity entry to each moved card and reporting
+ * every move so the caller can tell the user. A card can become blocked while
+ * already in a work column (e.g. a dependency was added, or a finished
+ * dependency was reopened); this keeps the "blocked cards can't advance past
+ * Ready" rule true. A no-op (with no relocations) otherwise.
  */
-export function enforceBlockedCardPlacement(state: BoardState): BoardState {
+export function relocateBlockedCards(
+  state: BoardState,
+  timestamp: Date = new Date(),
+): { state: BoardState; relocations: BlockedCardRelocation[] } {
   const readyIndex = state.columns.findIndex((column) => column.role === 'ready');
   if (readyIndex === -1) {
-    return cloneBoard(state);
+    return { state: cloneBoard(state), relocations: [] };
   }
 
   let next = cloneBoard(state);
-  const stranded: string[] = [];
+  const stranded: Omit<BlockedCardRelocation, 'toColumnId' | 'toColumnTitle'>[] = [];
   next.columns.forEach((column, index) => {
     if (index <= readyIndex) {
       return;
     }
     for (const card of column.cards) {
-      if (isCardBlocked(next, card.id)) {
-        stranded.push(card.id);
+      if (!isCardBlocked(next, card.id)) {
+        continue;
       }
+      const titles = blockingDependencyTitles(next, card.id);
+      stranded.push({
+        cardId: card.id,
+        cardTitle: card.title,
+        fromColumnId: column.id,
+        fromColumnTitle: column.title,
+        blockedBy: blockingDependencies(next, card.id).map((id, i) => ({ id, title: titles[i] ?? id })),
+      });
     }
   });
 
-  for (const cardId of stranded) {
+  const relocations: BlockedCardRelocation[] = [];
+  for (const entry of stranded) {
     const readyColumn = next.columns[readyIndex];
-    if (readyColumn) {
-      next = moveCard(next, cardId, readyColumn.id, readyColumn.cards.length);
+    if (!readyColumn) {
+      continue;
     }
+    const relocation = { ...entry, toColumnId: readyColumn.id, toColumnTitle: readyColumn.title };
+    next = moveCard(next, entry.cardId, readyColumn.id, readyColumn.cards.length);
+    next = appendActivity(next, entry.cardId, formatBlockedRelocationEntry(relocation, timestamp));
+    relocations.push(relocation);
   }
-  return next;
+  return { state: next, relocations };
+}
+
+/** `relocateBlockedCards` without the report: just the corrected board. */
+export function enforceBlockedCardPlacement(state: BoardState): BoardState {
+  return relocateBlockedCards(state).state;
 }
 
 export function calculateCardPosition(bounds: PositionBounds): number {

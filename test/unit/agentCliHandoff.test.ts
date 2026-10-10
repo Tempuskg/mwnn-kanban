@@ -12,10 +12,12 @@ import {
   resolveAllAgentCliTargets,
   resolveAgentCliTarget,
   resolveCursorWindowsLaunch,
+  formatAgentCliOrchestratedAttemptStartEntry,
   runAgentCliCardHandoff,
   runAgentCliProcess,
   type AgentCliCardHandoffOptions,
   type AgentCliProcessResult,
+  type AgentCliModelSelection,
   type AgentCliProviderId,
   type AgentCliTarget,
 } from '../../src/agentCliHandoff';
@@ -136,6 +138,26 @@ suite('agent CLI provider registry and discovery', () => {
         invocation.args.every((arg) => !/[\r\n]/.test(arg)),
         `${provider} argv must never contain newlines`,
       );
+    }
+  });
+
+  test('enables provider metadata output only for orchestrated invocations', () => {
+    const expected: Record<AgentCliProviderId, readonly string[]> = {
+      copilot: ['--allow-all-tools', '--no-ask-user'],
+      codex: ['exec', '--json', '--sandbox', 'workspace-write', '-'],
+      'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'stream-json', '--verbose'],
+      cursor: ['-p', '--force', '--output-format', 'stream-json'],
+    };
+    for (const provider of AGENT_CLI_PROVIDER_IDS) {
+      const invocation = buildAgentCliInvocation(
+        target(provider),
+        'Prompt',
+        'E:\\workspace',
+        undefined,
+        undefined,
+        true,
+      );
+      assert.deepEqual(invocation.args, expected[provider]);
     }
   });
 
@@ -1029,6 +1051,198 @@ suite('agent CLI prompt delivery over stdin', () => {
     assert.equal(result.started, false);
     assert.match(result.error ?? '', /newline/);
     assert.match(result.error ?? '', /stdin/);
+  });
+});
+
+suite('orchestrated dispatch model reporting', () => {
+  test('records the same attempt and observed default model in Activity and CLI output without changing completion', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const output: string[] = [];
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('copilot'),
+        cardId,
+        prompt: 'Complete the card.',
+        cwd: 'E:\\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      {
+        orchestrated: true,
+        now: () => new Date('2026-10-09T12:00:00.000Z'),
+        observer: { onOutput: (chunk) => output.push(chunk) },
+        runProcess: async (invocation, _signal, observer) => {
+          assert.ok(!invocation.args.includes('--silent'));
+          observer?.onOutput?.('Using model: Copilot Default Model\n', 'stdout');
+          await board.store.appendActivity(cardId, 'Finished the implementation.\nSTATUS: DONE');
+          return {
+            started: true,
+            cancelled: false,
+            exitCode: 0,
+            signal: null,
+            stdout: '',
+            stderr: '',
+          };
+        },
+      },
+    );
+
+    assert.equal(result.completed, true);
+    assert.deepEqual(result.actualModel, {
+      model: 'Copilot Default Model',
+      source: 'Copilot CLI non-silent programmatic output model label',
+    });
+    assert.equal(result.actualModelUnavailableReason, undefined);
+    const activity = board.card(cardId).activity ?? '';
+    const startReport = output.find((entry) => entry.includes('Usage Orchestrator dispatch') && entry.includes('started'));
+    const modelReport = output.find((entry) => entry.includes('Actual model: "Copilot Default Model"'));
+    assert.ok(startReport?.includes(`Card: ${cardId}`));
+    assert.match(startReport ?? '', /Stage: implementation/);
+    assert.match(startReport ?? '', /Requested model: none \(source: CLI default; no model argument was supplied\)/);
+    assert.ok(modelReport);
+    assert.ok(activity.includes(startReport?.trimEnd() ?? ''));
+    assert.ok(activity.includes(modelReport?.trimEnd() ?? ''));
+    assert.match(modelReport ?? '', /attempt: dispatch-/);
+  });
+
+  test('logs an explicit model exactly as passed and identifies its source', () => {
+    const selection: AgentCliModelSelection = {
+      requested: 'claude-sonnet-5-custom',
+      source: 'card',
+      stage: 'implementation',
+      applied: true,
+      args: ['--model', 'claude-sonnet-5-custom'],
+    };
+    const entry = formatAgentCliOrchestratedAttemptStartEntry(
+      'dispatch-test-1',
+      'card-test',
+      'Test card',
+      'Anthropic Claude Code CLI',
+      'implementation',
+      new Date('2026-10-09T12:00:00.000Z'),
+      selection,
+    );
+    assert.match(entry, /Requested model: "claude-sonnet-5-custom" \(source: .*; passed to the CLI exactly as shown\)/);
+    assert.match(entry, /Actual model: awaiting authoritative CLI\/session metadata/);
+    assert.match(entry, /Card: card-test/);
+    assert.match(entry, /Stage: implementation/);
+  });
+
+  test('labels card, stage, workspace, and escalation model sources distinctly', () => {
+    const cases: readonly [AgentCliModelSelection['source'], string][] = [
+      ['card', "the card's preferred model"],
+      ['stage-rule', 'the AI loop stage model rule'],
+      ['workspace-default', 'the workspace default model'],
+      ['escalation', 'the AI loop model escalation ladder'],
+    ];
+    for (const [source, label] of cases) {
+      const entry = formatAgentCliOrchestratedAttemptStartEntry(
+        `dispatch-${source}`,
+        'card-test',
+        'Test card',
+        'OpenAI Codex CLI',
+        'implementation',
+        new Date('2026-10-09T12:00:00.000Z'),
+        {
+          requested: 'model-name',
+          source,
+          stage: 'implementation',
+          applied: true,
+          args: ['--model', 'model-name'],
+        },
+      );
+      assert.ok(entry.includes(`source: ${label}; passed to the CLI exactly as shown`));
+    }
+  });
+
+  test('distinguishes a requested alias from the concrete model reported by Claude Code', async () => {
+    const initial = boardWithCard();
+    const state: BoardState = {
+      ...initial.state,
+      columns: initial.state.columns.map((column) => ({
+        ...column,
+        cards: column.cards.map((card) => card.id === initial.cardId
+          ? { ...card, preferredModels: { 'claude-code': 'sonnet' } }
+          : card),
+      })),
+    };
+    const board = fakeStore(state);
+    const output: string[] = [];
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('claude-code'),
+        cardId: initial.cardId,
+        prompt: 'Complete the card.',
+        cwd: 'E:\\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      {
+        orchestrated: true,
+        observer: { onOutput: (chunk) => output.push(chunk) },
+        runProcess: async (invocation, _signal, observer) => {
+          assert.ok(invocation.args.includes('--model'));
+          assert.ok(invocation.args.includes('sonnet'));
+          assert.ok(invocation.args.includes('stream-json'));
+          observer?.onOutput?.('{"type":"system","subtype":"init","model":"claude-sonnet-5.5"}\n', 'stdout');
+          await board.store.appendActivity(initial.cardId, 'Finished.\nSTATUS: DONE');
+          return successfulProcess();
+        },
+      },
+    );
+
+    assert.equal(result.completed, true);
+    assert.equal(result.modelSelection?.requested, 'sonnet');
+    assert.equal(result.actualModel?.model, 'claude-sonnet-5.5');
+    const activity = board.card(initial.cardId).activity ?? '';
+    const requested = output.find((entry) => entry.includes('Requested model: "sonnet"'));
+    const actual = output.find((entry) => entry.includes('Actual model: "claude-sonnet-5.5"'));
+    assert.ok(requested);
+    assert.match(requested ?? '', /source: the card's preferred model; passed to the CLI exactly as shown/);
+    assert.ok(actual);
+    assert.match(actual ?? '', /Claude Code stream-json system\.init\.model/);
+    assert.ok(activity.includes(requested?.trimEnd() ?? ''));
+    assert.ok(activity.includes(actual?.trimEnd() ?? ''));
+  });
+
+  test('records a bounded unavailable reason without changing a completed dispatch', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const output: string[] = [];
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('cursor'),
+        cardId,
+        prompt: 'Complete the card.',
+        cwd: 'E:\\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      {
+        orchestrated: true,
+        observer: { onOutput: (chunk) => output.push(chunk) },
+        runProcess: async (_invocation, _signal, observer) => {
+          observer?.onOutput?.('{"type":"system","subtype":"init","model":null}\n', 'stdout');
+          await board.store.appendActivity(cardId, 'Finished despite missing model metadata.\nSTATUS: DONE');
+          return successfulProcess();
+        },
+      },
+    );
+
+    assert.equal(result.completed, true);
+    assert.match(result.actualModelUnavailableReason ?? '', /missing, malformed/);
+    assert.equal(result.actualModel, undefined);
+    const activity = board.card(cardId).activity ?? '';
+    const unconfirmed = output.find((entry) => entry.includes('Runtime model not confirmed:'));
+    assert.ok(unconfirmed);
+    assert.match(unconfirmed ?? '', /model confirmation only; dispatch outcome is recorded separately/);
+    assert.match(unconfirmed ?? '', /CLI emitted model metadata that was missing, malformed/);
+    assert.ok(activity.includes(unconfirmed?.trimEnd() ?? ''));
+    assert.match(activity, /STATUS: DONE/);
   });
 });
 

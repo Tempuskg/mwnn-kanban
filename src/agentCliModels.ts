@@ -171,59 +171,83 @@ export const AGENT_CLI_STAGE_MODELS_SETTING = 'mwnn-kanban.agentCliStageModels';
  */
 export const AGENT_CLI_ESCALATION_LADDER_SETTING = 'mwnn-kanban.aiLoopModelEscalationLadder';
 
-/**
- * A model name per AI-loop stage. A stage is absent rather than present with a
- * blank value, so `rules[stage]` being undefined always means "no rule for this
- * stage" and resolution falls through to the workspace default.
- *
- * Keyed on stage rather than on stage *and* provider: a stage rule is a
- * deliberate override of the workspace default, and the workspace default is
- * where per-provider spelling already lives. A rule the active CLI does not
- * accept is refused by that CLI and reported through the same model-rejection
- * path as a bad card model, naming this setting and the stage.
- */
-export type AgentCliStageModels = { readonly [K in AgentCliHandoffKind]?: string };
-
-/** The "no stage rules configured" value, and the default for every resolution. */
+/** A stage can hold CLI-specific names or a legacy shared string. */
+export type AgentCliStagePreference = string | { readonly [K in AgentCliProviderId]?: string };
+export type AgentCliStageModels = { readonly [K in AgentCliHandoffKind]?: AgentCliStagePreference };
 export const EMPTY_AGENT_CLI_STAGE_MODELS: AgentCliStageModels = Object.freeze({});
 
-/**
- * Read `mwnn-kanban.agentCliStageModels` from an unvalidated configuration
- * value. Nothing here throws: a malformed setting degrades to "no rule" for the
- * affected stage rather than breaking a dispatch. Non-object values, unknown
- * stage keys, non-string values, and blank or unusable names are all dropped,
- * so an empty or misspelled setting leaves behavior exactly as it was.
- */
+/** Validate only known stages/providers; malformed or blank entries are ignored. */
 export function readAgentCliStageModels(value: unknown): AgentCliStageModels {
+  return readStagePreferences(value, normalizePreferredModel);
+}
+
+function readStagePreferences(
+  value: unknown,
+  normalize: (value: string | undefined) => string | undefined,
+): AgentCliStageModels {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return EMPTY_AGENT_CLI_STAGE_MODELS;
   }
-
   const configured = value as Record<string, unknown>;
-  // Only known stages are read, which is what makes an unknown key a no-op
-  // rather than an error: a stale or misspelled key simply never matches.
-  const rules: { -readonly [K in AgentCliHandoffKind]?: string } = {};
+  const rules: { -readonly [K in AgentCliHandoffKind]?: AgentCliStagePreference } = {};
   for (const stage of AGENT_CLI_HANDOFF_KINDS) {
-    const configuredModel = configured[stage];
-    if (typeof configuredModel !== 'string') {
-      continue;
-    }
-    // Same normalization a card's own model gets, so a name that is unusable
-    // as a single spawn argument cannot enter through the settings either.
-    const model = normalizePreferredModel(configuredModel);
-    if (model !== undefined) {
-      rules[stage] = model;
+    const entry = configured[stage];
+    if (typeof entry === 'string') {
+      const name = normalize(entry);
+      if (name !== undefined) {
+        rules[stage] = name;
+      }
+    } else if (typeof entry === 'object' && entry !== null && !Array.isArray(entry)) {
+      const providers: { -readonly [K in AgentCliProviderId]?: string } = {};
+      for (const provider of AGENT_CLI_PROVIDER_IDS) {
+        const name = normalize(typeof (entry as Record<string, unknown>)[provider] === 'string'
+          ? (entry as Record<string, string>)[provider] : undefined);
+        if (name !== undefined) {
+          providers[provider] = name;
+        }
+      }
+      if (Object.keys(providers).length > 0) {
+        rules[stage] = Object.freeze(providers);
+      }
     }
   }
   return Object.freeze(rules);
 }
 
-/** The model configured for one stage, or undefined when that stage has none. */
+/** Merge scopes by stage and CLI, including lower-scope legacy shared strings.
+ * Reading inheritance never materializes these effective values in settings.
+ */
+export function mergeAgentCliStagePreferences(...values: readonly unknown[]): AgentCliStageModels {
+  const result: { -readonly [K in AgentCliHandoffKind]?: AgentCliStagePreference } = {};
+  for (const value of values) {
+    const rules = readAgentCliStageModels(value);
+    for (const stage of AGENT_CLI_HANDOFF_KINDS) {
+      const entry = rules[stage];
+      if (entry === undefined) {
+        continue;
+      }
+      if (typeof entry === 'string') {
+        result[stage] = entry;
+      } else {
+        const previous = result[stage];
+        const lower = typeof previous === 'string'
+          ? Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, previous]))
+          : previous;
+        result[stage] = Object.freeze({ ...lower, ...entry });
+      }
+    }
+  }
+  return Object.freeze(result);
+}
+
+/** Legacy strings apply to every CLI; provider maps apply only to that CLI. */
 export function stageAgentCliModel(
   rules: AgentCliStageModels,
   stage: AgentCliHandoffKind,
+  provider?: AgentCliProviderId,
 ): string | undefined {
-  return rules[stage];
+  const entry = rules[stage];
+  return typeof entry === 'string' ? entry : provider === undefined ? undefined : entry?.[provider];
 }
 
 /**
@@ -316,7 +340,7 @@ export function resolveAgentCliModel(
   if (fromCard !== undefined) {
     return { model: fromCard, source: 'card' };
   }
-  const fromStage = stage ? stageAgentCliModel(stage.stageModels, stage.stage) : undefined;
+  const fromStage = stage ? stageAgentCliModel(stage.stageModels, stage.stage, provider) : undefined;
   if (fromStage !== undefined) {
     return { model: fromStage, source: 'stage-rule' };
   }
@@ -444,49 +468,20 @@ export function defaultAgentCliThinkingLevel(
   return defaults[provider];
 }
 
-/**
- * A thinking level per AI-loop stage. Keyed on stage rather than on stage *and*
- * provider for the same reason the stage model rules are: a stage rule is a
- * deliberate override of the workspace default, and per-provider spelling
- * already lives in the workspace default.
- */
-export type AgentCliStageThinkingLevels = { readonly [K in AgentCliHandoffKind]?: string };
-
-/** The "no stage rules configured" value, and the default for every resolution. */
+/** Independent thinking preferences, with the same stage/provider shape as models. */
+export type AgentCliStageThinkingLevels = AgentCliStageModels;
 export const EMPTY_AGENT_CLI_STAGE_THINKING_LEVELS: AgentCliStageThinkingLevels = Object.freeze({});
 
-/**
- * Read `mwnn-kanban.agentCliStageThinkingLevels` from an unvalidated
- * configuration value. Nothing here throws: a malformed setting degrades to
- * "no rule" for the affected stage rather than breaking a dispatch.
- */
 export function readAgentCliStageThinkingLevels(value: unknown): AgentCliStageThinkingLevels {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return EMPTY_AGENT_CLI_STAGE_THINKING_LEVELS;
-  }
-
-  const configured = value as Record<string, unknown>;
-  // Only known stages are read, so a stale or misspelled key is a no-op.
-  const rules: { -readonly [K in AgentCliHandoffKind]?: string } = {};
-  for (const stage of AGENT_CLI_HANDOFF_KINDS) {
-    const configuredLevel = configured[stage];
-    if (typeof configuredLevel !== 'string') {
-      continue;
-    }
-    const level = normalizeThinkingLevel(configuredLevel);
-    if (level !== undefined) {
-      rules[stage] = level;
-    }
-  }
-  return Object.freeze(rules);
+  return readStagePreferences(value, normalizeThinkingLevel);
 }
 
-/** The level configured for one stage, or undefined when that stage has none. */
 export function stageAgentCliThinkingLevel(
   rules: AgentCliStageThinkingLevels,
   stage: AgentCliHandoffKind,
+  provider?: AgentCliProviderId,
 ): string | undefined {
-  return rules[stage];
+  return stageAgentCliModel(rules, stage, provider);
 }
 
 /**
@@ -568,7 +563,7 @@ export function resolveAgentCliThinkingLevel(
     return { level: fromCard, source: 'card' };
   }
   const fromStage = stage
-    ? stageAgentCliThinkingLevel(stage.stageThinkingLevels, stage.stage)
+    ? stageAgentCliThinkingLevel(stage.stageThinkingLevels, stage.stage, provider)
     : undefined;
   if (fromStage !== undefined) {
     return { level: fromStage, source: 'stage-rule' };

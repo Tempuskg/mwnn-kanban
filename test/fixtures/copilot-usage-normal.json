@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "quotaSnapshots": {
+      "premium_interactions": {
+        "entitlementRequests": 300,
+        "usedRequests": 173,
+        "remainingPercentage": 42.5,
+        "resetDate": "2026-10-16T00:00:00.000Z"
+      }
+    }
+  }
+}

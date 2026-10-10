@@ -12,12 +12,15 @@ import {
   cloneBoard,
   defaultBoard,
   deleteCard,
+  describeBlockedCardRelocation,
+  describeBlockedMove,
   duplicateCard,
   editCard,
   enforceBlockedCardPlacement,
   isCardBlocked,
   moveCard,
   readyState,
+  relocateBlockedCards,
   removeColumn,
   renameColumn,
   reorderColumns,
@@ -436,6 +439,34 @@ suite('board operations', () => {
     assert.equal(enforced.columns[2]!.cards.length, 0, 'card no longer sits in In Progress');
     assert.equal(enforced.columns[1]!.id, readyId);
     assert.equal(enforced.columns[1]!.cards.some((card) => card.id === started), true, 'card is now in Ready');
+  });
+
+  test('relocateBlockedCards reports each move and logs it on the card', () => {
+    let board = defaultBoard(['Backlog', 'Ready', 'In Progress', 'Done']);
+    board = addCard(board, board.columns[2]!.id, 'Started early');
+    board = addCard(board, board.columns[0]!.id, 'Upstream');
+    const started = board.columns[2]!.cards[0]!.id;
+    const upstream = board.columns[0]!.cards[0]!.id;
+    board = setDependencies(board, started, [upstream]);
+
+    const { state, relocations } = relocateBlockedCards(board, new Date('2026-10-10T00:00:00.000Z'));
+
+    assert.equal(relocations.length, 1);
+    assert.deepEqual(relocations[0]!.blockedBy, [{ id: upstream, title: 'Upstream' }]);
+    assert.equal(relocations[0]!.fromColumnTitle, 'In Progress');
+    assert.equal(
+      describeBlockedCardRelocation(relocations[0]!),
+      '"Started early" moved from In Progress back to Ready: blocked by unfinished dependency "Upstream".',
+    );
+    const moved = state.columns[1]!.cards.find((card) => card.id === started)!;
+    assert.equal(
+      moved.activity,
+      '### 2026-10-10T00:00:00.000Z - Moved back to Ready\nMoved back to Ready from "In Progress": blocked by "Upstream".',
+    );
+    assert.equal(
+      describeBlockedMove(board, started),
+      '"Started early" is blocked by unfinished dependency "Upstream" and can\'t move past Ready.',
+    );
   });
 
   test('enforceBlockedCardPlacement leaves unblocked and Ready/Backlog cards in place', () => {

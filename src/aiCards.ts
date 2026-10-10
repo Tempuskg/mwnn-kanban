@@ -1,6 +1,7 @@
 import { AGENT_CLI_PROVIDER_IDS } from './agentCliProviders';
 import { recommendableProviders, type DefinitionRunSettings } from './cardRunSettings';
-import type { BoardState } from './types';
+import { isCardDefined } from './cardDefinition';
+import { isInterviewCard, type BoardState } from './types';
 import { cardPreferredModelFor, cardThinkingLevelFor } from './utils';
 
 type BoardColumn = BoardState['columns'][number];
@@ -445,4 +446,114 @@ export function summarizeCardDescription(description: string | undefined): strin
     return singleLine;
   }
   return `${singleLine.slice(0, 77)}...`;
+}
+
+/** Why a card cannot start an AI-guided interview right now. */
+export type InterviewIneligibleReason = 'missing' | 'not-interview' | 'undefined' | 'done';
+
+export type InterviewCardSelection =
+  | { readonly eligible: true; readonly card: BoardCard; readonly column: BoardColumn }
+  | { readonly eligible: false; readonly reason: InterviewIneligibleReason };
+
+/**
+ * Decide from the current board state whether a card can start (or resume) an
+ * AI-guided interview: it must exist, be a Human-assigned card, be defined, and
+ * not already sit in a done column. The caller passes
+ * freshly reloaded state so a stale webview never launches an interview.
+ */
+export function findInterviewCardSelection(state: BoardState, cardId: string): InterviewCardSelection {
+  for (const column of state.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (!card) {
+      continue;
+    }
+    if (!isInterviewCard(card)) {
+      return { eligible: false, reason: 'not-interview' };
+    }
+    if (!isCardDefined(card)) {
+      return { eligible: false, reason: 'undefined' };
+    }
+    if (column.role === 'done') {
+      return { eligible: false, reason: 'done' };
+    }
+    return { eligible: true, card, column };
+  }
+  return { eligible: false, reason: 'missing' };
+}
+
+/** Actionable feedback for a card that cannot start an interview. */
+export function describeInterviewIneligibility(reason: InterviewIneligibleReason): string {
+  switch (reason) {
+    case 'missing':
+      return 'This card no longer exists on the board. Reload the board and try again.';
+    case 'not-interview':
+      return 'Only a Human card can start an interview. Assign the card to Human first.';
+    case 'undefined':
+      return 'Add a Description and Acceptance criteria to this card before starting an interview.';
+    case 'done':
+      return 'This card is already in a done column, so the interview was not started. Move it out of Done first if it needs more answers.';
+  }
+}
+
+/**
+ * The reusable AI-guided interview procedure. The human supplies facts and
+ * decisions; the agent reads the saved records, asks one question at a time
+ * and records every answer in the card and its linked artifacts, so a fresh
+ * chat resumes from the files rather than from any provider conversation.
+ */
+export function buildCardInterviewPrompt(card: BoardCard, cardFilePath: string, workspaceRoot: string): string {
+  return [
+    'You are guiding an AI-assisted interview for a Methodology With No Name (MWNN) Kanban card inside VS Code.',
+    'This is a Human card: the person chatting with you supplies the facts and decisions. You ask, listen and record. Do not implement the work, do not invent answers, and do not change the card\'s assignee.',
+    '',
+    `Workspace root: ${workspaceRoot}`,
+    `This card is stored as a markdown file at: ${cardFilePath}`,
+    '',
+    '## Before asking anything',
+    '1. Read the saved card file above in full. Treat the file, not this prompt, as the current record: it may already hold answers from an earlier interview chat.',
+    '2. Read every source the card links or names (files, tables, baselines, JSON) that the questions relate to.',
+    '3. Read the repository-local AI instructions that apply to this workspace (for example AGENTS.md, CLAUDE.md, .github/copilot-instructions.md and any *.instructions.md) and follow their verification, dependency and column/WIP rules.',
+    '4. Reuse every answer already recorded in the card Activity or the linked artifacts. Never ask again for something already answered, unless the record is contradictory; then ask one question to resolve that contradiction.',
+    '5. Work out the next unresolved item from the acceptance criteria and description.',
+    '',
+    '## Asking',
+    '- Ask exactly one question per message, then stop and wait for the reply. Do not continue until the person answers.',
+    '- Split a multipart question into separate questions and ask them one at a time.',
+    '- Ask for system names, owners or where information lives, never for credentials, passwords, account numbers or customer records.',
+    '',
+    '## After each answer',
+    '1. Append a dated entry under the card\'s "## Activity" section with the question, the answer, and its source (for example "reported by <name> in interview chat, <YYYY-MM-DD>").',
+    '2. Update only the linked fact or baseline artifacts the answer is about. Preserve unrelated facts, existing rows and all historical Activity.',
+    '3. Record answers exactly as given and keep these distinct: zero (a counted value of 0), none (the thing does not exist), unknown (the person does not know), and skipped (the person explicitly chose not to answer). Never fill a missing answer by inference or guesswork.',
+    '4. Reread the saved card and every changed artifact to confirm the answer was written before asking the next question.',
+    '',
+    '## Resuming',
+    'If this chat is closed or restarted, a new chat resumes from the card file and linked artifacts alone. No provider conversation id is needed, so everything you learn must be saved to those files as you go.',
+    '',
+    '## Completing the interview',
+    'Do not declare the interview complete until all of the following hold:',
+    '- Compare each original acceptance criterion with the recorded answers. Check a criterion `- [ ]` to `- [x]` only when the recorded answers or verified evidence meet it; never bulk-check criteria.',
+    '- Unknown or skipped answers satisfy a criterion only when the criterion explicitly allows them. Otherwise leave it unchecked and list it as an unresolved exception.',
+    '- Reread every changed artifact, confirm linked tables agree with each other, and parse any changed JSON file to prove it is still valid.',
+    '- Label each recorded fact as user-reported or verified evidence; never present a reported answer as verified.',
+    '- If a criterion needs human verification or sign-off, leave it for that person.',
+    '- Apply the repository\'s normal verification, dependency and column/WIP rules before any status change. Do not move the card or change its assignee unless those rules and the person allow it. Starting this chat is not evidence of completion.',
+    'When you stop, append a dated Activity summary stating which criteria are met, which remain open, and any unresolved exceptions.',
+    '',
+    `Title: ${card.title}`,
+    '',
+    'Description:',
+    card.description?.trim() || 'No description provided.',
+    '',
+    'Acceptance criteria:',
+    card.acceptanceCriteria?.trim() || 'No acceptance criteria provided.',
+  ].join('\n');
+}
+
+/** Activity entry recorded only after the interview prompt was delivered. */
+export function formatInterviewStartEntry(providerLabel: string, timestamp: Date = new Date()): string {
+  return [
+    `### ${timestamp.toISOString()} - AI-guided interview started in ${providerLabel}`,
+    `Opened an interview chat in ${providerLabel}. Answers are recorded below as they are given; this entry is not evidence that any acceptance criterion is met.`,
+  ].join('\n');
 }

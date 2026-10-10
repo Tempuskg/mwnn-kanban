@@ -120,6 +120,8 @@ export function parseCard(text: string): CardDocument {
   const dependsOn = optionalStringArray(frontmatter, 'dependsOn');
   const preferredModels = optionalPreferredModels(frontmatter);
   const thinkingLevels = optionalThinkingLevels(frontmatter);
+  // A legacy `interview:` key (the retired AI-guided interview opt-in) is ignored
+  // on read, so it drops out the next time the card is written.
 
   const card: Card = { id, title, createdAt };
   if (updatedAt !== undefined) {
@@ -334,6 +336,11 @@ function optionalNumber(frontmatter: Record<string, string>, key: string): numbe
   return parsed;
 }
 
+/**
+ * The interview flag is on only for an exact `true`. Any other value - `false`,
+ * a typo, a quoted string - leaves it off rather than skipping the whole card,
+ * so a hand-edited flag can never make a card unreadable.
+ */
 function optionalAssignee(frontmatter: Record<string, string>, key: string): Assignee | undefined {
   const value = frontmatter[key];
   if (value === undefined) {

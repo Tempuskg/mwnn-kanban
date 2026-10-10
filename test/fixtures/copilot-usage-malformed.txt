@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"result":{"quotaSnapshots":{"premium_interactions":{"remainingPercentage":40}}},"token":"sk-live-ABCDEF1234567890"

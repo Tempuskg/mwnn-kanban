@@ -18,7 +18,7 @@ An in-editor Kanban board for VS Code built around the [Methodology With No Name
 
 ## Privacy and network access
 
-MWNN Kanban never transmits usage, board, or time data. When a Pro license is validated, the extension contacts Polar and sends the license key; the validation result is cached locally for up to 24 hours. This license check is the only network request MWNN Kanban makes directly. AI handoffs run through the chat extension or local agent CLI you choose and are subject to that provider's privacy terms.
+MWNN Kanban never transmits usage, board, or time data. When a Pro license is validated, the extension contacts Polar and sends the license key; the validation result is cached locally for up to 24 hours. This license check is the only network request MWNN Kanban makes directly; the Usage Orchestrator reads usage only by asking your locally installed agent CLIs. AI handoffs run through the chat extension or local agent CLI you choose and are subject to that provider's privacy terms.
 
 ## Commands
 
@@ -45,7 +45,7 @@ MWNN Kanban never transmits usage, board, or time data. When a Pro license is va
 | `mwnn-kanban.boardFolder` | `.mwnn` | Workspace-relative folder that stores the board files. |
 | `mwnn-kanban.defaultReadyReverseWip` | `3` | Default minimum number of defined cards the Ready column should keep available. |
 | `mwnn-kanban.enableRunWithAI` | `true` | Enable AI-assisted board actions when supported language models are available. |
-| `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, or `cursor`; `prompt` asks whether to use a VS Code chat extension or local CLI. |
+| `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, `cursor`, or `orchestrator` (Usage Orchestrator); `prompt` asks whether to use a VS Code chat extension or local CLI. |
 | `mwnn-kanban.aiLoopReviewFreshDefinitions` | `false` | Pause newly AI-defined cards in Ready until the next loop run so a human can review the definition first. |
 | `mwnn-kanban.aiLoopVerifyCards` | `false` | Let the AI loop verify AI-assigned cards in the Verify column. When off, the loop assigns those cards to a human for verification. |
 | `mwnn-kanban.aiLoopCliFallbackEnabled` | `false` | Let the AI loop continue on another agent CLI when the active CLI reports exhausted credits or a spent usage/session limit. |
@@ -56,9 +56,9 @@ MWNN Kanban never transmits usage, board, or time data. When a Pro license is va
 | `mwnn-kanban.aiLoopMaxDispatches` | `0` | Maximum agent handoffs one AI loop run may dispatch before it stops. `0` disables the cap and leaves run length unchanged. |
 | `mwnn-kanban.agentCliPaths` | `{}` | Optional executable-path overrides for each agent CLI provider, used by both `Run Card with AI` and the AI loop. The `copilot` value may point to either `copilot` or `gh`. Full paths containing spaces are supported. |
 | `mwnn-kanban.agentCliModels` | `{}` | Model names per agent CLI provider. The first entry for a provider is the model used when a card names no model for that provider; the rest are that provider's other known models. Leave a provider out to use its own default model. |
-| `mwnn-kanban.agentCliStageModels` | `{}` | Model per AI loop stage (`definition`, `triage`, `implementation`, `verification`), overriding `mwnn-kanban.agentCliModels` for that stage. A model the card names for the active CLI still wins. |
+| `mwnn-kanban.agentCliStageModels` | `{}` | Model per AI loop stage and CLI, e.g. `{ "implementation": { "codex": "custom-model", "claude-code": "sonnet" } }`. Overrides that CLI’s provider default; its card override still wins. Legacy stage strings apply to every CLI. |
 | `mwnn-kanban.agentCliThinkingLevels` | `{}` | Thinking level (reasoning effort) per agent CLI, passed through unchanged. Only CLIs that expose reasoning effort can honor it — today OpenAI Codex CLI; elsewhere the level is reported as not applied and the run proceeds at the CLI's default effort. |
-| `mwnn-kanban.agentCliStageThinkingLevels` | `{}` | Thinking level per AI loop stage, overriding `mwnn-kanban.agentCliThinkingLevels` for that stage. A level the card names for the active CLI still wins. |
+| `mwnn-kanban.agentCliStageThinkingLevels` | `{}` | Independent thinking level per stage and CLI, e.g. `{ "triage": { "codex": "low", "claude-code": "high" } }`. Same precedence and legacy compatibility as stage models. |
 | `mwnn-kanban.chatProviderCommands` | `{}` | Optional VS Code command overrides for interactive chat handoffs, including AI Loop chat mode. |
 
 ## AI Loop Providers
@@ -89,6 +89,56 @@ CLI fallback is off by default: an exhausted CLI stops the loop exactly as any o
 Only that failure triggers a switch. Authentication errors, network failures, transient rate limits, plain nonzero exits, and missing completion evidence keep the existing single-CLI behavior — a stage that simply did not finish is handled by model escalation below, not by changing CLI. The failed process always ends first; the replacement then retries the *same* stage for the same card in the same workspace, receiving the latest card contents plus a note explaining the interruption, so existing edits, checked acceptance criteria, and Activity history are kept. A switch alone never advances a card — the replacement must still satisfy the stage's completion evidence.
 
 Each provider is tried at most once per loop run: duplicates, the exhausted CLI, and CLIs whose executable is unavailable are skipped, and a provider that exhausts its allowance is not retried during that run. When no eligible CLI is left, the loop pauses without advancing the interrupted card and tells you to restore credits or configure an available CLI. Every switch is shown in loop progress and recorded in the card's Activity with the time, interrupted stage, previous CLI, replacement CLI, and reason. Your saved `mwnn-kanban.aiLoopProvider` preference is never changed.
+
+### Usage Orchestrator
+
+Choose **Usage Orchestrator** — set `mwnn-kanban.aiLoopProvider` to `orchestrator`, or pick it in the AI loop's "which local CLI?" picker or the `Run Card with AI` provider picker — to spread work across your CLI subscriptions by their real remaining usage instead of draining one CLI until the credit fallback catches the exhaustion. In the AI loop it re-ranks before every CLI dispatch (every stage of every card), so one run can use several CLIs; `Run Card with AI` ranks once, at dispatch. It chooses the CLI only: the model and thinking level then resolve for that CLI through the usual layers (card entry, stage rule, workspace default, CLI default).
+
+Before each choice it asks every available CLI for a usage snapshot — remaining usage as a percentage, and when that allowance next resets — and ranks them:
+
+1. **Soonest reset first.** Among CLIs that report usage with a reset time, the allowance that resets soonest is spent first, because unused allowance is lost at reset. Equal reset times are ranked by higher remaining percentage.
+2. **Then unknown usage is drained.** A CLI whose usage cannot be read (see below, or whose probe fails or times out) receives every dispatch not taken by rule 1 until it stops accepting work, because there is no figure to balance it against. With several unknown CLIs, the built-in order (Copilot, Codex, Claude Code, Cursor) decides which is drained first. An unknown CLI that has stopped accepting work is not chosen again for the rest of the run, since it reports no reset time. No percentage is ever invented for it.
+3. **Then most remaining usage**, for CLIs that report a percentage but no reset time.
+
+A CLI at 0% is skipped until its reset time passes (for the rest of the run when it reports none), and CLIs whose executable is unavailable are skipped. A report with several windows (for example a 5-hour and a weekly limit) counts as its binding window: the lowest remaining percentage, with that window's reset time.
+
+When an orchestrated loop stage reports exhausted credits, the same stage is retried on the next-ranked eligible CLI with the credit-fallback guarantees above (the failed process ends first, one handoff at a time, latest card contents, a switch never advances the card) — whether or not `aiLoopCliFallbackEnabled` is on. The exhausted CLI is not chosen again in that run before its reset time. When nothing is eligible, the loop pauses without advancing the card.
+
+Probing never blocks or fails a dispatch: available CLIs are probed concurrently, each probe is bounded by a 20-second timeout (Codex reads usage from its own backend, which can take several seconds) and has ended before the dispatch starts, a snapshot is reused for at most 60 seconds, and a failed probe just makes that CLI "unknown". Each orchestrated dispatch adds an Activity entry naming the chosen CLI and why; the full ranking, including skipped CLIs and reasons, goes to the **MWNN Agent CLI** output. Probe output passes through the same secret redaction as other CLI output. With any selection other than Usage Orchestrator, no usage is probed and CLI choice is unchanged.
+
+Usage sources, all read from the locally installed CLI:
+
+| CLI | Usage source |
+| --- | --- |
+| Codex | Supported: `codex app-server`'s `account/rateLimits/read` (ChatGPT sign-in only; API-key accounts and older versions are unknown). |
+| Claude Code | Requires Claude Code CLI v2.1.295 or later; supports Claude.ai Pro and Max subscriptions when they report plan windows: `claude --print /usage --output-format json --no-session-persistence`. The CLI handles `/usage` locally (`num_turns: 0`, `duration_api_ms: 0`), so no model prompt is sent. Its 5-hour session and weekly percentages and reset times are normalized to the binding window. API-key accounts, older CLI versions, or output without valid plan windows are unknown. See the [commands reference](https://code.claude.com/docs/en/commands) and [status-line usage fields](https://code.claude.com/docs/en/statusline). |
+| Copilot | Supported: the Copilot SDK's [`account.getQuota`](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/usage-and-billing) request to the local CLI server; the `premium_interactions` quota supplies remaining percentage and reset time, or the `chat` quota when the account has no premium-request allowance (Copilot Free). A reset time that has already passed is ignored. The executable and launcher are resolved the same way as dispatch, including `mwnn-kanban.agentCliPaths`. |
+| Cursor | Always unknown: Cursor Agent CLI shows usage only in its interactive `/usage` view. In print mode `/usage` is sent to the model as a prompt, and `status`/`about` report only the login and plan tier. Cursor is ranked with the other unknown-usage CLIs and drained until it stops accepting work. |
+
+The Copilot probe starts the already-resolved CLI in headless stdio mode and sends only the SDK compatibility handshake and quota request. It creates no Copilot session and sends no model prompt. MWNN Kanban uses the SDK's documented local RPC directly, so the extension does not ship an extra Copilot SDK or platform runtime package.
+
+### Models and thinking levels by stage and CLI
+
+Use **MWNN Kanban: Agent CLI Models** (the sidebar gear), or **MWNN Kanban: Manage Agent CLI Models and Thinking Levels**, to edit each of the four stages for Copilot, Codex, Claude Code, and Cursor. Select **User** or **Workspace** scope; inherited values are identified separately and are never copied into the selected scope. Stage suggestions contain only that CLI’s configured values. Any other model or thinking-level name can be typed and saved.
+
+For example, these preferences give two CLIs distinct values at the same stage and use less effort for triage:
+
+```json
+{
+  "mwnn-kanban.agentCliStageModels": {
+    "implementation": { "codex": "custom-codex-model", "claude-code": "sonnet" },
+    "triage": { "codex": "another-codex-model" }
+  },
+  "mwnn-kanban.agentCliStageThinkingLevels": {
+    "implementation": { "codex": "high", "claude-code": "max" },
+    "triage": { "codex": "low" }
+  }
+}
+```
+
+The two settings are independent: a model does not require a thinking level, and a thinking level does not require a model. For the CLI actually chosen, each axis resolves from its card override, then its stage/CLI override, then its configured provider default, then the CLI’s own default. A missing value adds no corresponding CLI argument. Settings defaults are never written into the card. **Run Card with AI** uses the implementation stage; orchestrator selection and credit fallback resolve the replacement CLI’s own values for the current stage. Opt-in model escalation keeps its existing behavior.
+
+Legacy values such as `"implementation": "shared-model"` still apply to every CLI. Editing that stage in either editor converts the legacy value stored in the selected scope into four CLI entries, retaining the unedited CLIs’ values. Removing an override deletes only its CLI key and restores lower-scope stage settings, then provider/CLI defaults. Empty stage and setting containers are removed. Unknown stages/providers, malformed entries, and blank names are ignored on read; invalid editor input gives a visible reason without saving. Cursor’s requested effort is recorded as not applied, and it runs at its default effort. Saving or editing settings.json externally refreshes the open panel and board suggestions without a reload.
 
 ### Model escalation after a failed attempt
 

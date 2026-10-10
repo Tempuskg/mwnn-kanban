@@ -1,0 +1,26 @@
+body { color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); margin: 0; }
+main { max-width: 1160px; padding: 24px; margin: auto; }
+h1 { font-size: 24px; margin-top: 0; }
+h2 { font-size: 18px; margin-top: 0; }
+h3 { font-size: 14px; }
+.scope-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 24px; }
+.scope-row span, .muted { color: var(--vscode-descriptionForeground); }
+.providers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+.provider, .stages { padding: 20px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
+.stages { margin-top: 24px; }
+.stage { padding: 12px 0; border-top: 1px solid var(--vscode-panel-border); }
+ol { padding: 0; list-style: none; }
+li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.entry-name { flex: 1; overflow-wrap: anywhere; min-width: 120px; }
+.badge { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 3px 6px; border-radius: 3px; font-size: 11px; }
+form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin: 12px 0; }
+.field { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 160px; }
+form p { flex-basis: 100%; margin: 4px 0; }
+input, select { box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); padding: 6px 8px; font: inherit; }
+button { cursor: pointer; color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 1px solid transparent; padding: 6px 10px; font: inherit; }
+button:hover { background: var(--vscode-button-hoverBackground); }
+button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+button:disabled, input:disabled, select:disabled { opacity: 0.6; cursor: wait; }
+button:focus-visible, input:focus, select:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.inherited { color: var(--vscode-descriptionForeground); font-style: italic; overflow-wrap: anywhere; }
+.error { padding: 12px; color: var(--vscode-errorForeground); border: 1px solid var(--vscode-inputValidation-errorBorder); background: var(--vscode-inputValidation-errorBackground); }

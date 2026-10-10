@@ -1,6 +1,11 @@
+import { createAgentCliSettingsPanelController } from './agentCliSettingsPanelController';
+import type { AgentCliSettingsPanelState } from './types';
+import { manageAgentCliStage, stagePreferenceDescription } from './agentCliSettingsQuickPick';
 import * as vscode from 'vscode';
+import { registerAgentCliSettingsPanel } from './agentCliSettingsPanel';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
 import { createAiLoopPauseGate, type AiLoopPauseGate } from './aiLoopPause';
+import { createPortfolioCliLoopCapability, isPortfolioPrimaryBoard } from './portfolioCliLoop';
 import type { AiLoopState } from './sidebarMessages';
 import { isCardDefined } from './cardDefinition';
 import {
@@ -19,8 +24,7 @@ import {
 import {
   agentCliModelSuggestions,
   readAgentCliModelCatalog,
-  readAgentCliStageModels,
-  readAgentCliStageThinkingLevels,
+  mergeAgentCliStagePreferences,
   readAgentCliThinkingLevelSuggestions,
   readAgentCliThinkingLevels,
   type AgentCliModelCatalog,
@@ -33,6 +37,7 @@ import {
   AGENT_CLI_PROVIDER_IDS,
   resolveAgentCliTarget,
   resolveAllAgentCliTargets,
+  runAgentCliCardHandoff,
   type AgentCliHandoffKind,
   type AgentCliPathOverrides,
   type AgentCliProcessObserver,
@@ -44,6 +49,14 @@ import {
   readAgentCliFallbackOrder,
   type AgentCliFallbackSettings,
 } from './agentCliFallback';
+import { createAgentCliUsageOrchestrator } from './agentCliOrchestrator';
+import {
+  forgetRejectedAgentCliModel,
+  readRejectedAgentCliModels,
+  recordRejectedAgentCliModel,
+  withoutRejectedAgentCliModels,
+  type RejectedAgentCliModel,
+} from './agentCliRejectedModels';
 import {
   readAgentCliEscalationLadders,
   type AgentCliEscalationSettings,
@@ -58,6 +71,8 @@ import {
 } from './aiLoopBudget';
 import {
   isAgentCliPreference,
+  USAGE_ORCHESTRATOR_DETAIL,
+  USAGE_ORCHESTRATOR_LABEL,
   listAiLoopExecutionModeChoices,
   type AiLoopProviderPreference,
 } from './aiLoopProvider';
@@ -74,12 +89,13 @@ import {
   withPreferredModelNote,
   type PlanImportSource,
 } from './aiCards';
-import { cardPreferredModelFor } from './utils';
+import { cardPreferredModelFor, describeBlockedCardRelocation } from './utils';
 import {
   CHAT_PROVIDER_LABELS,
   createChatHandoffInFlight,
   deliverClipboardHandoff,
   describeChatHandoffTarget,
+  positionalHandoffArgs,
   formatChatHandoffFailure,
   listAvailableChatProviders,
   shouldAutoPasteChatHandoff,
@@ -93,6 +109,7 @@ import {
   type RunCardWithAgentCliDeps,
   type RunWithAiProviderChoice,
 } from './runWithAi';
+import { startCardInterview, type InterviewProviderPick } from './cardInterview';
 import {
   activateProFeatures,
   createBoardCapability,
@@ -147,6 +164,9 @@ import {
 import type { BoardState } from './types';
 import { createWorkspaceFileSystem } from './workspaceFileSystem';
 
+/** Global-state key for models a CLI has refused for this account. */
+const REJECTED_AGENT_CLI_MODELS_KEY = 'mwnn-kanban.rejectedAgentCliModels';
+
 /** Skill documents bundled with the extension, under `media/skills/<slug>.md`. */
 const SKILL_SLUGS = ['mwnn-plan-import', 'mwnn-card-authoring'] as const;
 
@@ -162,7 +182,15 @@ type BoardColumn = BoardState['columns'][number];
 type BoardCard = BoardColumn['cards'][number];
 type AiLoopTarget =
   | { readonly kind: 'chat'; readonly target: ChatHandoffTarget }
-  | { readonly kind: 'cli'; readonly target: AgentCliTarget };
+  | {
+      readonly kind: 'cli';
+      readonly target: AgentCliTarget;
+      /**
+       * True when the Usage Orchestrator chooses the CLI before every stage;
+       * `target` is then only the run's starting point.
+       */
+      readonly orchestrated: boolean;
+    };
 
 function readDefaultColumns(): string[] {
   const config = vscode.workspace.getConfiguration('mwnn-kanban');
@@ -270,9 +298,7 @@ function readAgentCliModels(): AgentCliModelCatalog {
  * for that stage instead of breaking a dispatch.
  */
 function readAgentCliStageModelRules(): AgentCliStageModels {
-  return readAgentCliStageModels(
-    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('agentCliStageModels', {}),
-  );
+  return readScopedStagePreferences('agentCliStageModels');
 }
 
 /**
@@ -288,19 +314,24 @@ function readAgentCliThinkingLevelDefaults(): AgentCliThinkingLevelDefaults {
 
 /** Per-stage thinking-level rules, validated the same way. */
 function readAgentCliStageThinkingLevelRules(): AgentCliStageThinkingLevels {
-  return readAgentCliStageThinkingLevels(
-    vscode.workspace
-      .getConfiguration('mwnn-kanban')
-      .get<unknown>('agentCliStageThinkingLevels', {}),
-  );
+  return readScopedStagePreferences('agentCliStageThinkingLevels');
+}
+
+/** Resolve nested inheritance explicitly so lower-scope legacy strings survive. */
+function readScopedStagePreferences(key: string): AgentCliStageModels {
+  const config = vscode.workspace.getConfiguration('mwnn-kanban', vscode.workspace.workspaceFolders?.[0]?.uri);
+  const inspected = config.inspect<unknown>(key);
+  return inspected === undefined ? mergeAgentCliStagePreferences(config.get<unknown>(key))
+    : mergeAgentCliStagePreferences(inspected.defaultValue, inspected.globalValue, inspected.workspaceValue, inspected.workspaceFolderValue);
 }
 
 /**
  * Settings the definition stage's run-settings recommendation reads. The
  * candidates are the same validated lists the card UI suggests, so Jev and the
- * defining agent can only pick names the workspace already lists.
+ * defining agent can only pick names the workspace already lists - minus any
+ * model a CLI has refused for this account (`agentCliRejectedModels`).
  */
-function readDefinitionRunSettingsConfig(): {
+function readDefinitionRunSettingsConfig(rejectedModels: readonly RejectedAgentCliModel[]): {
   readonly candidates: DefinitionRunSettings['candidates'];
   readonly overwriteExisting: boolean;
   readonly jevEnabled: boolean;
@@ -308,7 +339,7 @@ function readDefinitionRunSettingsConfig(): {
   const config = vscode.workspace.getConfiguration('mwnn-kanban');
   return {
     candidates: {
-      models: agentCliModelSuggestions(readAgentCliModels()),
+      models: withoutRejectedAgentCliModels(agentCliModelSuggestions(readAgentCliModels()), rejectedModels),
       thinkingLevels: readAgentCliThinkingLevelSuggestions(config.get<unknown>('agentCliThinkingLevels', {})),
     },
     overwriteExisting: config.get<boolean>('defineOverwriteRunSettings', false),
@@ -368,6 +399,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }));
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+  registerAgentCliSettingsPanel(context);
   if (!workspaceRoot) {
     registerUnavailableCommands(context);
     return;
@@ -396,6 +428,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // signal for fire-and-forget chat definitions. Each card fires once.
       for (const cardId of jevPendingDefinitions.takeReady(change.current)) {
         void applyJevRunSettingsAfterDefinition(cardId);
+      }
+    },
+    onDidRelocateBlockedCards: ({ relocations }) => {
+      // Blocked cards can't sit past Ready; say so whenever one is pulled back
+      // so the card never just looks like it vanished from its column.
+      for (const relocation of relocations) {
+        void vscode.window.showWarningMessage(describeBlockedCardRelocation(relocation));
       }
     },
   });
@@ -461,6 +500,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     providerLabel: string,
     reportProgress: (message: string) => void,
   ): AgentCliProcessObserver => {
+    let processRunning = false;
     const postStatus = (running: boolean, statusLine?: string): void => {
       BoardPanel.postCliRunStatusIfOpen({
         cardId: card.id,
@@ -473,12 +513,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       onLine: (line, stream) =>
         cliOutputChannel.info(stream === 'stderr' ? `[stderr] ${line}` : line),
       onStatus: (line) => {
+        if (!processRunning) {
+          return;
+        }
         reportProgress(line);
         postStatus(true, line);
       },
     });
     return {
       onStart: (invocation) => {
+        processRunning = true;
         for (const line of formatCliRunStart(invocation, kind, card.title)) {
           cliOutputChannel.info(line);
         }
@@ -487,13 +531,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       onOutput: (chunk, stream) => feed.write(chunk, stream),
       onExit: (result) => {
         feed.flush();
+        processRunning = false;
         cliOutputChannel.info(formatCliRunExit(result));
         postStatus(false);
       },
     };
   };
 
+  /**
+   * Every CLI dispatch goes through this wrapper so a model the CLI refuses is
+   * remembered for this account and no longer recommended by Jev or the
+   * defining agent, and a model that later completes a run is cleared again.
+   */
+  const readRejectedModels = (): RejectedAgentCliModel[] =>
+    readRejectedAgentCliModels(context.globalState.get<unknown>(REJECTED_AGENT_CLI_MODELS_KEY), Date.now());
+  const runRecordingHandoff: typeof runAgentCliCardHandoff = async (handoff, options) => {
+    const result = await runAgentCliCardHandoff(handoff, options);
+    const selection = result.modelSelection;
+    if (selection?.applied) {
+      const records = readRejectedModels();
+      const updated = result.failure === 'model-rejected'
+        ? recordRejectedAgentCliModel(records, handoff.target.provider, selection.requested, Date.now())
+        : result.completed
+          ? forgetRejectedAgentCliModel(records, handoff.target.provider, selection.requested)
+          : records;
+      if (updated !== records) {
+        await context.globalState.update(REJECTED_AGENT_CLI_MODELS_KEY, updated);
+      }
+    }
+    return result;
+  };
+
   const agentCliRunDeps = (): RunCardWithAgentCliDeps => ({
+    runHandoff: runRecordingHandoff,
     configuredPaths: readAgentCliPaths(),
     modelCatalog: readAgentCliModels(),
     stageModels: readAgentCliStageModelRules(),
@@ -507,6 +577,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showInformation: showCliInformation,
     showWarning: showCliWarning,
     refreshBoard: () => BoardPanel.postStateIfOpen(),
+    // Probes nothing until a run actually picks the Usage Orchestrator.
+    orchestrator: createAgentCliUsageOrchestrator({
+      configuredPaths: readAgentCliPaths(),
+      cwd: workspaceRoot.fsPath,
+    }),
+    onRanking: (lines) => {
+      for (const line of lines) {
+        cliOutputChannel.info(line);
+      }
+    },
   });
 
   const runCardWithAISelection = async (cardId?: string): Promise<void> => {
@@ -565,12 +645,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   /**
+   * Start or resume a Human card's AI-guided interview in an interactive chat.
+   * Never routed through the agent CLI or the AI loop: the card keeps its
+   * Human assignee and its checklist is left to the interview itself.
+   */
+  const startCardInterviewSelection = async (cardId: string): Promise<void> => {
+    if (!readEnableRunWithAI()) {
+      void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to start AI-guided interviews.');
+      return;
+    }
+    await startCardInterview(cardId, {
+      reloadState: () => store.reload(),
+      runExclusive: (key, action) => inFlightCardHandoffs.run(key, action),
+      pickProvider: pickInterviewChatProvider,
+      handOff: handOffPromptToChat,
+      appendActivity: (id, entry) => store.appendActivity(id, entry),
+      cardFilePath: (id) => boardCapability.cardFilePath(id),
+      workspaceRoot: workspaceRoot.fsPath,
+      showInformation: (message) => void vscode.window.showInformationMessage(message),
+      showWarning: (message) => void vscode.window.showWarningMessage(message),
+      refreshBoard: () => BoardPanel.postStateIfOpen(),
+    });
+  };
+
+  /**
    * Decide, before the defining agent runs, who chooses the card's run
    * settings: Jev after the definition when it is enabled and configured,
    * otherwise the agent from the candidate lists. No network call.
    */
   const planDefinitionRunSettingsForCard = (): DefinitionRunSettings => {
-    const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig();
+    const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig(readRejectedModels());
     const apiKey = process.env[JEV_API_KEY_ENV];
     return {
       candidates,
@@ -587,11 +691,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * that is still undefined is skipped without calling Jev. Never throws: Jev
    * is an enhancement and a definition must not fail because of it.
    */
-  const applyJevRunSettingsAfterDefinition = async (cardId: string): Promise<void> => {
-    const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig();
+  const applyJevRunSettingsAfterDefinition = async (cardId: string, targetStore = store): Promise<void> => {
+    const { candidates, overwriteExisting, jevEnabled } = readDefinitionRunSettingsConfig(readRejectedModels());
     let card: BoardCard | undefined;
     try {
-      card = findCardById(await store.reload(), cardId);
+      card = findCardById(await targetStore.reload(), cardId);
     } catch {
       return;
     }
@@ -610,10 +714,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const model = recommendation.recommendation.models[provider];
           const level = recommendation.recommendation.thinkingLevels[provider];
           if (model !== undefined) {
-            await store.setPreferredModel(cardId, provider, model);
+            await targetStore.setPreferredModel(cardId, provider, model);
           }
           if (level !== undefined) {
-            await store.setThinkingLevel(cardId, provider, level);
+            await targetStore.setThinkingLevel(cardId, provider, level);
           }
         }
       }
@@ -624,7 +728,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       };
     }
     try {
-      await store.appendActivity(cardId, formatRunSettingsActivityEntry(recommendation));
+      await targetStore.appendActivity(cardId, formatRunSettingsActivityEntry(recommendation));
       BoardPanel.postStateIfOpen();
     } catch {
       // The Activity note is best-effort; the definition already stands.
@@ -778,6 +882,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // At most one AI loop runs at a time. The flag stops either execution mode;
   // for CLI mode, the AbortController also terminates the active child process.
   // The pause gate holds the run between actions without touching either.
+  let loopPicking = false;
+  let portfolioLoopBusy = false;
   let activeLoop:
     | { cancelled: boolean; abortController: AbortController; pauseGate: AiLoopPauseGate }
     | undefined;
@@ -792,12 +898,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage('Enable "MWNN Kanban: Run With AI" in settings to use this command.');
       return;
     }
-    if (activeLoop) {
+    if (activeLoop || loopPicking || portfolioLoopBusy) {
       void vscode.window.showInformationMessage('The MWNN AI loop is already running.');
       return;
     }
 
-    const selectedTarget = await pickAiLoopTarget(workspaceRoot.fsPath);
+    loopPicking = true;
+    let selectedTarget: AiLoopTarget | undefined;
+    try { selectedTarget = await pickAiLoopTarget(workspaceRoot.fsPath); }
+    finally { loopPicking = false; }
     if (!selectedTarget) {
       return;
     }
@@ -951,6 +1060,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // guard. The user's saved provider preference is never written to.
       const fallbackRunner = createAgentCliFallbackRunner({
         initialTarget: cliTarget,
+        runHandoff: runRecordingHandoff,
+        // Only an orchestrated run probes usage; every other selection keeps
+        // its fixed CLI and the configured fallback order exactly as before.
+        ...(selectedTarget.orchestrated
+          ? {
+              orchestrator: createAgentCliUsageOrchestrator({
+                configuredPaths: readAgentCliPaths(),
+                cwd: workspaceRoot.fsPath,
+                signal: loop.abortController.signal,
+              }),
+              onRanking: (lines: readonly string[]) => {
+                for (const line of lines) {
+                  cliOutputChannel.info(line);
+                }
+              },
+            }
+          : {}),
         settings: readAiLoopCliFallback(),
         configuredPaths: readAgentCliPaths(),
         // Read once per loop run, like the CLI paths and fallback order.
@@ -963,6 +1089,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         store,
         signal: loop.abortController.signal,
         isCancelled: () => loop.cancelled,
+        waitBeforeDispatch: () => loop.pauseGate.waitWhilePaused(),
         onProgress: (message) => {
           reportLoopProgress(message);
           cliOutputChannel.info(message);
@@ -1143,6 +1270,57 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   };
 
+  const portfolioStores = new Map<string, Awaited<ReturnType<typeof createBoardStore>>>();
+  const portfolioAiLoop = createPortfolioCliLoopCapability({
+    enabled: readEnableRunWithAI,
+    busy: () => activeLoop !== undefined || loopPicking || portfolioLoopBusy,
+    acquire: () => {
+      if (activeLoop || loopPicking || portfolioLoopBusy) { return undefined; }
+      portfolioLoopBusy = true;
+      aiLoopStateEmitter.fire();
+      return () => { portfolioLoopBusy = false; aiLoopStateEmitter.fire(); };
+    },
+    onDidChange: aiLoopStateEmitter.event,
+    pick: async () => {
+      const pick = await pickAgentCliTarget(workspaceRoot.fsPath, isAgentCliPreference(readAiLoopProvider()) ? readAiLoopProvider() as AgentCliProviderId : readAiLoopProvider() === 'orchestrator' ? 'orchestrator' : 'prompt');
+      if (!pick) { return undefined; }
+      return {
+        initialTarget: pick.target,
+        runHandoff: runRecordingHandoff,
+        settings: readAiLoopCliFallback(),
+        configuredPaths: readAgentCliPaths(),
+        modelCatalog: readAgentCliModels(), stageModels: readAgentCliStageModelRules(),
+        thinkingLevels: readAgentCliThinkingLevelDefaults(), stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
+        escalation: readAiLoopModelEscalation(),
+        ...(pick.orchestrated ? { orchestrator: createAgentCliUsageOrchestrator({ configuredPaths: readAgentCliPaths(), cwd: workspaceRoot.fsPath }), onRanking: (lines: readonly string[]) => { for (const line of lines) { cliOutputChannel.info(line); } } } : {}),
+        onProgress: (message: string) => cliOutputChannel.info(message),
+        onSwitch: (record) => showCliInformation(record.from.label + ' ran out of credits. Continuing with ' + record.to.label + '.'),
+        onEscalate: (record) => showCliInformation('Retrying ' + record.kind + ' on model ' + record.to + '.'),
+        createObserver: (target, request) => createCliRunObserver(request.card, request.kind, target.label, () => undefined),
+      };
+    },
+    openStore: async (project) => {
+      // Validate disk presence on every selection; never initialize a missing board.
+      if (!await boardCapability.readBoardAt(project.root, project.boardFolder)) { return undefined; }
+      const key = JSON.stringify([project.root, project.boardFolder]);
+      if (isPortfolioPrimaryBoard(project.root, project.boardFolder, workspaceRoot.fsPath, boardFolder)) { return store; }
+      let foreign = portfolioStores.get(key);
+      if (!foreign) {
+        foreign = await createBoardStore({ fileSystem: createWorkspaceFileSystem(vscode.Uri.file(project.root)), boardFolder: project.boardFolder, defaultColumns: readDefaultColumns(), defaultReadyReverseWip: readDefaultReadyReverseWip() });
+        portfolioStores.set(key, foreign);
+      }
+      return foreign;
+    },
+    definitionSettings: planDefinitionRunSettingsForCard,
+    finishDefinition: async (targetStore, cardId, settings, completed) => {
+      if (completed && settings.mode.kind === 'jev-after-definition') { await applyJevRunSettingsAfterDefinition(cardId, targetStore); }
+      BoardPanel.postStateIfOpen();
+    },
+    options: () => ({ reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(), verifyWithAi: readAiLoopVerifyCards() }),
+    maxDispatches: readAiLoopMaxDispatchesSetting,
+    delay: waitForMilliseconds,
+  });
+
   const stopBoardLoopCommand = (): void => {
     if (!activeLoop) {
       void vscode.window.showInformationMessage('The MWNN AI loop is not running.');
@@ -1181,6 +1359,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     extensionUri: context.extensionUri,
     confirmDeletion,
     runCardWithAI: runCardWithAISelection,
+    startCardInterview: startCardInterviewSelection,
     fillCardDefinition: fillCardDefinitionWithAI,
     zoomMemento: context.workspaceState,
   };
@@ -1198,6 +1377,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (
         event.affectsConfiguration('mwnn-kanban.agentCliModels') ||
         event.affectsConfiguration('mwnn-kanban.agentCliThinkingLevels') ||
+        event.affectsConfiguration('mwnn-kanban.agentCliStageModels') ||
+        event.affectsConfiguration('mwnn-kanban.agentCliStageThinkingLevels') ||
         event.affectsConfiguration('mwnn-kanban.enableRunWithAI')
       ) {
         BoardPanel.postStateIfOpen();
@@ -1374,7 +1555,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showUpgradePrompt,
     log: (message) => cliOutputChannel.appendLine(`[pro] ${message}`),
     registerDisposable: (disposable) => context.subscriptions.push(disposable),
-    capabilities: { board: boardCapability },
+    capabilities: { board: boardCapability, portfolioAiLoop },
   });
 }
 
@@ -1751,9 +1932,9 @@ async function pickAiLoopTarget(workspaceCwd: string): Promise<AiLoopTarget | un
     const target = await pickChatProvider();
     return target ? { kind: 'chat', target } : undefined;
   }
-  if (isAgentCliPreference(preference)) {
-    const target = await pickAgentCliTarget(workspaceCwd, preference);
-    return target ? { kind: 'cli', target } : undefined;
+  if (isAgentCliPreference(preference) || preference === 'orchestrator') {
+    const pick = await pickAgentCliTarget(workspaceCwd, preference);
+    return pick ? { kind: 'cli', ...pick } : undefined;
   }
 
   const mode = await vscode.window.showQuickPick(
@@ -1768,21 +1949,22 @@ async function pickAiLoopTarget(workspaceCwd: string): Promise<AiLoopTarget | un
     return target ? { kind: 'chat', target } : undefined;
   }
 
-  const target = await pickAgentCliTarget(workspaceCwd, 'prompt');
-  return target ? { kind: 'cli', target } : undefined;
+  const pick = await pickAgentCliTarget(workspaceCwd, 'prompt');
+  return pick ? { kind: 'cli', ...pick } : undefined;
 }
 
 /**
  * Resolve a configured local CLI (or let the user choose among discovered
- * CLIs). Missing configured executables are reported before any card moves.
+ * CLIs, or the Usage Orchestrator). Missing configured executables are
+ * reported before any card moves.
  */
 async function pickAgentCliTarget(
   workspaceCwd: string,
-  preference: 'prompt' | AgentCliProviderId,
-): Promise<AgentCliTarget | undefined> {
+  preference: 'prompt' | 'orchestrator' | AgentCliProviderId,
+): Promise<{ readonly target: AgentCliTarget; readonly orchestrated: boolean } | undefined> {
   const configuredPaths = readAgentCliPaths();
 
-  if (preference !== 'prompt') {
+  if (preference !== 'prompt' && preference !== 'orchestrator') {
     const resolution = await resolveAgentCliTarget(
       preference,
       configuredPaths,
@@ -1792,7 +1974,7 @@ async function pickAgentCliTarget(
       void vscode.window.showWarningMessage(resolution.reason);
       return undefined;
     }
-    return resolution.target;
+    return { target: resolution.target, orchestrated: false };
   }
 
   const resolutions = await resolveAllAgentCliTargets(
@@ -1810,20 +1992,39 @@ async function pickAgentCliTarget(
     );
     return undefined;
   }
+  const [first] = targets;
+  if (!first) {
+    return undefined;
+  }
+  if (preference === 'orchestrator') {
+    // The orchestrator re-chooses before every stage; this is only where the
+    // run starts if it is cancelled before its first choice.
+    return { target: first, orchestrated: true };
+  }
   if (targets.length === 1) {
-    return targets[0];
+    return { target: first, orchestrated: false };
   }
 
   const choice = await vscode.window.showQuickPick(
-    targets.map((target) => ({
-      label: target.label,
-      description: target.provider,
-      detail: target.executable,
-      target,
-    })),
+    [
+      ...targets.map((target) => ({
+        label: target.label,
+        description: target.provider,
+        detail: target.executable,
+        target,
+        orchestrated: false,
+      })),
+      {
+        label: USAGE_ORCHESTRATOR_LABEL,
+        description: 'orchestrator',
+        detail: USAGE_ORCHESTRATOR_DETAIL,
+        target: first,
+        orchestrated: true,
+      },
+    ],
     { placeHolder: 'Run the AI loop with which local CLI?' },
   );
-  return choice?.target;
+  return choice ? { target: choice.target, orchestrated: choice.orchestrated } : undefined;
 }
 
 interface ChatProviderDiscovery {
@@ -1880,6 +2081,31 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
     { placeHolder: 'Hand this card off to which AI chat?' },
   );
   return choice?.target;
+}
+
+/**
+ * Chat picker for AI-guided interviews. Only interactive chat extensions are
+ * offered, never a headless CLI, because the person must be able to reply.
+ */
+async function pickInterviewChatProvider(): Promise<InterviewProviderPick> {
+  const { targets, codexActivationFailure } = await discoverChatHandoffTargets();
+  if (targets.length === 0) {
+    return {
+      kind: 'unavailable',
+      message: codexActivationFailure
+        ? formatChatHandoffFailure(CHAT_PROVIDER_LABELS.codex, 'the interview', codexActivationFailure)
+        : 'Interview not started: no supported AI chat extension was found. Install GitHub Copilot, Codex (ChatGPT), or Claude Code, then try Start interview again.',
+    };
+  }
+  const choice = await vscode.window.showQuickPick(
+    targets.map((target) => ({
+      label: CHAT_PROVIDER_LABELS[target.provider],
+      detail: describeChatHandoffTarget(target),
+      target,
+    })),
+    { placeHolder: 'Run this interview in which AI chat?' },
+  );
+  return choice ? { kind: 'picked', target: choice.target } : { kind: 'cancelled' };
 }
 
 /**
@@ -1965,9 +2191,9 @@ async function handOffPromptToChat(
     }
 
     if (target.promptDelivery === 'positional') {
-      // Claude Code: the open command takes (sessionId, initialPrompt); pass no
-      // session so a fresh conversation opens pre-filled with the prompt.
-      await vscode.commands.executeCommand(target.commandId, undefined, prompt);
+      // Claude Code: no session id, so a fresh conversation opens pre-filled
+      // with the prompt; editor.open also honors the preferred (sidebar) location.
+      await vscode.commands.executeCommand(target.commandId, ...positionalHandoffArgs(target, prompt));
       void vscode.window.showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
       return true;
     }
@@ -1988,6 +2214,11 @@ async function handOffPromptToChat(
       );
       return true;
     }
+    // Clipboard-only providers: stage the prompt, then open the chat for the
+    // user to paste into.
+    await vscode.env.clipboard.writeText(prompt);
+    await activateChatProvider(target);
+    await vscode.commands.executeCommand(target.commandId);
     void vscode.window.showInformationMessage(
       `Opened ${providerLabel} for ${subject}. The prompt is on your clipboard — paste it to start.`,
     );
@@ -2151,7 +2382,9 @@ async function populateAgentCliModels(): Promise<void> {
 const MANAGE_AGENT_CLI_TITLE = 'Manage Agent CLI Models and Thinking Levels';
 
 type ManageOverviewItem = vscode.QuickPickItem & {
-  readonly action?: { readonly kind: 'provider'; readonly provider: AgentCliProviderId } | { readonly kind: 'settings' };
+  readonly action?: { readonly kind: 'provider'; readonly provider: AgentCliProviderId }
+    | { readonly kind: 'stage'; readonly stage: AgentCliHandoffKind; readonly provider: AgentCliProviderId }
+    | { readonly kind: 'settings' };
 };
 
 type ManageProviderItem = vscode.QuickPickItem & {
@@ -2220,8 +2453,32 @@ async function manageAgentCliModels(): Promise<void> {
     vscode.window.setStatusBarMessage(`MWNN Kanban: updated ${scopeName} settings`, 3000);
   };
 
+  let stageState: AgentCliSettingsPanelState | undefined;
+  const stageController = createAgentCliSettingsPanelController({
+    workspaceAvailable: () => (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
+    inspect: (key) => vscode.workspace.getConfiguration('mwnn-kanban', workspaceFolder?.uri).inspect<unknown>(key),
+    update: async (key, value, selectedScope) => {
+      await vscode.workspace.getConfiguration('mwnn-kanban', workspaceFolder?.uri).update(
+        key, value, selectedScope === 'workspace' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global,
+      );
+      vscode.window.setStatusBarMessage('MWNN Kanban: updated ' + selectedScope + ' settings', 3000);
+    },
+    post: (state) => { stageState = state; },
+    suggestions: AGENT_CLI_PROVIDER_IDS.map((id) => ({
+      id, label: AGENT_CLI_LABELS[id], suggestedModels: [], suggestedThinkingLevels: [], thinkingApplied: id !== 'cursor',
+    })),
+  });
+  await stageController.handle({ type: 'settingsScope', scope: scopeName });
+  const readStageState = (): AgentCliSettingsPanelState => {
+    stageController.refresh();
+    if (!stageState) {
+      throw new Error('Agent CLI settings state is unavailable.');
+    }
+    return stageState;
+  };
+
   for (;;) {
-    const choice = await pickManageOverview(scopeName, readScoped);
+    const choice = await pickManageOverview(scopeName, readScoped, readStageState());
     if (!choice) {
       return;
     }
@@ -2229,7 +2486,15 @@ async function manageAgentCliModels(): Promise<void> {
       await vscode.commands.executeCommand('workbench.action.openSettings', 'mwnn-kanban.agentCli');
       return;
     }
-    const keepGoing = await manageAgentCliProvider(choice.provider, scopeName, readScoped, apply);
+    const keepGoing = choice.kind === 'stage'
+      ? await manageAgentCliStage(choice.stage, choice.provider, {
+          title: MANAGE_AGENT_CLI_TITLE + ': ' + choice.stage + ' · ' + AGENT_CLI_LABELS[choice.provider],
+          readState: readStageState, handle: stageController.handle,
+          pick: (items, options) => vscode.window.showQuickPick(items, options),
+          enterName: (noun, suggestions) => pickOrEnterAgentCliName(MANAGE_AGENT_CLI_TITLE, noun, [], suggestions, false),
+          warn: (message) => { void vscode.window.showWarningMessage('MWNN Kanban: ' + message); },
+        })
+      : await manageAgentCliProvider(choice.provider, scopeName, readScoped, apply);
     if (!keepGoing) {
       return;
     }
@@ -2238,12 +2503,12 @@ async function manageAgentCliModels(): Promise<void> {
 
 /**
  * The overview: each provider's default model, other-model count, and level
- * from the chosen scope, then the effective stage overrides (read-only), then
- * an Open in Settings item. Picking a read-only entry just shows it again.
+ * from the chosen scope, then editable stage/CLI overrides with inheritance.
  */
 async function pickManageOverview(
   scopeName: string,
   readScoped: (list: AgentCliSettingsList) => unknown,
+  state: AgentCliSettingsPanelState,
 ): Promise<NonNullable<ManageOverviewItem['action']> | undefined> {
   for (;;) {
     const models = readScoped('models');
@@ -2274,23 +2539,14 @@ async function pickManageOverview(
       }),
     ];
 
-    const stageModels = readAgentCliStageModelRules();
-    const stageLevels = readAgentCliStageThinkingLevelRules();
-    const stages = [...new Set([...Object.keys(stageModels), ...Object.keys(stageLevels)])] as AgentCliHandoffKind[];
-    if (stages.length > 0) {
-      items.push({ label: 'Stage overrides (read-only)', kind: vscode.QuickPickItemKind.Separator });
-      for (const stage of stages) {
-        items.push({
-          label: `$(lock) ${stage}`,
-          description: [
-            stageModels[stage] !== undefined ? `model: ${stageModels[stage] ?? ''}` : undefined,
-            stageLevels[stage] !== undefined ? `thinking: ${stageLevels[stage] ?? ''}` : undefined,
-          ]
-            .filter((part): part is string => part !== undefined)
-            .join(' · '),
-          detail: 'From agentCliStageModels / agentCliStageThinkingLevels; edit these in Settings.',
-        });
-      }
+    items.push({ label: 'Stage overrides (' + scopeName + ' settings)', kind: vscode.QuickPickItemKind.Separator });
+    for (const entry of state.stages) {
+      items.push({
+        label: entry.id + ' · ' + AGENT_CLI_LABELS[entry.provider],
+        description: stagePreferenceDescription(entry, state.inheritedScope),
+        detail: 'Edit model and thinking level independently for this stage and CLI.',
+        action: { kind: 'stage', stage: entry.id, provider: entry.provider },
+      });
     }
     items.push(
       { label: '', kind: vscode.QuickPickItemKind.Separator },

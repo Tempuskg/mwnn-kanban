@@ -1,0 +1,1 @@
+not-json {"type":"result","local_command":"usage","result":"Current session: 50% used bearer sk-live-ABCDEF1234567890"}

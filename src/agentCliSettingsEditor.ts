@@ -15,6 +15,8 @@
  */
 import { AGENT_CLI_THINKING_FLAGS, type AgentCliProviderId } from './agentCliHandoff';
 import { normalizePreferredModel } from './utils';
+import { isAgentCliHandoffKind, type AgentCliHandoffKind } from './agentCliStages';
+import { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId } from './agentCliProviders';
 
 /** Which of the two settings an edit targets; they differ only in shape. */
 export type AgentCliSettingsList = 'models' | 'thinkingLevels';
@@ -173,6 +175,60 @@ function asMap(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/** Edit one stage/CLI in one raw scope, preserving every unrelated entry. */
+export function setAgentCliSettingsStage(
+  value: unknown,
+  list: AgentCliSettingsList,
+  stage: AgentCliHandoffKind,
+  provider: AgentCliProviderId,
+  input: string,
+): AgentCliSettingsEdit {
+  const problem = stageEntryProblem(stage, provider);
+  if (problem !== undefined) {
+    return { ok: false, reason: problem };
+  }
+  const name = normalizePreferredModel(input);
+  if (name === undefined) {
+    return { ok: false, reason: 'Enter a ' + nounFor(list) + '; use a non-blank name without control characters.' };
+  }
+  const next = { ...asMap(value) };
+  next[stage] = { ...stageProviderMap(next[stage]), [provider]: name };
+  return { ok: true, value: next, list: [name] };
+}
+
+/** Clearing deletes only this CLI's key, then empty stage/setting containers. */
+export function removeAgentCliSettingsStage(
+  value: unknown,
+  stage: AgentCliHandoffKind,
+  provider: AgentCliProviderId,
+): AgentCliSettingsEdit {
+  const problem = stageEntryProblem(stage, provider);
+  if (problem !== undefined) {
+    return { ok: false, reason: problem };
+  }
+  const current = asMap(value);
+  const next = Object.fromEntries(Object.entries(current).filter(([key]) => key !== stage));
+  const entries = Object.fromEntries(Object.entries(stageProviderMap(current[stage])).filter(([key]) => key !== provider));
+  if (Object.keys(entries).length > 0) {
+    next[stage] = entries;
+  }
+  return { ok: true, value: Object.keys(next).length > 0 ? next : undefined, list: [] };
+}
+
+function stageEntryProblem(stage: AgentCliHandoffKind, provider: AgentCliProviderId): string | undefined {
+  return !isAgentCliHandoffKind(stage) || !isAgentCliProviderId(provider)
+    ? 'Unknown AI loop stage or CLI; nothing was written.' : undefined;
+}
+
+/** Expand only a legacy value stored in this scope, never an inherited value. */
+function stageProviderMap(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    const name = normalizePreferredModel(value);
+    return name === undefined ? {} : Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, name]));
+  }
+  return { ...asMap(value) };
 }
 
 /**

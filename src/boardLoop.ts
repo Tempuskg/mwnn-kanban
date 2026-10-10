@@ -94,6 +94,10 @@ export interface LoopControl {
 }
 
 export interface LoopOptions {
+  /** Reuse project-scoped evidence and review holds across portfolio turns. */
+  readonly session?: LoopSession;
+  /** Execute only this card, keeping the entire board for admission checks. */
+  readonly cardId?: string;
   /** How often to re-read the board while waiting on an agent. */
   readonly pollIntervalMs?: number;
   /** Clock override for tests. */
@@ -423,6 +427,7 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
 }
 
 export interface PlanLoopOptions {
+  readonly cardId?: string;
   /** See LoopOptions.reviewFreshDefinitions. */
   readonly reviewFreshDefinitions?: boolean;
   /** See LoopOptions.verifyWithAi. */
@@ -456,7 +461,7 @@ export function planLoopAction(
     const nextColumn = state.columns[columnIndex + 1];
 
     for (const card of column.cards) {
-      if (session.skipped.has(card.id)) {
+      if (session.skipped.has(card.id) || (options.cardId !== undefined && card.id !== options.cardId)) {
         continue;
       }
 
@@ -673,6 +678,7 @@ export async function runBoardLoop(
   const now = options.now ?? Date.now;
   const report = options.onEvent ?? ((): void => undefined);
   const planOptions: PlanLoopOptions = {
+    ...(options.cardId === undefined ? {} : { cardId: options.cardId }),
     ...(options.reviewFreshDefinitions === undefined
       ? {}
       : { reviewFreshDefinitions: options.reviewFreshDefinitions }),
@@ -681,7 +687,7 @@ export async function runBoardLoop(
       : { verifyWithAi: options.verifyWithAi }),
   };
 
-  const session = createLoopSession();
+  const session = options.session ?? createLoopSession();
   const summary: LoopSummary = {
     dispatched: [],
     advanced: [],

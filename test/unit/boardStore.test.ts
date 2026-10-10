@@ -14,11 +14,13 @@ import {
   createBoardStore,
   readBoardStateIfPresent,
   type BoardReaderDeps,
+  type BlockedCardRelocationEvent,
   type BoardStoreChange,
   type BoardStoreDeps,
   type FileSystemLike,
   type MementoLike,
 } from '../../src/boardStore';
+import type { BoardState } from '../../src/types';
 
 function fakeMemento(initial: Record<string, unknown> = {}): MementoLike {
   const data = new Map<string, unknown>(Object.entries(initial));
@@ -1105,5 +1107,142 @@ suite('board store', () => {
 
     assert.equal(persisted.columns[0]!.cards[0]!.title, 'Task');
     assert.deepEqual(fileSystem.snapshot(), before);
+  });
+});
+
+suite('board store blocked-card enforcement', () => {
+  const columns: ColumnsDocument = {
+    version: BOARD_FILE_VERSION,
+    columns: [
+      { id: 'col-backlog', title: 'Backlog', role: 'backlog', wipLimit: null, reverseWip: null },
+      { id: 'col-ready', title: 'Ready', role: 'ready', wipLimit: null, reverseWip: 3 },
+      { id: 'col-progress', title: 'In Progress', role: 'in-progress', wipLimit: null, reverseWip: null },
+      { id: 'col-done', title: 'Done', role: 'done', wipLimit: null, reverseWip: null },
+    ],
+  };
+  const upstream: CardDocument = {
+    columnId: 'col-backlog',
+    position: 1000,
+    card: { id: 'card-up', title: 'Upstream', createdAt: 1 },
+  };
+  const work: CardDocument = {
+    columnId: 'col-progress',
+    position: 1000,
+    card: { id: 'card-work', title: 'Started work', createdAt: 2 },
+  };
+
+  async function setup() {
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columns),
+      '.mwnn/cards/card-up.md': serializeCard(upstream),
+      '.mwnn/cards/card-work.md': serializeCard(work),
+    });
+    const writes: string[] = [];
+    const countingFileSystem: FileSystemLike = {
+      ...fileSystem,
+      writeFile: async (targetPath, content) => {
+        writes.push(targetPath);
+        await fileSystem.writeFile(targetPath, content);
+      },
+    };
+    const events: BlockedCardRelocationEvent[] = [];
+    const store = await createBoardStore(createDeps({
+      fileSystem: countingFileSystem,
+      onDidRelocateBlockedCards: (event) => events.push(event),
+    }));
+    // Simulates an agent editing the card file directly to add a dependency.
+    const addExternalDependency = async (): Promise<void> => {
+      await fileSystem.writeFile(
+        '.mwnn/cards/card-work.md',
+        serializeCard({ ...work, card: { ...work.card, dependsOn: ['card-up'] } }),
+      );
+    };
+    return { fileSystem, writes, events, store, addExternalDependency };
+  }
+
+  const columnOf = (state: BoardState, cardId: string): string | undefined =>
+    state.columns.find((column) => column.cards.some((card) => card.id === cardId))?.id;
+
+  test('moves a card blocked by an external edit back to Ready on the reload that picks it up', async () => {
+    const { fileSystem, events, store, addExternalDependency } = await setup();
+    await addExternalDependency();
+
+    const state = await store.reload();
+
+    assert.equal(columnOf(state, 'card-work'), 'col-ready');
+    const persisted = parseCard(fileSystem.snapshot().get('.mwnn/cards/card-work.md')!);
+    assert.equal(persisted.columnId, 'col-ready', 'the move is persisted on reload');
+    assert.match(persisted.card.activity ?? '', /Moved back to Ready from "In Progress": blocked by "Upstream"\./);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.reason, 'reload');
+    assert.deepEqual(events[0]!.relocations, [{
+      cardId: 'card-work',
+      cardTitle: 'Started work',
+      fromColumnId: 'col-progress',
+      fromColumnTitle: 'In Progress',
+      toColumnId: 'col-ready',
+      toColumnTitle: 'Ready',
+      blockedBy: [{ id: 'card-up', title: 'Upstream' }],
+    }]);
+  });
+
+  test('an enforced move on reload writes once and the follow-up watcher reload settles', async () => {
+    const { writes, events, store, addExternalDependency } = await setup();
+    await addExternalDependency();
+
+    await store.reload();
+    assert.deepEqual(writes.filter((target) => target.includes('/cards/')), ['.mwnn/cards/card-work.md']);
+
+    writes.length = 0;
+    await store.reload();
+    await store.reload();
+    assert.deepEqual(writes, [], 'the watcher reload after the enforced write writes nothing');
+    assert.equal(events.length, 1);
+  });
+
+  test('an unrelated mutation never relocates a card it did not block', async () => {
+    const { events, store, addExternalDependency } = await setup();
+    await addExternalDependency();
+
+    // The watcher has not reloaded yet: the external edit is still enforced as a
+    // reload, and the user's own mutation reports no relocation of its own.
+    const state = await store.addCard('col-progress', 'Brand new');
+
+    assert.equal(columnOf(state, 'card-work'), 'col-ready');
+    assert.deepEqual(events.map((event) => event.reason), ['reload']);
+    const added = state.columns[2]!.cards.find((card) => card.title === 'Brand new');
+    assert.ok(added, 'the new card stays in In Progress');
+
+    await store.editCard(added.id, 'Renamed');
+    await store.moveCard('card-up', 'col-ready', 0);
+    assert.equal(events.length, 1, 'later unrelated mutations relocate nothing');
+  });
+
+  test('a mutation that blocks a card reports the relocation as a mutation', async () => {
+    const { events, store } = await setup();
+
+    const state = await store.setDependencies('card-work', ['card-up']);
+
+    assert.equal(columnOf(state, 'card-work'), 'col-ready');
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.reason, 'mutation');
+    assert.equal(events[0]!.relocations[0]!.fromColumnTitle, 'In Progress');
+  });
+
+  test('a card already blocked on disk is moved back to Ready when the store loads', async () => {
+    const fileSystem = createFakeFileSystem({
+      '.mwnn/columns.json': serializeColumns(columns),
+      '.mwnn/cards/card-up.md': serializeCard(upstream),
+      '.mwnn/cards/card-work.md': serializeCard({ ...work, card: { ...work.card, dependsOn: ['card-up'] } }),
+    });
+    const events: BlockedCardRelocationEvent[] = [];
+    const store = await createBoardStore(createDeps({
+      fileSystem,
+      onDidRelocateBlockedCards: (event) => events.push(event),
+    }));
+
+    assert.equal(columnOf(store.getState(), 'card-work'), 'col-ready');
+    assert.equal(parseCard(fileSystem.snapshot().get('.mwnn/cards/card-work.md')!).columnId, 'col-ready');
+    assert.deepEqual(events.map((event) => event.reason), ['reload']);
   });
 });

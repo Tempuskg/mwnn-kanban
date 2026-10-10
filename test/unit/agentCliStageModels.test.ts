@@ -1,3 +1,5 @@
+import { AGENT_CLI_PROVIDER_IDS } from '../../src/agentCliProviders';
+import { createAgentCliUsageOrchestrator } from '../../src/agentCliOrchestrator';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { suite, test } from 'node:test';
@@ -19,6 +21,10 @@ import {
 import {
   AGENT_CLI_STAGE_MODELS_SETTING,
   EMPTY_AGENT_CLI_STAGE_MODELS,
+  mergeAgentCliStagePreferences,
+  readAgentCliStageThinkingLevels,
+  readAgentCliThinkingLevels,
+  resolveAgentCliThinkingLevel,
   readAgentCliModelCatalog,
   readAgentCliStageModels,
   resolveAgentCliModel,
@@ -133,7 +139,7 @@ suite('AI loop stage model rules: settings manifest', () => {
               readonly default?: unknown;
               readonly additionalProperties?: boolean;
               readonly markdownDescription?: string;
-              readonly properties?: Record<string, { readonly type?: string; readonly description?: string }>;
+              readonly properties?: Record<string, { readonly type?: readonly string[]; readonly description?: string }>;
             }
           >;
         };
@@ -149,9 +155,9 @@ suite('AI loop stage model rules: settings manifest', () => {
     assert.equal(declared.additionalProperties, false);
     assert.deepEqual(Object.keys(declared.properties ?? {}).sort(), [...AGENT_CLI_HANDOFF_KINDS].sort());
     for (const kind of AGENT_CLI_HANDOFF_KINDS) {
-      const declaredStage: { readonly type?: string; readonly description?: string } | undefined =
+      const declaredStage: { readonly type?: readonly string[]; readonly description?: string } | undefined =
         declared.properties?.[kind];
-      assert.equal(declaredStage?.type, 'string', `${kind} is not declared as a model name`);
+      assert.deepEqual(declaredStage?.type, ['object', 'string'], `${kind} must accept provider maps and legacy strings`);
       assert.ok((declaredStage?.description ?? '').length > 0, `${kind} has no description`);
     }
     // No column identity leaks into the settings UI.
@@ -438,8 +444,8 @@ suite('AI loop stage model rules: dispatch', () => {
     assert.equal(result.modelSelection?.stage, 'verification');
     assert.match(result.reason ?? '', /rejected the AI loop stage model rule for the verification stage/);
     assert.match(result.reason ?? '', /The card was not advanced/);
-    // The fix names the stage key in the stage setting, not the card.
-    assert.match(result.reason ?? '', new RegExp(`"verification" in ${AGENT_CLI_STAGE_MODELS_SETTING}`));
+    // Recovery identifies both the stage and CLI so other overrides are preserved.
+    assert.ok((result.reason ?? '').includes(`"verification" / "codex" in ${AGENT_CLI_STAGE_MODELS_SETTING}`));
     assert.ok(board.activity(cardId).includes(AGENT_CLI_STAGE_MODELS_SETTING));
   });
 
@@ -606,6 +612,183 @@ suite('AI loop stage model rules: Run Card with AI', () => {
     );
 
     assert.deepEqual(args.slice(-2), ['--model', STAGE_MODELS.definition]);
+  });
+});
+
+suite('Per-stage per-CLI model and thinking preferences', () => {
+  const rawModels = Object.fromEntries(AGENT_CLI_HANDOFF_KINDS.map((stage) => [stage,
+    Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, stage + '-' + provider + '-model']))]));
+  const rawLevels = Object.fromEntries(AGENT_CLI_HANDOFF_KINDS.map((stage) => [stage,
+    Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, stage + '-' + provider + '-effort']))]));
+  const models = readAgentCliStageModels(rawModels);
+  const levels = readAgentCliStageThinkingLevels(rawLevels);
+
+  test('all sixteen pairs resolve card, stage, provider and CLI defaults independently', () => {
+    for (const stage of AGENT_CLI_HANDOFF_KINDS) {
+      for (const provider of AGENT_CLI_PROVIDER_IDS) {
+        const catalog = readAgentCliModelCatalog({ [provider]: ['provider-model'] });
+        const defaults = readAgentCliThinkingLevels({ [provider]: 'provider-effort' });
+        const modelContext = { stage, stageModels: models };
+        const levelContext = { stage, stageThinkingLevels: levels };
+        assert.deepEqual(resolveAgentCliModel(provider, 'card-model', catalog, modelContext), { model: 'card-model', source: 'card' });
+        assert.deepEqual(resolveAgentCliThinkingLevel(provider, 'card-effort', defaults, levelContext), { level: 'card-effort', source: 'card' });
+        assert.deepEqual(resolveAgentCliModel(provider, undefined, catalog, modelContext), { model: stage + '-' + provider + '-model', source: 'stage-rule' });
+        assert.deepEqual(resolveAgentCliThinkingLevel(provider, undefined, defaults, levelContext), { level: stage + '-' + provider + '-effort', source: 'stage-rule' });
+        const other = provider === 'codex' ? 'copilot' : 'codex';
+        assert.deepEqual(resolveAgentCliModel(provider, undefined, catalog, { stage, stageModels: readAgentCliStageModels({ [stage]: { [other]: 'other-cli' } }) }), { model: 'provider-model', source: 'workspace-default' });
+        assert.deepEqual(resolveAgentCliThinkingLevel(provider, undefined, defaults, { stage, stageThinkingLevels: {} }), { level: 'provider-effort', source: 'workspace-default' });
+        assert.equal(resolveAgentCliModel(provider, undefined, {}, { stage, stageModels: {} }), undefined);
+        assert.equal(resolveAgentCliThinkingLevel(provider, undefined, {}, { stage, stageThinkingLevels: {} }), undefined);
+        // A model never requires effort, and effort never requires a model.
+        assert.equal(resolveAgentCliThinkingLevel(provider, undefined, {}, { stage, stageThinkingLevels: {} }), undefined);
+        assert.equal(resolveAgentCliModel(provider, undefined, {}, modelContext, 'escalation')?.source, 'escalation');
+      }
+    }
+  });
+
+  test('both configuration schemas allow optional free-form CLI entries at every stage and legacy strings', () => {
+    const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8')) as {
+      contributes: { configuration: { properties: Record<string, {
+        properties: Record<string, { type: readonly string[]; properties: Record<string, { type: string; enum?: unknown }>; required?: unknown }>
+      }> } }
+    };
+    for (const key of ['mwnn-kanban.agentCliStageModels', 'mwnn-kanban.agentCliStageThinkingLevels']) {
+      const setting = manifest.contributes.configuration.properties[key];
+      assert.ok(setting);
+      for (const stage of AGENT_CLI_HANDOFF_KINDS) {
+        const schema: { type: readonly string[]; properties: Record<string, { type: string; enum?: unknown }>; required?: unknown } | undefined = setting.properties[stage];
+        assert.ok(schema);
+        assert.deepEqual(schema.type, ['object', 'string']);
+        assert.equal(schema.required, undefined);
+        assert.deepEqual(Object.keys(schema.properties).sort(), [...AGENT_CLI_PROVIDER_IDS].sort());
+        for (const provider of AGENT_CLI_PROVIDER_IDS) {
+          assert.equal(schema.properties[provider]?.type, 'string');
+          assert.equal(schema.properties[provider]?.enum, undefined, 'names must remain free-form');
+        }
+      }
+    }
+  });
+
+  test('malformed stage/provider values are safely ignored on both axes', () => {
+    const raw = { unknown: { codex: 'ignored' }, definition: { codex: ' good ', cursor: ' ', unknown: 'no', copilot: ['no'], 'claude-code': false },
+      triage: [], implementation: { codex: 'bad\u0000value', cursor: null }, verification: 42 };
+    assert.deepEqual(readAgentCliStageModels(raw), { definition: { codex: 'good' } });
+    assert.deepEqual(readAgentCliStageThinkingLevels(raw), { definition: { codex: 'good' } });
+    assert.deepEqual(readAgentCliStageThinkingLevels('not a map'), {});
+  });
+
+  test('scope inheritance merges by CLI even across legacy strings without mutating inputs', () => {
+    const user = { implementation: 'legacy', definition: { copilot: 'user' } };
+    const workspace = { implementation: { codex: 'local' }, definition: { cursor: 'local-cursor' } };
+    const effective = mergeAgentCliStagePreferences({}, user, workspace, { implementation: { copilot: 'folder' } });
+    assert.deepEqual(effective, { implementation: { copilot: 'folder', codex: 'local', 'claude-code': 'legacy', cursor: 'legacy' }, definition: { copilot: 'user', cursor: 'local-cursor' } });
+    assert.deepEqual(user, { implementation: 'legacy', definition: { copilot: 'user' } });
+    assert.deepEqual(workspace, { implementation: { codex: 'local' }, definition: { cursor: 'local-cursor' } });
+    assert.equal(stageAgentCliModel(mergeAgentCliStagePreferences(user, { implementation: 'new-legacy' }), 'implementation', 'codex'), 'new-legacy');
+  });
+
+  test('all sixteen dispatches report the CLI, stage and independent sources, including unsupported effort', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    for (const kind of AGENT_CLI_HANDOFF_KINDS) {
+      for (const provider of AGENT_CLI_PROVIDER_IDS) {
+        let args: readonly string[] = [];
+        const result = await runAgentCliCardHandoff({ kind, target: target(provider), cardId, prompt: 'prompt', cwd: CWD,
+          store: board.store, signal: new AbortController().signal, stageModels: models, stageThinkingLevels: levels },
+        { now: () => NOW, runProcess: async (invocation) => { args = invocation.args; return cleanExit(); } });
+        const model = kind + '-' + provider + '-model';
+        const effort = kind + '-' + provider + '-effort';
+        assert.equal(result.modelSelection?.requested, model);
+        assert.equal(result.modelSelection?.source, 'stage-rule');
+        assert.equal(result.thinkingSelection?.requested, effort);
+        assert.equal(result.thinkingSelection?.source, 'stage-rule');
+        assert.ok(args.includes(model));
+        if (provider === 'cursor') {
+          assert.equal(result.thinkingSelection?.applied, false);
+          assert.ok(!args.some((arg) => arg.includes(effort)));
+          assert.match(board.activity(cardId), /not applied/i);
+        } else {
+          assert.equal(result.thinkingSelection?.applied, true);
+          assert.ok(args.some((arg) => arg.includes(effort)));
+        }
+        assert.ok(board.activity(cardId).includes(AGENT_CLI_LABELS[provider]));
+        assert.ok(board.activity(cardId).includes('for the ' + kind + ' stage: ' + model));
+        assert.ok(board.activity(cardId).includes(effort));
+        assert.equal(board.card(cardId).preferredModels, undefined);
+        assert.equal(board.card(cardId).thinkingLevels, undefined);
+      }
+    }
+  });
+
+  test('absent preferences add no corresponding argument; each axis can dispatch alone', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    for (const provider of AGENT_CLI_PROVIDER_IDS) {
+      for (const axis of ['neither', 'model', 'effort']) {
+        let args: readonly string[] = [];
+        const result = await runAgentCliCardHandoff({ kind: 'implementation', target: target(provider), cardId, prompt: 'prompt', cwd: CWD,
+          store: board.store, signal: new AbortController().signal, stageModels: axis === 'model' ? models : {}, stageThinkingLevels: axis === 'effort' ? levels : {} },
+        { now: () => NOW, runProcess: async (invocation) => { args = invocation.args; return cleanExit(); } });
+        assert.equal(args.includes('--model'), axis === 'model');
+        assert.equal(result.modelSelection !== undefined, axis === 'model');
+        assert.equal(result.thinkingSelection !== undefined, axis === 'effort');
+        if (axis !== 'effort' || provider === 'cursor') {
+          assert.ok(!args.some((arg) => /--effort|model_reasoning_effort/.test(arg)));
+        }
+      }
+    }
+  });
+
+  for (const kind of AGENT_CLI_HANDOFF_KINDS) {
+    for (const orchestrated of [false, true]) {
+      test(kind + ' resolves both preferences again after ' + (orchestrated ? 'orchestrator selection and fallback' : 'credit fallback'), async () => {
+        const { state, cardId } = boardWithCard();
+        const board = fakeBoard(state);
+        const selections: { provider: AgentCliProviderId; model?: string; effort?: string }[] = [];
+        const orchestrator = createAgentCliUsageOrchestrator({ configuredPaths: {}, cwd: CWD,
+          resolveTarget: async (provider) => ({ available: true, target: target(provider) }),
+          probe: async (cli) => ({ kind: 'unknown', provider: cli.provider, reason: 'not reported' }),
+        });
+        const first = orchestrated ? 'copilot' : 'codex';
+        const replacement = orchestrated ? 'codex' : 'cursor';
+        const runner = createAgentCliFallbackRunner({
+          initialTarget: target(orchestrated ? 'cursor' : first), configuredPaths: {}, cwd: CWD, store: board.store,
+          signal: new AbortController().signal, settings: { enabled: !orchestrated, providers: [replacement] },
+          stageModels: models, stageThinkingLevels: levels, ...(orchestrated ? { orchestrator } : {}),
+          resolveTarget: async (provider) => ({ available: true, target: target(provider) }),
+          runHandoff: async (handoff, options) => {
+            const result = await runAgentCliCardHandoff(handoff, { ...options, now: () => NOW,
+              runProcess: async (invocation) => {
+                if (invocation.provider === first) { return failedProcess('This account is out of credits.'); }
+                board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+                return cleanExit();
+              },
+            });
+            selections.push({ provider: handoff.target.provider,
+              ...(result.modelSelection ? { model: result.modelSelection.requested } : {}),
+              ...(result.thinkingSelection ? { effort: result.thinkingSelection.requested } : {}),
+            });
+            return result;
+          },
+        });
+        await runner.run({ kind, card: board.card(cardId), buildPrompt: () => 'prompt' });
+        assert.deepEqual(selections, [first, replacement].map((provider) => ({ provider, model: kind + '-' + provider + '-model', effort: kind + '-' + provider + '-effort' })));
+      });
+    }
+  }
+
+  test('Run Card with AI uses the selected CLI implementation map on both axes', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    let args: readonly string[] = [];
+    const deps = { ...runDeps(board, async (invocation) => {
+      args = invocation.args;
+      board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+      return cleanExit();
+    }), stageModels: models, stageThinkingLevels: levels };
+    await runCardWithAgentCli(request('claude-code', cardId, 'implementation'), deps);
+    assert.ok(args.includes('implementation-claude-code-model'));
+    assert.ok(args.includes('implementation-claude-code-effort'));
   });
 });
 

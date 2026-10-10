@@ -202,12 +202,12 @@ function realHandoffWith(
 }
 
 suite('Run with AI provider selection', () => {
-  test('offers installed chat extensions followed by all four agent CLI providers', () => {
+  test('offers installed chat extensions followed by all four agent CLI providers and the Usage Orchestrator', () => {
     const choices = listRunWithAiProviderChoices(CHAT_TARGETS);
 
     assert.deepEqual(
       choices.map((choice) => choice.kind),
-      ['chat', 'chat', 'cli', 'cli', 'cli', 'cli'],
+      ['chat', 'chat', 'cli', 'cli', 'cli', 'cli', 'cli'],
     );
     assert.deepEqual(
       choices.slice(0, 2).map((choice) => choice.label),
@@ -215,13 +215,17 @@ suite('Run with AI provider selection', () => {
     );
     assert.deepEqual(
       choices.slice(2).map((choice) => (choice.kind === 'cli' ? choice.provider : undefined)),
-      [...AGENT_CLI_PROVIDER_IDS],
+      [...AGENT_CLI_PROVIDER_IDS, 'orchestrator'],
     );
+    assert.equal(choices.at(-1)?.label, 'Usage Orchestrator');
   });
 
   test('labels make clear which entries are CLIs and which are chat extensions', () => {
     for (const choice of listRunWithAiProviderChoices(CHAT_TARGETS)) {
-      if (choice.kind === 'cli') {
+      if (choice.kind === 'cli' && choice.provider === 'orchestrator') {
+        assert.equal(choice.description, 'Local agent CLI');
+        assert.match(choice.detail, /remaining usage/);
+      } else if (choice.kind === 'cli') {
         assert.match(choice.label, /CLI/);
         assert.equal(choice.description, 'Local agent CLI');
         assert.match(choice.detail, /headlessly in the workspace root/);
@@ -238,9 +242,9 @@ suite('Run with AI provider selection', () => {
     assert.deepEqual(chatChoices.map((choice) => choice.target), [...CHAT_TARGETS]);
   });
 
-  test('still offers every CLI provider when no chat extension is installed', () => {
+  test('still offers every CLI provider and the Usage Orchestrator when no chat extension is installed', () => {
     const choices = listRunWithAiProviderChoices([]);
-    assert.equal(choices.length, AGENT_CLI_PROVIDER_IDS.length);
+    assert.equal(choices.length, AGENT_CLI_PROVIDER_IDS.length + 1);
     assert.ok(choices.every((choice) => choice.kind === 'cli'));
   });
 });

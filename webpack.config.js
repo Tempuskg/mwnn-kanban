@@ -38,4 +38,10 @@ const config = {
   },
 };
 
-module.exports = config;
+module.exports = [config, {
+  ...config,
+  target: 'web',
+  entry: './src/webview/agentCliModels.ts',
+  output: { path: path.resolve(__dirname, 'dist'), filename: 'agentCliModels.js' },
+  externals: {},
+}];

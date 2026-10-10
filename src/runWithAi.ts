@@ -18,8 +18,15 @@ import {
   type AgentCliProcessObserver,
   type AgentCliProviderId,
   type AgentCliResolution,
+  type AgentCliTarget,
   type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
+import {
+  formatOrchestratorChoiceEntry,
+  formatOrchestratorRanking,
+  type AgentCliUsageOrchestrator,
+} from './agentCliOrchestrator';
+import { USAGE_ORCHESTRATOR_DETAIL, USAGE_ORCHESTRATOR_LABEL } from './aiLoopProvider';
 import {
   autoStartAiCardFromReady,
   checkAllAcceptanceCriteria,
@@ -38,7 +45,8 @@ import type { Assignee, Card, Column } from './types';
  * the already-resolved handoff target so the existing chat flow is unchanged;
  * CLI entries carry only the provider id and are resolved on selection, so
  * every CLI can be offered and a missing executable is reported only when the
- * user actually picks it.
+ * user actually picks it. The `orchestrator` provider lets the Usage
+ * Orchestrator choose the CLI at dispatch.
  */
 export type RunWithAiProviderChoice =
   | {
@@ -53,7 +61,7 @@ export type RunWithAiProviderChoice =
       readonly label: string;
       readonly description: string;
       readonly detail: string;
-      readonly provider: AgentCliProviderId;
+      readonly provider: AgentCliProviderId | 'orchestrator';
     };
 
 export function listRunWithAiProviderChoices(
@@ -73,14 +81,22 @@ export function listRunWithAiProviderChoices(
     detail: 'Runs the CLI headlessly in the workspace root and records the result on the card',
     provider,
   }));
-  return [...chatChoices, ...cliChoices];
+  const orchestratorChoice = {
+    kind: 'cli' as const,
+    label: USAGE_ORCHESTRATOR_LABEL,
+    description: 'Local agent CLI',
+    detail: USAGE_ORCHESTRATOR_DETAIL,
+    provider: 'orchestrator' as const,
+  };
+  return [...chatChoices, ...cliChoices, orchestratorChoice];
 }
 
 /** Per-card CLI actions: run the card's work, or fill in its definition. */
 export type RunWithAiHandoffKind = Extract<AgentCliHandoffKind, 'implementation' | 'definition'>;
 
 export interface RunCardWithAgentCliRequest {
-  readonly provider: AgentCliProviderId;
+  /** `orchestrator` ranks the installed CLIs once, at dispatch. */
+  readonly provider: AgentCliProviderId | 'orchestrator';
   readonly kind: RunWithAiHandoffKind;
   readonly card: { readonly id: string; readonly title: string };
   readonly prompt: string;
@@ -152,6 +168,13 @@ export interface RunCardWithAgentCliDeps {
     context: AgentCliRunContext,
     reportProgress: (message: string) => void,
   ) => AgentCliProcessObserver;
+  /**
+   * Chooses the CLI when the request's provider is `orchestrator`. Never
+   * consulted otherwise, so a fixed CLI choice probes nothing.
+   */
+  readonly orchestrator?: Pick<AgentCliUsageOrchestrator, 'choose'>;
+  /** The full orchestrator ranking (with skipped CLIs) for the output channel. */
+  readonly onRanking?: (lines: readonly string[]) => void;
   /** Test seams; default to the shared agentCliHandoff implementations. */
   readonly resolveTarget?: (
     provider: AgentCliProviderId,
@@ -179,19 +202,43 @@ export async function runCardWithAgentCli(
   request: RunCardWithAgentCliRequest,
   deps: RunCardWithAgentCliDeps,
 ): Promise<boolean> {
-  const resolveTarget = deps.resolveTarget ?? resolveAgentCliTarget;
-  const resolution = await resolveTarget(request.provider, deps.configuredPaths, { cwd: deps.cwd });
-  if (!resolution.available) {
-    deps.showWarning(resolution.reason);
-    return false;
+  let target: AgentCliTarget;
+  let choiceEntry: string | undefined;
+  if (request.provider === 'orchestrator') {
+    const orchestrator = deps.orchestrator;
+    if (!orchestrator) {
+      deps.showWarning('The Usage Orchestrator is not available for this run.');
+      return false;
+    }
+    const decision = await deps.runWithProgress(
+      `Usage Orchestrator: reading agent CLI usage for "${request.card.title}"`,
+      () => orchestrator.choose(),
+    );
+    deps.onRanking?.(formatOrchestratorRanking(decision.ranking, request.kind, request.card.title));
+    if (decision.kind === 'none') {
+      deps.showWarning(decision.reason);
+      return false;
+    }
+    target = decision.target;
+    choiceEntry = formatOrchestratorChoiceEntry(decision.chosen, request.kind);
+  } else {
+    const resolveTarget = deps.resolveTarget ?? resolveAgentCliTarget;
+    const resolution = await resolveTarget(request.provider, deps.configuredPaths, { cwd: deps.cwd });
+    if (!resolution.available) {
+      deps.showWarning(resolution.reason);
+      return false;
+    }
+    target = resolution.target;
   }
 
   if (request.kind === 'implementation' && await startReadyCardForImplementation(deps.store, request.card.id)) {
     deps.refreshBoard();
   }
+  if (choiceEntry !== undefined) {
+    await deps.store.appendActivity(request.card.id, choiceEntry);
+  }
 
   const runHandoff = deps.runHandoff ?? runAgentCliCardHandoff;
-  const target = resolution.target;
   const progressTitle = request.kind === 'definition'
     ? `Filling in "${request.card.title}" with ${target.label}`
     : `Running "${request.card.title}" with ${target.label}`;
@@ -218,7 +265,10 @@ export async function runCardWithAgentCli(
             ? { stageThinkingLevels: deps.stageThinkingLevels }
             : {}),
         },
-        observer ? { observer } : {},
+        {
+          ...(observer ? { observer } : {}),
+          ...(request.provider === 'orchestrator' ? { orchestrated: true } : {}),
+        },
       );
     },
   );

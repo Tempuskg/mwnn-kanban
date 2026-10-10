@@ -4,7 +4,6 @@ title: "When card is in Ready column if user alligns to AI have the card move to
 column: col-mqwk2njn-4
 position: -49000
 assignee: { kind: human }
-preferredModel.copilot: gpt-5.3-codex
 preferredModel.codex: gpt-5.5
 preferredModel.claude-code: sonnet
 thinkingLevel.copilot: high

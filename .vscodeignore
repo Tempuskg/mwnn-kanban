@@ -8,6 +8,7 @@ mwnn-kanban-pro/**
 src/**
 test/**
 dist-test/**
+.tmp-copilot-local/**
 # @tempuskg/mwnn-kanban-pro is loaded at runtime via a dynamic require.resolve()
 # (src/pro/loader.ts), so webpack cannot inline it into dist/extension.js — it
 # must ship as a real node_modules directory instead. Only the manifest and

@@ -4,8 +4,9 @@
  *   - 'query'      Copilot's workbench.action.chat.open takes a `{ query }`
  *                  argument; the prompt is injected straight into the chat input.
  *   - 'positional' Claude Code's editor open commands accept the prompt as a
- *                  positional `(sessionId, initialPrompt)` argument, so the new
- *                  chat panel opens pre-filled with the prompt.
+ *                  positional `(sessionId, initialPrompt)` argument, so a new
+ *                  conversation opens pre-filled with the prompt (in the
+ *                  sidebar when that is Claude Code's preferred location).
  *   - 'clipboard'  The provider exposes an open command, so the prompt is
  *                  placed on the clipboard and pasted after its composer is
  *                  ready.
@@ -39,6 +40,10 @@ export interface ClipboardHandoffOptions {
   readonly providerReadyDelayMs?: number;
   /** Time to let the requested new conversation focus its composer. */
   readonly composerReadyDelayMs?: number;
+  /** Number of times to retry pasting while the chat composer finishes loading. */
+  readonly pasteMaxAttempts?: number;
+  /** Delay between paste attempts while waiting for the chat composer. */
+  readonly pasteRetryDelayMs?: number;
 }
 
 export type ClipboardHandoffResult =
@@ -112,6 +117,25 @@ const HANDOFF_TARGET_CANDIDATES: Record<ChatProviderId, readonly string[]> = {
   ],
 };
 
+// Claude Code's editor.open signature is
+// (sessionId, initialPrompt, _, _, fullEditor, options). Passing
+// `programmatic: 'honor-preferred-location'` routes a new conversation to the
+// sidebar when that is the user's preferred Claude Code location, instead of
+// always spawning an editor tab. primaryEditor.open always opens a panel by
+// design, so it receives only (sessionId, initialPrompt).
+const CLAUDE_EDITOR_OPEN_COMMAND = 'claude-vscode.editor.open';
+
+/**
+ * Arguments for a positional hand-off command: no session id (so a new
+ * conversation starts) and the prompt as the initial prompt.
+ */
+export function positionalHandoffArgs(target: ChatHandoffTarget, prompt: string): unknown[] {
+  if (target.commandId === CLAUDE_EDITOR_OPEN_COMMAND) {
+    return [undefined, prompt, undefined, undefined, undefined, { programmatic: 'honor-preferred-location' }];
+  }
+  return [undefined, prompt];
+}
+
 function promptDeliveryFor(commandId: string): PromptDelivery {
   if (COMMANDS_SUPPORTING_QUERY.has(commandId)) {
     return 'query';
@@ -169,8 +193,32 @@ export function shouldAutoPasteChatHandoff(target: ChatHandoffTarget): boolean {
   return target.provider === 'codex' && target.commandId === 'chatgpt.newChat';
 }
 
+// Codex turns pastes of 5,000 or more characters into file attachments. Keep
+// each paste below that threshold so the request is visible to the agent even
+// when its filesystem tools cannot read attachments.
+const CODEX_PASTE_CHUNK_SIZE = 4_000;
+
+function clipboardPromptChunks(prompt: string, target: ChatHandoffTarget): string[] {
+  if (target.provider !== 'codex') {
+    return [prompt];
+  }
+
+  const chunks: string[] = [];
+  for (let start = 0; start < prompt.length;) {
+    let end = Math.min(start + CODEX_PASTE_CHUNK_SIZE, prompt.length);
+    const last = prompt.charCodeAt(end - 1);
+    if (end < prompt.length && ((last >= 0xD800 && last <= 0xDBFF) ||
+      (prompt[end - 1] === '\r' && prompt[end] === '\n'))) {
+      end -= 1;
+    }
+    chunks.push(prompt.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
 /**
- * Delivers a clipboard-based hand-off exactly once. Provider activation and a
+ * Delivers one clipboard-based hand-off. Provider activation and a
  * separate view-open command happen before the new-chat command, which avoids
  * losing Codex's initial new-chat message while its webview is starting.
  */
@@ -184,6 +232,7 @@ export async function deliverClipboardHandoff(
     return { delivered: false, error: 'the generated prompt was empty' };
   }
 
+  const chunks = clipboardPromptChunks(prompt, target);
   try {
     await executor.writeClipboard(prompt);
     if (executor.activateProvider) {
@@ -195,12 +244,55 @@ export async function deliverClipboardHandoff(
     }
     await executor.executeCommand(target.commandId);
     await executor.wait(options.composerReadyDelayMs ?? 300);
-    await executor.executeCommand('editor.action.clipboardPasteAction');
+    try {
+      for (const [index, chunk] of chunks.entries()) {
+        if (chunks.length > 1) {
+          await executor.writeClipboard(chunk);
+        }
+        const pasteResult = await pasteClipboardWhenComposerReady(executor, options);
+        if (!pasteResult.delivered) {
+          return pasteResult;
+        }
+        if (index < chunks.length - 1) {
+          await executor.wait(50);
+        }
+      }
+    } finally {
+      if (chunks.length > 1) {
+        await executor.writeClipboard(prompt);
+      }
+    }
     return { delivered: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return { delivered: false, error: message || 'the Codex composer did not become ready' };
   }
+}
+
+async function pasteClipboardWhenComposerReady(
+  executor: ClipboardHandoffExecutor,
+  options: ClipboardHandoffOptions,
+): Promise<ClipboardHandoffResult> {
+  const maxAttempts = Math.max(1, Math.floor(options.pasteMaxAttempts ?? 8));
+  const retryDelayMs = Math.max(0, Math.floor(options.pasteRetryDelayMs ?? 250));
+  let lastError = 'the chat composer did not become ready';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await executor.executeCommand('editor.action.clipboardPasteAction');
+      return { delivered: true };
+    } catch (error: unknown) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (attempt < maxAttempts) {
+        await executor.wait(retryDelayMs);
+      }
+    }
+  }
+
+  return {
+    delivered: false,
+    error: `${lastError || 'the chat composer did not become ready'} after ${maxAttempts} paste attempts`,
+  };
 }
 
 /** Builds the visible failure message used when no activity entry is written. */
@@ -215,7 +307,7 @@ export function describeChatHandoffTarget(target: ChatHandoffTarget): string {
     return 'Sends the card prompt straight to the chat input';
   }
   if (target.promptDelivery === 'positional') {
-    return 'Opens the chat window pre-filled with the card prompt';
+    return 'Opens Claude Code chat pre-filled with the card prompt';
   }
   if (shouldAutoPasteChatHandoff(target)) {
     return 'Starts a fresh Codex thread and auto-pastes the prompt';

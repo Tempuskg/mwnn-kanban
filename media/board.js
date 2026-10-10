@@ -630,7 +630,7 @@
     cards.setAttribute('role', 'list');
     cards.setAttribute('aria-label', `${column.title} cards`);
     for (const card of column.cards) {
-      cards.appendChild(renderCard(card));
+      cards.appendChild(renderCard(card, column));
     }
     if (column.cards.length === 0) {
       cards.appendChild(renderColumnEmptyState());
@@ -707,8 +707,9 @@
 
   /**
    * @param {Card} card
+   * @param {Column} column
    */
-  function renderCard(card) {
+  function renderCard(card, column) {
     const el = document.createElement('article');
     el.className = 'card';
     el.draggable = true;
@@ -821,6 +822,25 @@
         post({ type: 'runCardWithAI', cardId: card.id });
       });
       actions.appendChild(runAi);
+    }
+
+    if (canStartInterview(card, column)) {
+      const interview = document.createElement('button');
+      interview.className = 'card-action';
+      interview.type = 'button';
+      interview.appendChild(makeIcon(ICON_INTERVIEW));
+      interview.title = 'Start interview';
+      interview.setAttribute('aria-label', `Start AI-guided interview for ${card.title}`);
+      interview.draggable = true;
+      interview.addEventListener('dragstart', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      interview.addEventListener('click', (event) => {
+        event.stopPropagation();
+        post({ type: 'startCardInterview', cardId: card.id });
+      });
+      actions.appendChild(interview);
     }
 
     const details = document.createElement('button');
@@ -1054,6 +1074,9 @@
   const ICON_RUN_AI =
     'M7.53 1.78a.5.5 0 0 1 .94 0l1.2 3.24a.5.5 0 0 0 .3.3l3.25 1.2a.5.5 0 0 1 0 .94l-3.24 1.2a.5.5 0 0 0-.3.3l-1.2 3.25a.5.5 0 0 1-.94 0l-1.2-3.24a.5.5 0 0 0-.3-.3l-3.25-1.2a.5.5 0 0 1 0-.94l3.24-1.2a.5.5 0 0 0 .3-.3l1.2-3.25zM3 11l.55 1.45L5 13l-1.45.55L3 15l-.55-1.45L1 13l1.45-.55L3 11z';
 
+  const ICON_INTERVIEW =
+    'M2.5 2h11A1.5 1.5 0 0 1 15 3.5v7a1.5 1.5 0 0 1-1.5 1.5H7l-3.5 3v-3h-1A1.5 1.5 0 0 1 1 10.5v-7A1.5 1.5 0 0 1 2.5 2zm0 1.5v7H5v1.4l1.6-1.4h6.9v-7h-11z';
+
   function makeIcon(pathData) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 16 16');
@@ -1237,6 +1260,28 @@
       }
     };
 
+    const startInterview = document.createElement('button');
+    startInterview.className = 'card-modal-ai';
+    startInterview.type = 'button';
+    startInterview.textContent = 'Start interview';
+    startInterview.title = 'Open an AI chat that asks one question at a time and records your answers. Resumes from answers already saved on the card.';
+    startInterview.addEventListener('click', () => {
+      post({ type: 'startCardInterview', cardId: record.card.id });
+    });
+
+    // Offered for the saved Human card while the form still keeps it Human;
+    // the host rereads eligibility.
+    const syncInterviewButton = () => {
+      const shouldShow = canStartInterview(record.card, record.column) &&
+        assigneeControls.kind.value === 'human';
+      const isShown = footer.contains(startInterview);
+      if (shouldShow && !isShown) {
+        footer.insertBefore(startInterview, footer.firstChild);
+      } else if (!shouldShow && isShown) {
+        startInterview.remove();
+      }
+    };
+
     if (!isCardDefined(record.card)) {
       const fillAi = document.createElement('button');
       fillAi.className = 'card-modal-ai';
@@ -1333,8 +1378,10 @@
     footer.append(deleteBtn, duplicateBtn, spacer, save);
 
     syncRunAiButton();
+    syncInterviewButton();
 
     assigneeControls.kind.addEventListener('change', syncRunAiButton);
+    assigneeControls.kind.addEventListener('change', syncInterviewButton);
 
     dialog.append(header, form, footer);
     backdrop.appendChild(dialog);
@@ -2009,6 +2056,25 @@
         return thinkingDrafts;
       },
     };
+  }
+
+  /**
+   * Whether a card can run as an AI-guided interview. Mirrors the host's
+   * isInterviewCard: every Human-assigned card can.
+   * @param {Card} card
+   */
+  function isInterviewCard(card) {
+    return card.assignee?.kind === 'human';
+  }
+
+  /**
+   * Whether a card offers Start interview: a defined Human card
+   * outside a done column, with AI board actions enabled.
+   * @param {Card} card
+   * @param {Column} column
+   */
+  function canStartInterview(card, column) {
+    return enableRunWithAI && isInterviewCard(card) && isCardDefined(card) && column.role !== 'done';
   }
 
   /**

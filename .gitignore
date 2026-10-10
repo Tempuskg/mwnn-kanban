@@ -6,3 +6,4 @@ dist-test/
 .vscode/command-shelf.json
 *.log
 .chat/
+.tmp-copilot-local/

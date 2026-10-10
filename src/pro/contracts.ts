@@ -36,8 +36,50 @@ export interface BoardCapabilityV1 {
   readonly setCardBadges?: (badges: readonly CardBadge[]) => void;
 }
 
+
+/** Additive CLI-only seam. One session owns the window lease and dispatch ledger. */
+export interface PortfolioLoopProject {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly root: string;
+  readonly boardFolder: string;
+}
+export interface PortfolioLoopCard {
+  readonly cardId: string;
+  readonly cardTitle: string;
+}
+export type PortfolioLoopSelection =
+  | { readonly kind: 'card'; readonly card: PortfolioLoopCard }
+  | { readonly kind: 'empty'; readonly reason: string };
+export interface PortfolioLoopProgress extends PortfolioLoopCard {
+  readonly stage: string;
+  readonly message: string;
+}
+export interface PortfolioLoopCardResult {
+  readonly outcome: 'completed' | 'human' | 'review' | 'skipped' | 'held' | 'stopped';
+  readonly reason?: string;
+}
+export interface PortfolioLoopSessionV1 {
+  selectCard(project: PortfolioLoopProject): Promise<PortfolioLoopSelection>;
+  runCard(project: PortfolioLoopProject, cardId: string, report: (progress: PortfolioLoopProgress) => void): Promise<PortfolioLoopCardResult>;
+  pause(): void;
+  resume(): void;
+  stop(): void;
+  outcome(): 'finished' | 'stopped' | 'budget' | 'credits';
+  /** Releases the window lease after all outstanding work has settled. */
+  finish(): string;
+}
+export interface PortfolioAiLoopCapabilityV1 {
+  readonly version: 1;
+  availability(): { readonly enabled: boolean; readonly busy: boolean; readonly reason?: string };
+  /** Claims the window before the CLI picker; cancellation releases it. */
+  start(): Promise<PortfolioLoopSessionV1 | undefined>;
+  readonly onDidChange: vscode.Event<void>;
+}
+
 export interface ProFeatureCapabilities {
   readonly board?: BoardCapabilityV1;
+  readonly portfolioAiLoop?: PortfolioAiLoopCapabilityV1;
 }
 
 export interface ProFeatureRegistrationContext {

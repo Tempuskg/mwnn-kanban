@@ -4,7 +4,6 @@ title: if there is no .mwnn folder when you do import plan it fails
 column: col-mqwk2njn-4
 position: -52000
 assignee: { kind: human }
-preferredModel.copilot: gpt-5.3-codex
 preferredModel.codex: gpt-5.5
 preferredModel.claude-code: sonnet
 thinkingLevel.copilot: high

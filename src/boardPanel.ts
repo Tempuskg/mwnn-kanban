@@ -16,7 +16,7 @@ import {
   readAgentCliModelCatalog,
   readAgentCliThinkingLevelSuggestions,
 } from './agentCliModels';
-import { canMoveCardToColumn } from './utils';
+import { canMoveCardToColumn, describeBlockedMove } from './utils';
 import { autoStartAiCardFromReady } from './boardLoop';
 import {
   isWebviewToHostMessage,
@@ -48,6 +48,8 @@ export interface BoardPanelDeps {
   readonly extensionUri: vscode.Uri;
   readonly confirmDeletion: () => boolean;
   readonly runCardWithAI: (cardId?: string) => Promise<void>;
+  /** Starts or resumes a Human card's AI-guided interview in a chat. */
+  readonly startCardInterview: (cardId: string) => Promise<void>;
   readonly fillCardDefinition: (cardId: string) => Promise<void>;
   /** Persists the board zoom level so it survives closing and reopening the panel. */
   readonly zoomMemento: vscode.Memento;
@@ -411,6 +413,9 @@ export class BoardPanel {
       case 'runCardWithAI':
         await this.deps.runCardWithAI(message.cardId);
         break;
+      case 'startCardInterview':
+        await this.deps.startCardInterview(message.cardId);
+        break;
       case 'fillCardDefinition':
         await this.deps.fillCardDefinition(message.cardId);
         break;
@@ -430,12 +435,7 @@ export class BoardPanel {
       case 'moveCard': {
         const state = this.deps.store.getState();
         if (!canMoveCardToColumn(state, message.cardId, message.toColumnId)) {
-          const card = state.columns
-            .flatMap((column) => column.cards)
-            .find((candidate) => candidate.id === message.cardId);
-          void vscode.window.showInformationMessage(
-            `"${card?.title ?? 'This card'}" is blocked by unfinished dependencies and can't move past Ready.`,
-          );
+          void vscode.window.showInformationMessage(describeBlockedMove(state, message.cardId));
           this.postState();
           return;
         }

@@ -7,7 +7,14 @@ export const AI_LOOP_PROVIDER_PREFERENCES = [
   'prompt',
   'chat',
   ...AGENT_CLI_PROVIDER_IDS,
+  'orchestrator',
 ] as const;
+
+/** Picker and setting label for the Usage Orchestrator choice. */
+export const USAGE_ORCHESTRATOR_LABEL = 'Usage Orchestrator';
+
+export const USAGE_ORCHESTRATOR_DETAIL =
+  'Before each dispatch, pick the installed CLI by its remaining usage and reset time';
 
 export type AiLoopProviderPreference = (typeof AI_LOOP_PROVIDER_PREFERENCES)[number];
 

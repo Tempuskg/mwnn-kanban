@@ -130,6 +130,12 @@
         "category": "MWNN Kanban"
       },
       {
+        "command": "mwnn-kanban.openAgentCliModels",
+        "title": "Agent CLI Models",
+        "category": "MWNN Kanban",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "mwnn-kanban.resetBoard",
         "title": "Reset Board",
         "category": "MWNN Kanban"
@@ -153,11 +159,6 @@
       {
         "command": "mwnn-kanban.showProLicenseStatus",
         "title": "Show Pro License Status",
-        "category": "MWNN Kanban Pro"
-      },
-      {
-        "command": "mwnn-kanban-pro.hello",
-        "title": "Hello from MWNN Kanban Pro",
         "category": "MWNN Kanban Pro"
       },
       {
@@ -283,7 +284,8 @@
             "copilot",
             "codex",
             "claude-code",
-            "cursor"
+            "cursor",
+            "orchestrator"
           ],
           "enumDescriptions": [
             "Ask whether to use a VS Code chat extension or a local agent CLI.",
@@ -291,7 +293,8 @@
             "Run the loop with GitHub Copilot CLI.",
             "Run the loop with OpenAI Codex CLI.",
             "Run the loop with Anthropic Claude Code CLI.",
-            "Run the loop with Cursor Agent CLI."
+            "Run the loop with Cursor Agent CLI.",
+            "Usage Orchestrator: before every dispatch, choose among the installed agent CLIs by their own reported remaining usage - soonest reset first, then CLIs whose usage is unknown (drained until they stop accepting work), then most remaining usage."
           ],
           "default": "prompt",
           "description": "AI execution channel or provider used by the AI board loop.",
@@ -475,23 +478,127 @@
         "mwnn-kanban.agentCliStageModels": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Model name to use for each AI board loop stage, overriding `#mwnn-kanban.agentCliModels#` for that stage only. Useful when the short reasoning stages do not need the model the workspace runs implementation on. The model a card names for the active CLI still wins, then this setting, then the first entry in `#mwnn-kanban.agentCliModels#` for the active CLI, then whatever model that CLI runs by default. Model names are CLI-specific and are passed through unchanged, so spell each one the way the CLI you run accepts it. Leave a stage out to fall back to the workspace default; leave the whole setting empty for unchanged behavior.",
+          "markdownDescription": "Independent model overrides per AI loop stage and CLI, for example `implementation: { codex: \"custom-name\", \"claude-code\": \"another-name\" }`. Each stage accepts a provider map with `copilot`, `codex`, `claude-code`, and `cursor` keys. Names are optional, free-form, and CLI-specific. Precedence for the CLI actually selected: card override, stage/CLI override, provider default, CLI default. Model and thinking level are independent. Legacy stage strings remain readable and apply to every CLI; editing one converts only that scope to provider entries and preserves unedited CLIs. Remove a provider key to restore inherited stage settings and defaults. The Agent CLI Models panel and Manage Agent CLI Models and Thinking Levels command edit User or Workspace scope. Unsupported thinking levels are reported as not applied without stopping a run.",
           "properties": {
             "definition": {
-              "type": "string",
-              "description": "Model for the definition stage, which fills in a card's Description and acceptance criteria. A short reasoning task that does not edit the workspace."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Model for the definition stage, which fills in a card's Description and acceptance criteria. A short reasoning task that does not edit the workspace. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for copilot at definition."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for codex at definition."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for claude-code at definition."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for cursor at definition."
+                }
+              },
+              "additionalProperties": false
             },
             "triage": {
-              "type": "string",
-              "description": "Model for the triage stage, which decides whether a card is doable as written. A short reasoning task that does not edit the workspace."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Model for the triage stage, which decides whether a card is doable as written. A short reasoning task that does not edit the workspace. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for copilot at triage."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for codex at triage."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for claude-code at triage."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for cursor at triage."
+                }
+              },
+              "additionalProperties": false
             },
             "implementation": {
-              "type": "string",
-              "description": "Model for the implementation stage, which does the card's actual work in the workspace. Also used by the Run Card with AI command."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Model for the implementation stage, which does the card's actual work in the workspace. Also used by the Run Card with AI command. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for copilot at implementation."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for codex at implementation."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for claude-code at implementation."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for cursor at implementation."
+                }
+              },
+              "additionalProperties": false
             },
             "verification": {
-              "type": "string",
-              "description": "Model for the verification stage, which checks a finished card's acceptance evidence against the workspace."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Model for the verification stage, which checks a finished card's acceptance evidence against the workspace. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for copilot at verification."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for codex at verification."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for claude-code at verification."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for cursor at verification."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false,
@@ -549,23 +656,127 @@
         "mwnn-kanban.agentCliStageThinkingLevels": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Thinking level to use for each AI board loop stage, overriding `#mwnn-kanban.agentCliThinkingLevels#` for that stage only. Useful when the short reasoning stages need less effort than the stage that does the work. The level a card names for the active CLI still wins, then this setting, then `#mwnn-kanban.agentCliThinkingLevels#` for the active CLI, then that CLI's own default effort. Levels are CLI-specific and are passed through unchanged. Leave a stage out to fall back to the workspace default; leave the whole setting empty for unchanged behavior.",
+          "markdownDescription": "Independent thinking level overrides per AI loop stage and CLI, for example `implementation: { codex: \"custom-name\", \"claude-code\": \"another-name\" }`. Each stage accepts a provider map with `copilot`, `codex`, `claude-code`, and `cursor` keys. Names are optional, free-form, and CLI-specific. Precedence for the CLI actually selected: card override, stage/CLI override, provider default, CLI default. Model and thinking level are independent. Legacy stage strings remain readable and apply to every CLI; editing one converts only that scope to provider entries and preserves unedited CLIs. Remove a provider key to restore inherited stage settings and defaults. The Agent CLI Models panel and Manage Agent CLI Models and Thinking Levels command edit User or Workspace scope. Unsupported thinking levels are reported as not applied without stopping a run.",
           "properties": {
             "definition": {
-              "type": "string",
-              "description": "Thinking level for the definition stage, which fills in a card's Description and acceptance criteria. A short reasoning task that does not edit the workspace."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Thinking level for the definition stage, which fills in a card's Description and acceptance criteria. A short reasoning task that does not edit the workspace. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for copilot at definition."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for codex at definition."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for claude-code at definition."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for cursor at definition."
+                }
+              },
+              "additionalProperties": false
             },
             "triage": {
-              "type": "string",
-              "description": "Thinking level for the triage stage, which decides whether a card is doable as written. A short reasoning task that does not edit the workspace."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Thinking level for the triage stage, which decides whether a card is doable as written. A short reasoning task that does not edit the workspace. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for copilot at triage."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for codex at triage."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for claude-code at triage."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for cursor at triage."
+                }
+              },
+              "additionalProperties": false
             },
             "implementation": {
-              "type": "string",
-              "description": "Thinking level for the implementation stage, which does the card's actual work in the workspace. Also used by the Run Card with AI command."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Thinking level for the implementation stage, which does the card's actual work in the workspace. Also used by the Run Card with AI command. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for copilot at implementation."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for codex at implementation."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for claude-code at implementation."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for cursor at implementation."
+                }
+              },
+              "additionalProperties": false
             },
             "verification": {
-              "type": "string",
-              "description": "Thinking level for the verification stage, which checks a finished card's acceptance evidence against the workspace."
+              "type": [
+                "object",
+                "string"
+              ],
+              "description": "Thinking level for the verification stage, which checks a finished card's acceptance evidence against the workspace. A legacy string applies to every CLI; prefer a map of CLI-specific names.",
+              "properties": {
+                "copilot": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for copilot at verification."
+                },
+                "codex": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for codex at verification."
+                },
+                "claude-code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for claude-code at verification."
+                },
+                "cursor": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for cursor at verification."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false,
@@ -786,6 +997,9 @@
           "command": "mwnn-kanban.manageAgentCliModels"
         },
         {
+          "command": "mwnn-kanban.openAgentCliModels"
+        },
+        {
           "command": "mwnn-kanban.resetBoard"
         },
         {
@@ -800,10 +1014,6 @@
         },
         {
           "command": "mwnn-kanban.showProLicenseStatus"
-        },
-        {
-          "command": "mwnn-kanban-pro.hello",
-          "when": "mwnn-kanban.hasProLicense"
         },
         {
           "command": "mwnn-kanban-pro.openPortfolio",
@@ -855,6 +1065,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "mwnn-kanban.openAgentCliModels",
+          "when": "view == mwnn-kanban.sidebar",
+          "group": "navigation@1"
+        },
         {
           "command": "mwnn-kanban-pro.openPortfolio",
           "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",

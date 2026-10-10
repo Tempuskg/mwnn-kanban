@@ -5,6 +5,20 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Agent CLI Models** panel: use the gear in the MWNN sidebar to edit ordered model lists, thinking levels, and per-stage/per-CLI AI-loop overrides in Workspace or User settings. Inherited values are shown separately, edits affect only the selected scope, and settings changes refresh the panel and open board pickers. The existing quick-pick manager also edits stage/CLI overrides. Legacy shared stage strings remain readable; conversion preserves the unedited CLIs, model and effort resolve independently after provider selection, and clearing restores scope inheritance.
+- **Start interview** for any defined Human card: from the card's actions or details, open an interactive AI chat (Copilot, Codex or Claude Code) that asks one question at a time and records each answer, with its source and date, in the card and its linked facts. Starting again resumes from the saved answers. The card stays assigned to Human, the AI loop never picks it up, and starting a chat never checks acceptance criteria or completes the card.
+- Injected CLI portfolio-loop capability for Pro: unopened-board execution shares the public card lifecycle, provider/model rules, credit fallback and dispatch accounting, with exclusive loop ownership in the current window.
+- **Usage Orchestrator**: a new `orchestrator` value for `mwnn-kanban.aiLoopProvider`, also offered in the AI loop's local-CLI picker and the `Run Card with AI` picker. Before each dispatch it reads every installed CLI's remaining usage and reset time from that CLI and picks one. It spends the allowance that resets soonest first, then drains CLIs whose usage is unknown, then picks the CLI with the most usage left. In the AI loop, a stage that runs out of credits is retried on the next-ranked CLI. Codex usage is read through `codex app-server`; Claude Code and Copilot usage sources are pending, and Cursor's usage is always unknown.
+
+### Changed
+- During an orchestrated AI Loop, the selected CLI now uses that stage's effective user/workspace model preference ahead of the card's preferred model. If no stage model is configured for that CLI, it falls back to the CLI's workspace model default, then the CLI's own default.
+
+### Fixed
+- Handing a card to a chat provider that only supports the clipboard now copies the prompt and opens that chat. Previously it reported success without doing either.
+- The board no longer shows a CLI as running when the Usage Orchestrator reports model metadata after that process has exited.
+- Jev and the defining agent no longer recommend a model the CLI has refused for your account. A CLI's model list can include models your plan cannot use; when a dispatch is refused, that model is remembered and left out of run-settings recommendations for that CLI. The record clears when the model later completes a run, or after 30 days.
+
 ## [0.0.15] - 2026-10-04
 
 ### Added

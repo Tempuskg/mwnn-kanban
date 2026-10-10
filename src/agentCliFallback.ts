@@ -62,6 +62,12 @@ import {
   type AgentCliTarget,
   type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
+import {
+  formatOrchestratorChoiceEntry,
+  formatOrchestratorRanking,
+  type AgentCliOrchestratorDecision,
+  type AgentCliUsageOrchestrator,
+} from './agentCliOrchestrator';
 import type { BoardState, Card } from './types';
 import { cardPreferredModelFor } from './utils';
 
@@ -203,6 +209,8 @@ export interface AgentCliFallbackDeps {
    * caller as-is, with no second dispatch.
    */
   readonly escalation?: AgentCliEscalationSettings;
+  /** Project-qualified identity for per-card escalation history. */
+  readonly cardKey?: (cardId: string) => string;
   readonly cwd: string;
   readonly store: AgentCliHandoffStore;
   /** Aborted when the loop is cancelled; also terminates the active process. */
@@ -225,6 +233,8 @@ export interface AgentCliFallbackDeps {
    * ever leaving a card half-dispatched. Omitting it launches unconditionally,
    * exactly as before.
    */
+  /** Pause between process attempts, including fallback and escalation retries. */
+  readonly waitBeforeDispatch?: () => Promise<void>;
   readonly beforeDispatch?: (intent: AgentCliDispatchIntent) => AgentCliDispatchDecision;
   /**
    * Called once per launched process after it has fully ended, carrying the
@@ -236,6 +246,17 @@ export interface AgentCliFallbackDeps {
     target: AgentCliTarget,
     request: AgentCliFallbackRequest,
   ) => AgentCliProcessObserver | undefined;
+  /**
+   * Usage Orchestrator for this run. When present it chooses the CLI before
+   * every stage (so one run can use several CLIs) and chooses the replacement
+   * after a credit exhaustion in place of `settings.providers`, which it then
+   * ignores; the retry is always on, with the same one-handoff, process-ended,
+   * latest-card, and no-advance-on-switch guarantees. Omitted, nothing about
+   * CLI choice changes and no usage is probed.
+   */
+  readonly orchestrator?: AgentCliUsageOrchestrator;
+  /** The full orchestrator ranking (with skipped CLIs) for each choice it makes. */
+  readonly onRanking?: (lines: readonly string[]) => void;
   /** Test seams; default to the shared agentCliHandoff implementations. */
   readonly resolveTarget?: (
     provider: AgentCliProviderId,
@@ -289,12 +310,44 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
 
   const cancelled = (): boolean => deps.signal.aborted || deps.isCancelled?.() === true;
 
+  /** Ask the orchestrator for a CLI and log the full ranking it produced. */
+  const orchestrate = async (
+    orchestrator: AgentCliUsageOrchestrator,
+    kind: AgentCliHandoffKind,
+    card: Card,
+  ): Promise<AgentCliOrchestratorDecision> => {
+    const decision = await orchestrator.choose();
+    deps.onRanking?.(formatOrchestratorRanking(decision.ranking, kind, card.title));
+    return decision;
+  };
+
+  /** Pause the run because the orchestrator has no eligible CLI left. */
+  const pauseOrchestrated = async (
+    card: Card,
+    kind: AgentCliHandoffKind,
+    reason: string,
+  ): Promise<void> => {
+    pausedReason = reason;
+    await appendIfCardExists(
+      deps.store,
+      card.id,
+      [
+        `### ${now().toISOString()} - AI loop paused: no AI CLI with usage left`,
+        reason,
+        `The ${STAGE_LABELS[kind]} stage was not completed and the card was not advanced.`,
+      ].join('\n'),
+    );
+    deps.onProgress?.(reason);
+    deps.onPause?.(reason);
+  };
+
   /** Per card, then per provider: ladder rungs are provider-specific names. */
   const triedFor = (cardId: string, provider: AgentCliProviderId): Set<string> => {
-    let byProvider = triedModels.get(cardId);
+    const key = deps.cardKey?.(cardId) ?? cardId;
+    let byProvider = triedModels.get(key);
     if (!byProvider) {
       byProvider = new Map<AgentCliProviderId, Set<string>>();
-      triedModels.set(cardId, byProvider);
+      triedModels.set(key, byProvider);
     }
     let models = byProvider.get(provider);
     if (!models) {
@@ -433,6 +486,21 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
        * provider, because a name spelled for one CLI means nothing to another.
        */
       let escalatedModel: string | undefined;
+      if (deps.orchestrator && !cancelled()) {
+        // Re-ranked before every stage: the allowances move between stages.
+        const decision = await orchestrate(deps.orchestrator, request.kind, card);
+        if (decision.kind === 'none') {
+          await pauseOrchestrated(card, request.kind, decision.reason);
+          return { kind: 'paused', reason: decision.reason };
+        }
+        active = decision.target;
+        await appendIfCardExists(
+          deps.store,
+          card.id,
+          formatOrchestratorChoiceEntry(decision.chosen, request.kind, now()),
+        );
+        card = findCard(await deps.store.reload(), card.id) ?? card;
+      }
       // Bounded by construction: the active CLI plus each configured provider
       // at most once, so exhaustion can never cycle indefinitely.
       // providers: the active CLI plus each configured fallback, at most once.
@@ -445,8 +513,12 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
           escalation.enabled ? escalationLadderFor(escalation.ladders, provider).length : 0,
         ),
       );
-      const maxAttempts = (deps.settings.providers.length + 1) * (maxLadder + 1);
+      const providerAttempts = deps.orchestrator
+        ? AGENT_CLI_PROVIDER_IDS.length
+        : deps.settings.providers.length + 1;
+      const maxAttempts = providerAttempts * (maxLadder + 1);
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        await deps.waitBeforeDispatch?.();
         if (cancelled()) {
           return {
             kind: 'ran',
@@ -496,7 +568,12 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
               : {}),
             ...(escalatedModel !== undefined ? { escalatedModel } : {}),
           },
-          observer ? { observer } : {},
+          {
+            ...(observer ? { observer } : {}),
+            ...(deps.orchestrator
+              ? { orchestrated: true, ignoreCardPreferredModel: true }
+              : {}),
+          },
         );
         // Whatever this attempt actually ran on is spent for this card, whether
         // it came from the ladder, the card, a stage rule, or the workspace
@@ -528,15 +605,31 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         }
 
         exhausted.add(target.provider);
-        if (!deps.settings.enabled || cancelled()) {
+        deps.orchestrator?.markExhausted(target.provider);
+        if ((!deps.settings.enabled && !deps.orchestrator) || cancelled()) {
           // Disabled fallback (or a loop cancelled while the failure was being
           // handled) keeps the existing single-CLI outcome.
           return { kind: 'ran', target, result, switches, escalations, exhaustedWithoutFallback: false };
         }
 
-        const replacement = await selectReplacement();
+        let replacement: AgentCliTarget | undefined;
+        let orchestrated: AgentCliOrchestratorDecision | undefined;
+        if (deps.orchestrator) {
+          orchestrated = await orchestrate(deps.orchestrator, request.kind, card);
+          replacement = orchestrated.kind === 'chosen' ? orchestrated.target : undefined;
+        } else {
+          replacement = await selectReplacement();
+        }
         if (cancelled()) {
           return { kind: 'ran', target, result, switches, escalations, exhaustedWithoutFallback: false };
+        }
+        if (orchestrated?.kind === 'none') {
+          await pauseOrchestrated(
+            card,
+            request.kind,
+            `${target.label} ran out of credits or hit its usage limit (${exhaustion.detail}). ${orchestrated.reason}`,
+          );
+          return { kind: 'ran', target, result, switches, escalations, exhaustedWithoutFallback: true };
         }
         if (!replacement) {
           const reason = formatNoFallbackReason(target, exhaustion.detail, [...exhausted]);
@@ -556,7 +649,7 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         // CLI is never carried over and the retry keeps its stage's rule.
         const toModel = resolveAgentCliModel(
           replacement.provider,
-          cardPreferredModelFor(card, replacement.provider),
+          deps.orchestrator ? undefined : cardPreferredModelFor(card, replacement.provider),
           deps.modelCatalog,
           {
             stage: request.kind,
@@ -573,6 +666,13 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         };
         switches.push(record);
         await appendIfCardExists(deps.store, card.id, formatAgentCliSwitchEntry(record));
+        if (orchestrated?.kind === 'chosen') {
+          await appendIfCardExists(
+            deps.store,
+            card.id,
+            formatOrchestratorChoiceEntry(orchestrated.chosen, request.kind, now()),
+          );
+        }
         active = replacement;
         deps.onSwitch?.(record);
         deps.onProgress?.(

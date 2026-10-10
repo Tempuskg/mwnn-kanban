@@ -7,6 +7,94 @@
  */
 
 import { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId, type AgentCliProviderId } from './agentCliProviders';
+import { isAgentCliHandoffKind, type AgentCliHandoffKind } from './agentCliStages';
+
+/** Protocol for the settings editor, separate from board mutations. */
+export type AgentCliSettingsScope = 'workspace' | 'user';
+export type AgentCliPanelList = 'models' | 'thinkingLevels';
+export type AgentCliSettingsPanelMessage =
+  | { readonly type: 'settingsReady' }
+  | { readonly type: 'settingsScope'; readonly scope: AgentCliSettingsScope }
+  | {
+      readonly type: 'settingsListEdit';
+      readonly scope: AgentCliSettingsScope;
+      readonly provider: AgentCliProviderId;
+      readonly list: AgentCliPanelList;
+      readonly action: 'add' | 'remove' | 'makeDefault' | 'clear';
+      readonly name: string;
+    }
+  | {
+      readonly type: 'settingsStageEdit';
+      readonly provider: AgentCliProviderId;
+      readonly scope: AgentCliSettingsScope;
+      readonly list: AgentCliPanelList;
+      readonly stage: AgentCliHandoffKind;
+      readonly action: 'set' | 'remove';
+      readonly name: string;
+    };
+
+export interface AgentCliSettingsPanelProvider {
+  readonly id: AgentCliProviderId;
+  readonly label: string;
+  readonly models: readonly string[];
+  readonly thinkingLevels: readonly string[];
+  readonly inheritedModels: readonly string[];
+  readonly inheritedThinkingLevels: readonly string[];
+  readonly suggestedModels: readonly string[];
+  readonly suggestedThinkingLevels: readonly string[];
+  readonly thinkingApplied: boolean;
+}
+
+export interface AgentCliSettingsPanelStage {
+  readonly provider: AgentCliProviderId;
+  readonly suggestedModels: readonly string[];
+  readonly suggestedThinkingLevels: readonly string[];
+  readonly id: AgentCliHandoffKind;
+  readonly model: string | null;
+  readonly thinkingLevel: string | null;
+  readonly inheritedModel: string | null;
+  readonly inheritedThinkingLevel: string | null;
+}
+
+export interface AgentCliSettingsPanelState {
+  readonly type: 'settingsState';
+  readonly scope: AgentCliSettingsScope;
+  readonly workspaceAvailable: boolean;
+  readonly inheritedScope: 'User' | 'Extension default';
+  readonly providers: readonly AgentCliSettingsPanelProvider[];
+  readonly stages: readonly AgentCliSettingsPanelStage[];
+  readonly error: string | null;
+}
+
+/** Treat incoming webview data as untrusted, including the scope and operation. */
+export function isAgentCliSettingsPanelMessage(value: unknown): value is AgentCliSettingsPanelMessage {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const message = value as Record<string, unknown>;
+  if (message['type'] === 'settingsReady') {
+    return true;
+  }
+  if (message['scope'] !== 'workspace' && message['scope'] !== 'user') {
+    return false;
+  }
+  if (message['type'] === 'settingsScope') {
+    return true;
+  }
+  if ((message['list'] !== 'models' && message['list'] !== 'thinkingLevels') || typeof message['name'] !== 'string') {
+    return false;
+  }
+  if (message['type'] === 'settingsListEdit') {
+    return isAgentCliProviderId(message['provider']) &&
+      typeof message['action'] === 'string' &&
+      ['add', 'remove', 'makeDefault', 'clear'].includes(message['action']);
+  }
+  if (message['type'] === 'settingsStageEdit') {
+    return isAgentCliHandoffKind(message['stage']) && isAgentCliProviderId(message['provider']) &&
+      (message['action'] === 'set' || message['action'] === 'remove');
+  }
+  return false;
+}
 
 export const BOARD_STATE_VERSION = 2 as const;
 
@@ -136,6 +224,8 @@ export type WebviewToHostMessage =
       readonly thinkingLevel?: string;
     }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
+  /** Start or resume a Human card's AI-guided interview. */
+  | { readonly type: 'startCardInterview'; readonly cardId: string }
   | { readonly type: 'fillCardDefinition'; readonly cardId: string }
   | { readonly type: 'offerCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
@@ -336,6 +426,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         (value['thinkingLevel'] === undefined || typeof value['thinkingLevel'] === 'string')
       );
     case 'runCardWithAI':
+    case 'startCardInterview':
       return typeof value['cardId'] === 'string';
     case 'fillCardDefinition':
     case 'offerCardDefinition':
@@ -353,6 +444,14 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     default:
       return false;
   }
+}
+
+/**
+ * Whether a card can run as an AI-guided interview: every Human-assigned card
+ * can. AI and unassigned cards never can.
+ */
+export function isInterviewCard(card: Pick<Card, 'assignee'>): boolean {
+  return card.assignee?.kind === 'human';
 }
 
 export function isAssignee(value: unknown): value is Assignee {
@@ -398,6 +497,7 @@ function isCard(value: unknown): value is Card {
     (candidate['assignee'] === undefined || isAssignee(candidate['assignee'])) &&
     (candidate['dependsOn'] === undefined ||
       (Array.isArray(candidate['dependsOn']) && candidate['dependsOn'].every((id) => typeof id === 'string'))) &&
+    (candidate['interview'] === undefined || candidate['interview'] === true) &&
     (candidate['preferredModels'] === undefined || isCardPreferredModels(candidate['preferredModels'])) &&
     (candidate['thinkingLevels'] === undefined || isCardThinkingLevels(candidate['thinkingLevels']))
   );
