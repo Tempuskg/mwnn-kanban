@@ -5,6 +5,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-10
+
 ### Added
 - **Agent CLI Models** panel: use the gear in the MWNN sidebar to edit ordered model lists, thinking levels, and per-stage/per-CLI AI-loop overrides in Workspace or User settings. Inherited values are shown separately, edits affect only the selected scope, and settings changes refresh the panel and open board pickers. The existing quick-pick manager also edits stage/CLI overrides. Legacy shared stage strings remain readable; conversion preserves the unedited CLIs, model and effort resolve independently after provider selection, and clearing restores scope inheritance.
 - **Start interview** for any defined Human card: from the card's actions or details, open an interactive AI chat (Copilot, Codex or Claude Code) that asks one question at a time and records each answer, with its source and date, in the card and its linked facts. Starting again resumes from the saved answers. The card stays assigned to Human, the AI loop never picks it up, and starting a chat never checks acceptance criteria or completes the card.
