@@ -611,6 +611,10 @@ body {
   outline: none;
 }
 
+.card-action-stop {
+  color: var(--vscode-errorForeground);
+}
+
 .card-delete:hover,
 .card-delete:focus-visible {
   color: var(--vscode-errorForeground);

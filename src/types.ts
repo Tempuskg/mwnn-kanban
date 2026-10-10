@@ -224,6 +224,8 @@ export type WebviewToHostMessage =
       readonly thinkingLevel?: string;
     }
   | { readonly type: 'runCardWithAI'; readonly cardId: string }
+  /** Abort only this card's single-card CLI run; other runs and the AI loop are untouched. */
+  | { readonly type: 'stopCardRun'; readonly cardId: string }
   /** Start or resume a Human card's AI-guided interview. */
   | { readonly type: 'startCardInterview'; readonly cardId: string }
   | { readonly type: 'fillCardDefinition'; readonly cardId: string }
@@ -253,6 +255,12 @@ export interface CliRunStatus {
   readonly providerLabel: string;
   readonly running: boolean;
   readonly statusLine?: string;
+  /**
+   * True when the run is a single-card run the board's Stop button can abort.
+   * AI loop dispatches also badge their card but are stopped from the loop
+   * controls, so they omit this.
+   */
+  readonly stoppable?: boolean;
 }
 
 /**
@@ -426,6 +434,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         (value['thinkingLevel'] === undefined || typeof value['thinkingLevel'] === 'string')
       );
     case 'runCardWithAI':
+    case 'stopCardRun':
     case 'startCardInterview':
       return typeof value['cardId'] === 'string';
     case 'fillCardDefinition':

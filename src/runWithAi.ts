@@ -151,11 +151,13 @@ export interface RunCardWithAgentCliDeps {
   /**
    * Wraps the synchronous CLI run in progress UI; aborting the provided
    * signal must stop the active CLI process. `reportProgress` updates the
-   * progress message with live CLI output.
+   * progress message with live CLI output. `cardId` names the card the run
+   * works on, so a per-card stop can abort just that run.
    */
   readonly runWithProgress: <T>(
     title: string,
     task: (signal: AbortSignal, reportProgress: (message: string) => void) => Promise<T>,
+    cardId?: string,
   ) => Promise<T>;
   readonly showInformation: (message: string) => void;
   readonly showWarning: (message: string) => void;
@@ -213,6 +215,7 @@ export async function runCardWithAgentCli(
     const decision = await deps.runWithProgress(
       `Usage Orchestrator: reading agent CLI usage for "${request.card.title}"`,
       () => orchestrator.choose(),
+      request.card.id,
     );
     deps.onRanking?.(formatOrchestratorRanking(decision.ranking, request.kind, request.card.title));
     if (decision.kind === 'none') {
@@ -271,6 +274,7 @@ export async function runCardWithAgentCli(
         },
       );
     },
+    request.card.id,
   );
   // Reported separately from the run's own outcome: the card still ran, just
   // not on the requested model, and that must not pass unnoticed.

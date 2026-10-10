@@ -11,7 +11,6 @@ import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { copyCardPathToClipboard } from './cardPath';
 import {
-  AGENT_CLI_MODELS_SETTING,
   agentCliModelSuggestions,
   readAgentCliModelCatalog,
   readAgentCliThinkingLevelSuggestions,
@@ -48,6 +47,8 @@ export interface BoardPanelDeps {
   readonly extensionUri: vscode.Uri;
   readonly confirmDeletion: () => boolean;
   readonly runCardWithAI: (cardId?: string) => Promise<void>;
+  /** Aborts only this card's single-card CLI run, if one is live. */
+  readonly stopCardRun: (cardId: string) => void;
   /** Starts or resumes a Human card's AI-guided interview in a chat. */
   readonly startCardInterview: (cardId: string) => Promise<void>;
   readonly fillCardDefinition: (cardId: string) => Promise<void>;
@@ -292,9 +293,10 @@ export class BoardPanel {
         break;
       }
       case 'openModelSettings':
-        // The webview cannot reach settings itself; its model picker offers
-        // this when the selected CLI has no configured suggestions.
-        await vscode.commands.executeCommand('workbench.action.openSettings', AGENT_CLI_MODELS_SETTING);
+        // The webview cannot run commands itself; its model picker offers
+        // this when the selected CLI has no configured suggestions. Route to
+        // the same Agent CLI Models panel the sidebar gear opens.
+        await vscode.commands.executeCommand('mwnn-kanban.openAgentCliModels');
         break;
       case 'addCard':
         await this.deps.store.addCard(message.columnId, message.title);
@@ -412,6 +414,9 @@ export class BoardPanel {
         break;
       case 'runCardWithAI':
         await this.deps.runCardWithAI(message.cardId);
+        break;
+      case 'stopCardRun':
+        this.deps.stopCardRun(message.cardId);
         break;
       case 'startCardInterview':
         await this.deps.startCardInterview(message.cardId);

@@ -182,8 +182,13 @@ suite('card interview prompt', () => {
     assert.match(prompt, /needs human verification or sign-off, leave it for that person/);
     assert.match(prompt, /Starting this chat is not evidence of completion/);
     assert.match(prompt, /do not change the card's assignee/);
-    // The implementation hand-off's terminal markers are not part of an interview.
-    assert.doesNotMatch(prompt, /STATUS: DONE/);
+  });
+
+  test('a fully met interview records STATUS: DONE and supersedes a resolved blocked marker', () => {
+    assert.match(prompt, /When every acceptance criterion is checked and no unresolved exception remains, end the closing Activity summary with `STATUS: DONE` on its own line/);
+    assert.match(prompt, /reword that line into a plain note that no longer starts with `STATUS:`/);
+    assert.match(prompt, /While any criterion stays open, add no `STATUS: DONE` line/);
+    assert.match(prompt, /Writing the status never moves the card/);
   });
 
   test('the start entry is not completion evidence', () => {

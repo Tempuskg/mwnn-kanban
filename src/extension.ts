@@ -132,6 +132,7 @@ import {
   type LoopSummary,
 } from './boardLoop';
 import { BoardPanel } from './boardPanel';
+import { CardCliRunRegistry } from './cardCliRuns';
 import {
   BUNDLED_AGENT_CLI_MODELS,
   BUNDLED_AGENT_CLI_THINKING_LEVELS,
@@ -499,6 +500,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     kind: AgentCliHandoffKind,
     providerLabel: string,
     reportProgress: (message: string) => void,
+    stoppable = false,
   ): AgentCliProcessObserver => {
     let processRunning = false;
     const postStatus = (running: boolean, statusLine?: string): void => {
@@ -507,6 +509,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         providerLabel,
         running,
         ...(statusLine !== undefined ? { statusLine } : {}),
+        ...(running && stoppable ? { stoppable: true } : {}),
       });
     };
     const feed = createCliOutputFeed({
@@ -573,7 +576,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     store,
     runWithProgress: runAgentCliWithStatusBarProgress,
     createProcessObserver: (runContext, reportProgress) =>
-      createCliRunObserver(runContext.card, runContext.kind, runContext.providerLabel, reportProgress),
+      // Single-card runs register in `activeCardCliRuns`, so the board can offer a per-card Stop.
+      createCliRunObserver(runContext.card, runContext.kind, runContext.providerLabel, reportProgress, true),
     showInformation: showCliInformation,
     showWarning: showCliWarning,
     refreshBoard: () => BoardPanel.postStateIfOpen(),
@@ -1359,6 +1363,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     extensionUri: context.extensionUri,
     confirmDeletion,
     runCardWithAI: runCardWithAISelection,
+    stopCardRun: stopCardCliRun,
     startCardInterview: startCardInterviewSelection,
     fillCardDefinition: fillCardDefinitionWithAI,
     zoomMemento: context.workspaceState,
@@ -2133,10 +2138,10 @@ async function pickRunWithAiProvider(
 
 /**
  * Single-card agent-CLI runs currently in flight, so the Stop Card AI Run
- * command can terminate their child processes. Status-bar progress has no
- * cancel control, so stopping routes through the command instead.
+ * command (all runs) and the board's per-card Stop button (one card) can
+ * terminate their child processes. Status-bar progress has no cancel control.
  */
-const activeCardCliRuns = new Set<AbortController>();
+const activeCardCliRuns = new CardCliRunRegistry();
 
 /**
  * Runs a synchronous agent CLI task behind status-bar progress — the same
@@ -2146,16 +2151,16 @@ const activeCardCliRuns = new Set<AbortController>();
 function runAgentCliWithStatusBarProgress<T>(
   title: string,
   task: (signal: AbortSignal, reportProgress: (message: string) => void) => Promise<T>,
+  cardId?: string,
 ): Promise<T> {
   return Promise.resolve(vscode.window.withProgress(
     createStatusBarProgressOptions(vscode.ProgressLocation, title),
     async (progress) => {
-      const abortController = new AbortController();
-      activeCardCliRuns.add(abortController);
+      const run = activeCardCliRuns.start(cardId);
       try {
-        return await task(abortController.signal, (message) => progress.report({ message }));
+        return await task(run.signal, (message) => progress.report({ message }));
       } finally {
-        activeCardCliRuns.delete(abortController);
+        run.finish();
       }
     },
   ));
@@ -2166,8 +2171,13 @@ function stopCardCliRuns(): void {
     void vscode.window.showInformationMessage('No card AI run is in progress.');
     return;
   }
-  for (const run of activeCardCliRuns) {
-    run.abort();
+  activeCardCliRuns.abortAll();
+}
+
+/** The board's per-card Stop button: aborts only that card's single-card run. */
+function stopCardCliRun(cardId: string): void {
+  if (activeCardCliRuns.abortCard(cardId) === 0) {
+    void vscode.window.showInformationMessage('No AI run is in progress for this card.');
   }
 }
 

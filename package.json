@@ -192,7 +192,7 @@
       },
       {
         "command": "mwnn-kanban-pro.openTimesheet",
-        "title": "Correct Timesheet",
+        "title": "Open Timesheet",
         "category": "MWNN Kanban Pro",
         "icon": "$(table)"
       },
@@ -223,7 +223,8 @@
       {
         "command": "mwnn-kanban-pro.stopFocusSession",
         "title": "Stop Focus Session",
-        "category": "MWNN Kanban Pro"
+        "category": "MWNN Kanban Pro",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "mwnn-kanban-pro.setAllocationTargets",
@@ -1071,6 +1072,31 @@
           "group": "navigation@1"
         },
         {
+          "command": "mwnn-kanban.upgradeToPro",
+          "when": "view == mwnn-kanban.sidebar && !mwnn-kanban.hasProLicense",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mwnn-kanban-pro.showAiUsage",
+          "when": "view == mwnn-kanban.sidebar && mwnn-kanban.hasProLicense",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mwnn-kanban.showProLicenseStatus",
+          "when": "view == mwnn-kanban.sidebar",
+          "group": "pro@1"
+        },
+        {
+          "command": "mwnn-kanban.enterProLicenseKey",
+          "when": "view == mwnn-kanban.sidebar && !mwnn-kanban.hasProLicense",
+          "group": "pro@2"
+        },
+        {
+          "command": "mwnn-kanban-pro.stopFocusSession",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense && mwnn-kanban-pro.focusSessionActive",
+          "group": "navigation@0"
+        },
+        {
           "command": "mwnn-kanban-pro.openPortfolio",
           "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
           "group": "navigation@1"
@@ -1079,6 +1105,31 @@
           "command": "mwnn-kanban-pro.rescanProjects",
           "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
           "group": "navigation@2"
+        },
+        {
+          "command": "mwnn-kanban-pro.openTimesheet",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mwnn-kanban-pro.correctLastSession",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "timesheet@1"
+        },
+        {
+          "command": "mwnn-kanban-pro.exportTimesheet",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "timesheet@2"
+        },
+        {
+          "command": "mwnn-kanban-pro.exportReviewDigest",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "reports@1"
+        },
+        {
+          "command": "mwnn-kanban-pro.setAllocationTargets",
+          "when": "view == mwnn-kanban.myWork && mwnn-kanban.hasProLicense",
+          "group": "settings@1"
         }
       ],
       "view/item/context": [
@@ -1089,12 +1140,12 @@
         },
         {
           "command": "mwnn-kanban-pro.stopTimer",
-          "when": "view == mwnn-kanban.myWork && viewItem == mwnn-kanban.card && mwnn-kanban.hasProLicense",
+          "when": "view == mwnn-kanban.myWork && viewItem == mwnn-kanban.card.timing && mwnn-kanban.hasProLicense",
           "group": "inline@2"
         },
         {
           "command": "mwnn-kanban-pro.startFocusSession",
-          "when": "view == mwnn-kanban.myWork && viewItem == mwnn-kanban.card && mwnn-kanban.hasProLicense",
+          "when": "view == mwnn-kanban.myWork && viewItem =~ /^mwnn-kanban\\.card(\\.|$)/ && mwnn-kanban.hasProLicense",
           "group": "inline@3"
         }
       ]

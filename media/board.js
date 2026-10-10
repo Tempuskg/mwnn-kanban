@@ -358,14 +358,17 @@
   });
 
   /**
-   * @param {{ cardId: string, providerLabel: string, running: boolean, statusLine?: string }} message
+   * @param {{ cardId: string, providerLabel: string, running: boolean, statusLine?: string, stoppable?: boolean }} message
    */
   function applyCliRunStatus(message) {
-    const wasRunning = cliRunStatuses.has(message.cardId);
+    const previous = cliRunStatuses.get(message.cardId);
+    const wasRunning = previous !== undefined;
+    const stoppable = message.stoppable === true;
     if (message.running) {
       cliRunStatuses.set(message.cardId, {
         providerLabel: message.providerLabel,
         statusLine: message.statusLine || '',
+        stoppable,
       });
     } else {
       cliRunStatuses.delete(message.cardId);
@@ -373,7 +376,7 @@
 
     // Status-line updates arrive continuously while a CLI runs; patch the
     // ticker in place and re-render only when the badge appears/disappears.
-    if (message.running && wasRunning) {
+    if (message.running && wasRunning && previous.stoppable === stoppable) {
       const ticker = root.querySelector(
         `.card[data-card-id="${CSS.escape(message.cardId)}"] .card-cli-status`,
       );
@@ -805,6 +808,27 @@
     const actions = document.createElement('div');
     actions.className = 'card-actions';
 
+    // Only single-card runs are stoppable here; AI loop dispatches badge the
+    // card too but are stopped from the loop controls.
+    if (cliRun && cliRun.stoppable && enableRunWithAI) {
+      const stopRun = document.createElement('button');
+      stopRun.className = 'card-action card-action-stop';
+      stopRun.type = 'button';
+      stopRun.appendChild(makeIcon(ICON_STOP));
+      stopRun.title = `Stop ${cliRun.providerLabel} run`;
+      stopRun.setAttribute('aria-label', `Stop the AI run on ${card.title}`);
+      stopRun.draggable = true;
+      stopRun.addEventListener('dragstart', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      stopRun.addEventListener('click', (event) => {
+        event.stopPropagation();
+        post({ type: 'stopCardRun', cardId: card.id });
+      });
+      actions.appendChild(stopRun);
+    }
+
     if (card.assignee?.kind === 'ai' && enableRunWithAI && isCardDefined(card)) {
       const runAi = document.createElement('button');
       runAi.className = 'card-action';
@@ -1073,6 +1097,8 @@
     'M10 3V2a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v1H3v1.5h10V3h-3zM7.5 2.5h1V3h-1v-.5zM4.5 5.5l.6 8.05a1 1 0 0 0 1 .95h3.8a1 1 0 0 0 1-.95l.6-8.05H4.5zm2.25 1.5h1v6h-1V7zm2.5 0h1v6h-1V7z';
   const ICON_RUN_AI =
     'M7.53 1.78a.5.5 0 0 1 .94 0l1.2 3.24a.5.5 0 0 0 .3.3l3.25 1.2a.5.5 0 0 1 0 .94l-3.24 1.2a.5.5 0 0 0-.3.3l-1.2 3.25a.5.5 0 0 1-.94 0l-1.2-3.24a.5.5 0 0 0-.3-.3l-3.25-1.2a.5.5 0 0 1 0-.94l3.24-1.2a.5.5 0 0 0 .3-.3l1.2-3.25zM3 11l.55 1.45L5 13l-1.45.55L3 15l-.55-1.45L1 13l1.45-.55L3 11z';
+
+  const ICON_STOP = 'M4 3h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z';
 
   const ICON_INTERVIEW =
     'M2.5 2h11A1.5 1.5 0 0 1 15 3.5v7a1.5 1.5 0 0 1-1.5 1.5H7l-3.5 3v-3h-1A1.5 1.5 0 0 1 1 10.5v-7A1.5 1.5 0 0 1 2.5 2zm0 1.5v7H5v1.4l1.6-1.4h6.9v-7h-11z';
@@ -1675,7 +1701,7 @@
       if (content.note === 'unconfigured' && copy.offerSettings) {
         // The setting that feeds this list is empty by default, so say so and
         // offer the way to fill it, rather than a menu that looks broken.
-        options.push(makeOption('Configure model lists in settings…', false, () => {
+        options.push(makeOption('Configure models in Agent CLI Models…', false, () => {
           closeModelPicker();
           post({ type: 'openModelSettings' });
         }));
