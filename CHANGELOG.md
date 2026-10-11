@@ -5,6 +5,12 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-11
+
+### Added
+- Card details now show a read-only **Dependent cards** field that lists every card whose `dependsOn` names this card, in any column.
+- Clicking a dependency or dependent card in the card details modal opens that card. If the open card has unsaved edits, you are asked about them first.
+
 ## [1.0.1] - 2026-10-10
 
 ### Fixed

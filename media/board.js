@@ -1252,19 +1252,22 @@
       record.card.preferredModels,
       record.card.thinkingLevels,
     );
-    const dependencyControls = renderDependencyControls(record.card, undefined, (dependencyId, trigger) => {
-      // A dependency deleted by an external edit is not navigable; stay put.
-      if (!findCardRecord(dependencyId)) {
+    // Opens a linked card (dependency or dependent) through the unsaved-changes guard.
+    const openLinkedCard = (linkedId, trigger) => {
+      // A card deleted by an external edit is not navigable; stay put.
+      if (!findCardRecord(linkedId)) {
         return;
       }
       requestLeave(() => {
-        if (findCardRecord(dependencyId)) {
-          openCardDetails(dependencyId);
+        if (findCardRecord(linkedId)) {
+          openCardDetails(linkedId);
         } else {
           closeCardDetails();
         }
       }, trigger);
-    });
+    };
+    const dependencyControls = renderDependencyControls(record.card, undefined, openLinkedCard);
+    const dependentsWrapper = renderDependentsField(record.card, openLinkedCard);
 
     form.append(
       titleInput.wrapper,
@@ -1274,6 +1277,7 @@
       descriptionInput.wrapper,
       acceptanceInput.wrapper,
       dependencyControls.wrapper,
+      dependentsWrapper,
       activityInput.wrapper,
     );
 
@@ -2301,6 +2305,63 @@
     controls.append(select);
     wrapper.append(label, list, controls, help);
     return { wrapper, getDependencies: () => deps.slice() };
+  }
+
+  /**
+   * Read-only "Dependent cards" field: every card on the board whose dependsOn
+   * names this card, in any column. Editing stays on the dependent card itself.
+   * @param {{ id: string }} card
+   * @param {(dependentId: string, trigger: HTMLElement) => void} onOpenDependent
+   *   Opens a dependent card's details when its chip title is activated.
+   */
+  function renderDependentsField(card, onOpenDependent) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('span');
+    label.className = 'card-field-label';
+    label.textContent = 'Dependent cards';
+
+    /** @type {{ id: string, title: string }[]} */
+    const dependents = [];
+    if (board) {
+      for (const column of board.columns) {
+        for (const candidate of column.cards) {
+          if (candidate.id !== card.id && Array.isArray(candidate.dependsOn) && candidate.dependsOn.includes(card.id)) {
+            dependents.push(candidate);
+          }
+        }
+      }
+    }
+
+    const list = document.createElement('div');
+    list.className = 'card-deps-list';
+
+    if (dependents.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'card-deps-empty';
+      empty.textContent = 'No cards depend on this card.';
+      list.appendChild(empty);
+    }
+
+    for (const dependent of dependents) {
+      const chip = document.createElement('span');
+      chip.className = 'card-chip card-chip-dep';
+
+      const text = document.createElement('button');
+      text.type = 'button';
+      text.className = 'card-dep-open';
+      text.textContent = dependent.title;
+      text.title = `Open card "${dependent.title}"`;
+      text.setAttribute('aria-label', `Open card "${dependent.title}"`);
+      text.addEventListener('click', () => onOpenDependent(dependent.id, text));
+
+      chip.appendChild(text);
+      list.appendChild(chip);
+    }
+
+    wrapper.append(label, list);
+    return wrapper;
   }
 
   function renderColumnDetails(column) {
