@@ -492,6 +492,35 @@ body {
   outline: none;
 }
 
+.card-dep-open {
+  padding: 0 2px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Colour + underline alone is too faint on light themes; the background reads in
+   Light, and contrastActiveBorder (set only by high-contrast themes) adds an outline. */
+.card-dep-open:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  outline: 1px dashed var(--vscode-contrastActiveBorder, transparent);
+  outline-offset: 1px;
+}
+
+.card-dep-open:focus-visible {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
 .card-deps-controls {
   display: flex;
   gap: 8px;

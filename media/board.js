@@ -1252,7 +1252,19 @@
       record.card.preferredModels,
       record.card.thinkingLevels,
     );
-    const dependencyControls = renderDependencyControls(record.card);
+    const dependencyControls = renderDependencyControls(record.card, undefined, (dependencyId, trigger) => {
+      // A dependency deleted by an external edit is not navigable; stay put.
+      if (!findCardRecord(dependencyId)) {
+        return;
+      }
+      requestLeave(() => {
+        if (findCardRecord(dependencyId)) {
+          openCardDetails(dependencyId);
+        } else {
+          closeCardDetails();
+        }
+      }, trigger);
+    });
 
     form.append(
       titleInput.wrapper,
@@ -1347,10 +1359,12 @@
       columnSelect: columnSelector.select,
     });
 
-    const requestClose = () => {
+    // Leaves this card's modal, running `next` once any unsaved edits have
+    // been saved or discarded. Cancelling the prompt keeps the edits intact.
+    const requestLeave = (next, focusOnDismiss) => {
       const fields = getCardFormFields();
       if (!cardFormHasChanges(record.card, fields)) {
-        closeCardDetails();
+        next();
         return;
       }
 
@@ -1358,15 +1372,17 @@
         backdrop,
         () => {
           saveCardDetails(record.card, fields);
-          closeCardDetails();
+          next();
         },
         () => {
           fields.activity.value = fields.activityDraft.discard();
-          closeCardDetails();
+          next();
         },
-        () => close.focus(),
+        () => focusOnDismiss.focus(),
       );
     };
+
+    const requestClose = () => requestLeave(closeCardDetails, close);
 
     close.addEventListener('click', requestClose);
     backdrop.addEventListener('click', (event) => {
@@ -2151,8 +2167,11 @@
    * neither depend on itself nor list the same dependency twice. The working
    * set is kept locally and only committed when the card is saved.
    * @param {Card} card
+   * @param {string[]} [initialDeps]
+   * @param {(dependencyId: string, trigger: HTMLElement) => void} [onOpenDependency]
+   *   Opens a dependency's card details when its chip title is activated.
    */
-  function renderDependencyControls(card, initialDeps) {
+  function renderDependencyControls(card, initialDeps, onOpenDependency) {
     const wrapper = document.createElement('div');
     wrapper.className = 'card-field';
 
@@ -2233,8 +2252,19 @@
         const chip = document.createElement('span');
         chip.className = `card-chip card-chip-dep ${blockingDepIds.has(id) ? 'card-chip-dep-blocked' : 'card-chip-dep-unblocked'}`;
 
-        const text = document.createElement('span');
-        text.textContent = dependencyLabel(id);
+        let text;
+        if (onOpenDependency) {
+          text = document.createElement('button');
+          text.type = 'button';
+          text.className = 'card-dep-open';
+          text.textContent = dependencyLabel(id);
+          text.title = `Open card "${dependencyLabel(id)}"`;
+          text.setAttribute('aria-label', `Open card "${dependencyLabel(id)}"`);
+          text.addEventListener('click', () => onOpenDependency(id, text));
+        } else {
+          text = document.createElement('span');
+          text.textContent = dependencyLabel(id);
+        }
 
         const remove = document.createElement('button');
         remove.type = 'button';
