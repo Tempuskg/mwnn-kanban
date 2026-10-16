@@ -35,6 +35,7 @@ import {
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
+  isAgentCliProviderId,
   resolveAgentCliTarget,
   resolveAllAgentCliTargets,
   runAgentCliCardHandoff,
@@ -280,6 +281,14 @@ function readAgentCliPaths(): AgentCliPathOverrides {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
     .get<AgentCliPathOverrides>('agentCliPaths', {});
+}
+
+/** Agent CLIs the Usage Orchestrator never chooses; unknown ids are dropped. */
+function readUsageOrchestratorExcludedClis(): AgentCliProviderId[] {
+  const value = vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<unknown>('usageOrchestratorExcludedClis', []);
+  return Array.isArray(value) ? value.filter(isAgentCliProviderId) : [];
 }
 
 /**
@@ -584,6 +593,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Probes nothing until a run actually picks the Usage Orchestrator.
     orchestrator: createAgentCliUsageOrchestrator({
       configuredPaths: readAgentCliPaths(),
+      excludedProviders: readUsageOrchestratorExcludedClis(),
       cwd: workspaceRoot.fsPath,
     }),
     onRanking: (lines) => {
@@ -1071,6 +1081,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ? {
               orchestrator: createAgentCliUsageOrchestrator({
                 configuredPaths: readAgentCliPaths(),
+                excludedProviders: readUsageOrchestratorExcludedClis(),
                 cwd: workspaceRoot.fsPath,
                 signal: loop.abortController.signal,
               }),
@@ -1296,7 +1307,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         modelCatalog: readAgentCliModels(), stageModels: readAgentCliStageModelRules(),
         thinkingLevels: readAgentCliThinkingLevelDefaults(), stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
         escalation: readAiLoopModelEscalation(),
-        ...(pick.orchestrated ? { orchestrator: createAgentCliUsageOrchestrator({ configuredPaths: readAgentCliPaths(), cwd: workspaceRoot.fsPath }), onRanking: (lines: readonly string[]) => { for (const line of lines) { cliOutputChannel.info(line); } } } : {}),
+        ...(pick.orchestrated ? { orchestrator: createAgentCliUsageOrchestrator({ configuredPaths: readAgentCliPaths(), excludedProviders: readUsageOrchestratorExcludedClis(), cwd: workspaceRoot.fsPath }), onRanking: (lines: readonly string[]) => { for (const line of lines) { cliOutputChannel.info(line); } } } : {}),
         onProgress: (message: string) => cliOutputChannel.info(message),
         onSwitch: (record) => showCliInformation(record.from.label + ' ran out of credits. Continuing with ' + record.to.label + '.'),
         onEscalate: (record) => showCliInformation('Retrying ' + record.kind + ' on model ' + record.to + '.'),
@@ -2004,7 +2015,8 @@ async function pickAgentCliTarget(
   if (preference === 'orchestrator') {
     // The orchestrator re-chooses before every stage; this is only where the
     // run starts if it is cancelled before its first choice.
-    return { target: first, orchestrated: true };
+    const excluded = readUsageOrchestratorExcludedClis();
+    return { target: targets.find((t) => !excluded.includes(t.provider)) ?? first, orchestrated: true };
   }
   if (targets.length === 1) {
     return { target: first, orchestrated: false };
@@ -2023,7 +2035,7 @@ async function pickAgentCliTarget(
         label: USAGE_ORCHESTRATOR_LABEL,
         description: 'orchestrator',
         detail: USAGE_ORCHESTRATOR_DETAIL,
-        target: first,
+        target: targets.find((t) => !readUsageOrchestratorExcludedClis().includes(t.provider)) ?? first,
         orchestrated: true,
       },
     ],
