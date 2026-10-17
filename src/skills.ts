@@ -133,9 +133,10 @@ export function upsertManagedBlock(existing: string, inner: string, marker: stri
   const block = `${start}\n${inner}\n${end}`;
   const base = existing.replace(/\r\n?/g, '\n');
 
-  const region = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`);
-  if (region.test(base)) {
-    return `${base.replace(region, block).trimEnd()}\n`;
+  const region = findManagedRegion(base, start, end);
+  if (region) {
+    const replaced = `${base.slice(0, region.from)}${block}${base.slice(region.to)}`;
+    return `${replaced.trimEnd()}\n`;
   }
 
   const trimmed = base.trimEnd();
@@ -262,9 +263,9 @@ export function upsertManagedBlockPreserving(
   const end = `<!-- ${marker}:end -->`;
   const block = [start, inner, end].join('\n').replace(/\r\n?/g, '\n').split('\n').join(eol);
 
-  const region = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`);
-  if (region.test(existing)) {
-    return existing.replace(region, () => block);
+  const region = findManagedRegion(existing, start, end);
+  if (region) {
+    return `${existing.slice(0, region.from)}${block}${existing.slice(region.to)}`;
   }
 
   const separator = existing.endsWith('\n') ? eol : `${eol}${eol}`;
@@ -388,6 +389,22 @@ function unquote(value: string): string {
 
 function quote(value: string): string {
   return JSON.stringify(value);
+}
+
+/**
+ * Locate the managed block: the first end marker, paired with the nearest start
+ * marker before it. A start marker left without its end (a hand-edited file) is
+ * then plain text, so a block appended after it never swallows the user content
+ * in between on the next upsert.
+ */
+function findManagedRegion(text: string, start: string, end: string): { from: number; to: number } | undefined {
+  for (let endAt = text.indexOf(end); endAt !== -1; endAt = text.indexOf(end, endAt + end.length)) {
+    const startAt = text.lastIndexOf(start, endAt);
+    if (startAt !== -1) {
+      return { from: startAt, to: endAt + end.length };
+    }
+  }
+  return undefined;
 }
 
 function escapeRegExp(value: string): string {

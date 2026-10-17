@@ -203,7 +203,7 @@ suite('Usage Orchestrator choice', () => {
     const resolved: AgentCliProviderId[] = [];
     const orchestrator = createAgentCliUsageOrchestrator({
       configuredPaths: {},
-      cwd: 'E:\workspace',
+      cwd: 'E:\\workspace',
       now: () => clock.now,
       excludedProviders: ['copilot'],
       resolveTarget: async (provider, paths, options) => {

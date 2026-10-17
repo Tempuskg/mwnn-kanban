@@ -250,4 +250,16 @@ suite('user-level install planning', () => {
       'no newline\n\n<!-- mwnn-kanban:skills:start -->\nB\n<!-- mwnn-kanban:skills:end -->\n',
     );
   });
+
+  test('a start marker left without its end never lets a later upsert eat user content', () => {
+    const stale = 'top\n<!-- mwnn-kanban:skills:start -->\nUSER NOTES\n';
+    for (const upsert of [upsertManagedBlockPreserving, upsertManagedBlock]) {
+      const first = upsert(stale, 'ONE');
+      const second = upsert(first, 'TWO');
+      assert.match(second, /<!-- mwnn-kanban:skills:start -->\nUSER NOTES\n/);
+      assert.match(second, /<!-- mwnn-kanban:skills:start -->\nTWO\n<!-- mwnn-kanban:skills:end -->\n$/);
+      assert.doesNotMatch(second, /ONE/);
+      assert.equal(upsert(second, 'TWO'), second);
+    }
+  });
 });

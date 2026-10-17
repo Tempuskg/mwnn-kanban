@@ -1,6 +1,8 @@
 import { createAgentCliSettingsPanelController } from './agentCliSettingsPanelController';
 import type { AgentCliSettingsPanelState } from './types';
 import { manageAgentCliStage, stagePreferenceDescription } from './agentCliSettingsQuickPick';
+import { randomUUID } from 'node:crypto';
+import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { registerAgentCliSettingsPanel } from './agentCliSettingsPanel';
@@ -1712,10 +1714,38 @@ async function ensureUserSkillsInstalled(
     if ((await readUserFileIfPresent(uri)) === write.content) {
       continue;
     }
-    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
-    await vscode.workspace.fs.writeFile(uri, encoder.encode(write.content));
+    await writeUserFileAtomically(write.path, encoder.encode(write.content));
   }
   return plan.skippedEnvs;
+}
+
+/**
+ * Replace a user-owned file without ever leaving it truncated: write a sibling
+ * temp file, then rename it over the target. A symlinked target (such as a
+ * dotfiles-managed AGENTS.md) is resolved first so the link itself survives.
+ */
+async function writeUserFileAtomically(filePath: string, content: Uint8Array): Promise<void> {
+  const target = vscode.Uri.file(await realPathIfPresent(filePath));
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..'));
+  const tmp = vscode.Uri.file(`${target.fsPath}.mwnn-${randomUUID()}.tmp`);
+  try {
+    await vscode.workspace.fs.writeFile(tmp, content);
+    await vscode.workspace.fs.rename(tmp, target, { overwrite: true });
+  } catch (error: unknown) {
+    await Promise.resolve(vscode.workspace.fs.delete(tmp)).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function realPathIfPresent(filePath: string): Promise<string> {
+  try {
+    return await fsPromises.realpath(filePath);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return filePath;
+    }
+    throw error;
+  }
 }
 
 async function readUserFileIfPresent(uri: vscode.Uri): Promise<string | undefined> {
