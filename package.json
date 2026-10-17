@@ -260,6 +260,20 @@
           "description": "Enable AI-assisted board actions when those commands are available.",
           "scope": "resource"
         },
+        "mwnn-kanban.skillsInstallLocation": {
+          "type": "string",
+          "default": "workspace",
+          "enum": [
+            "workspace",
+            "user"
+          ],
+          "enumDescriptions": [
+            "Install the MWNN skills into the workspace (.github/instructions, .claude/skills, .cursor/rules, and a managed block in AGENTS.md) so they are checked in with the repo.",
+            "Install the MWNN skills into each AI tool's user-level folder (~/.claude/skills, ~/.copilot/skills, and a managed block in $CODEX_HOME/AGENTS.md or ~/.codex/AGENTS.md) so nothing is added to the repo. Cursor has no file-based user rules and is skipped."
+          ],
+          "markdownDescription": "Where `MWNN Kanban: Import Plan` installs the bundled MWNN skills before handing the plan to an AI agent. MWNN skill files already in the workspace are left alone in `user` mode.",
+          "scope": "resource"
+        },
         "mwnn-kanban.chatProviderCommands": {
           "type": "object",
           "default": {},
@@ -423,6 +437,28 @@
               "description": "Path to the Cursor Agent CLI executable."
             }
           },
+          "scope": "resource"
+        },
+        "mwnn-kanban.usageOrchestratorExcludedClis": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "copilot",
+              "codex",
+              "claude-code",
+              "cursor"
+            ],
+            "enumDescriptions": [
+              "GitHub Copilot CLI",
+              "OpenAI Codex CLI",
+              "Anthropic Claude Code CLI",
+              "Cursor Agent CLI"
+            ]
+          },
+          "markdownDescription": "Agent CLIs the Usage Orchestrator never chooses, even when installed - for example a CLI whose plan does not offer the models you want. Excluded CLIs are not probed and are listed as skipped in the orchestrator's ranking. Choosing a CLI directly (in `#mwnn-kanban.aiLoopProvider#` or the Run Card picker) is not affected. Leave empty to let the orchestrator choose among every installed CLI.",
           "scope": "resource"
         },
         "mwnn-kanban.defineUseJev": {

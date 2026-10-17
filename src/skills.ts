@@ -3,7 +3,8 @@
  *
  * The extension ships two skill documents (plan-import and card-authoring) and,
  * when a plan is imported, installs them into whichever AI tools a workspace
- * uses so the guidance travels with the project — on any machine. This module is
+ * uses so the guidance travels with the project — on any machine — or, when the
+ * user prefers, into each tool's user-level folder under their home. This module is
  * pure (no `vscode`/Node fs): it parses a bundled skill document and renders it
  * into each tool's native format, and plans the set of files to write. The thin
  * filesystem/detection layer lives in the extension host.
@@ -132,9 +133,10 @@ export function upsertManagedBlock(existing: string, inner: string, marker: stri
   const block = `${start}\n${inner}\n${end}`;
   const base = existing.replace(/\r\n?/g, '\n');
 
-  const region = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`);
-  if (region.test(base)) {
-    return `${base.replace(region, block).trimEnd()}\n`;
+  const region = findManagedRegion(base, start, end);
+  if (region) {
+    const replaced = `${base.slice(0, region.from)}${block}${base.slice(region.to)}`;
+    return `${replaced.trimEnd()}\n`;
   }
 
   const trimmed = base.trimEnd();
@@ -177,6 +179,154 @@ export function planSkillInstallation(
   }
 
   return { writes, referencePathsByEnv };
+}
+
+/** Where `Import Plan` installs the skills: into the workspace, or the user's home folder. */
+export type SkillsInstallLocation = 'workspace' | 'user';
+
+/** Absolute user-level folders, resolved by the extension host. */
+export interface UserSkillFolders {
+  /** The user's home folder. */
+  readonly home: string;
+  /** `CODEX_HOME`, when set; otherwise Codex uses `<home>/.codex`. */
+  readonly codexHome?: string;
+}
+
+export interface UserSkillInstallPlan {
+  /** Absolute paths, joined with the separator the supplied folders use. */
+  readonly writes: readonly SkillFileWrite[];
+  /** Absolute paths an agent for each environment should read. */
+  readonly referencePathsByEnv: Readonly<Record<AiEnvironment, readonly string[]>>;
+  /** Environments with no file-based user-level location (Cursor), so nothing was planned. */
+  readonly skippedEnvs: readonly AiEnvironment[];
+}
+
+/** The Codex user-level `AGENTS.md`: `$CODEX_HOME/AGENTS.md`, else `~/.codex/AGENTS.md`. */
+export function userCodexAgentsPath(folders: UserSkillFolders): string {
+  const codexHome = folders.codexHome?.trim();
+  return codexHome ? joinPath(codexHome, 'AGENTS.md') : joinPath(folders.home, '.codex', 'AGENTS.md');
+}
+
+/**
+ * Where a skill lives at user level for `env`, or `undefined` when the tool has
+ * no file-based user location (Cursor keeps user rules in its settings UI).
+ */
+export function userSkillFilePath(env: AiEnvironment, slug: string, folders: UserSkillFolders): string | undefined {
+  switch (env) {
+    case 'copilot':
+    case 'claude-code':
+      return userSkillMdPath(env, slug, folders);
+    case 'codex':
+      return userCodexAgentsPath(folders);
+    case 'cursor':
+      return undefined;
+  }
+}
+
+/** The absolute user-level paths an agent working in `env` should read (none for Cursor). */
+export function userReferencePathsForEnv(
+  env: AiEnvironment,
+  slugs: readonly string[],
+  folders: UserSkillFolders,
+): string[] {
+  if (env === 'cursor') {
+    return [];
+  }
+  if (env === 'codex') {
+    return [userCodexAgentsPath(folders)];
+  }
+  return slugs.map((slug) => userSkillMdPath(env, slug, folders));
+}
+
+/** GitHub Copilot user-level `~/.copilot/skills/<slug>/SKILL.md`. */
+export function renderCopilotSkill(skill: SkillSource): string {
+  return renderClaudeSkill(skill);
+}
+
+/**
+ * Like `upsertManagedBlock`, but for a file the user owns: every byte outside
+ * the managed block is kept exactly as it was (line endings and trailing
+ * whitespace included), and the block follows the file's line endings.
+ * Idempotent: running it again with the same `inner` yields the same output.
+ */
+export function upsertManagedBlockPreserving(
+  existing: string,
+  inner: string,
+  marker: string = MANAGED_BLOCK_MARKER,
+): string {
+  if (existing.trim().length === 0) {
+    return upsertManagedBlock('', inner, marker);
+  }
+
+  const eol = existing.includes('\r\n') ? '\r\n' : '\n';
+  const start = `<!-- ${marker}:start -->`;
+  const end = `<!-- ${marker}:end -->`;
+  const block = [start, inner, end].join('\n').replace(/\r\n?/g, '\n').split('\n').join(eol);
+
+  const region = findManagedRegion(existing, start, end);
+  if (region) {
+    return `${existing.slice(0, region.from)}${block}${existing.slice(region.to)}`;
+  }
+
+  const separator = existing.endsWith('\n') ? eol : `${eol}${eol}`;
+  return `${existing}${separator}${block}${eol}`;
+}
+
+/**
+ * Plan every user-level file write needed to install `skills` for `envs`.
+ * Mirrors `planSkillInstallation`, but targets the user's home folder: Codex
+ * gets a managed block folded into `existingCodexAgentsMd`, and Cursor is
+ * reported as skipped because it has no file-based user rules.
+ */
+export function planUserSkillInstallation(
+  skills: readonly SkillSource[],
+  envs: readonly AiEnvironment[],
+  folders: UserSkillFolders,
+  existingCodexAgentsMd: string | undefined,
+): UserSkillInstallPlan {
+  const writes: SkillFileWrite[] = [];
+  const skippedEnvs: AiEnvironment[] = [];
+  const referencePathsByEnv: Record<AiEnvironment, string[]> = {
+    copilot: [],
+    codex: [],
+    'claude-code': [],
+    cursor: [],
+  };
+
+  for (const env of dedupe(envs)) {
+    if (env === 'cursor') {
+      skippedEnvs.push(env);
+      continue;
+    }
+
+    if (env === 'codex') {
+      const path = userCodexAgentsPath(folders);
+      writes.push({ path, content: upsertManagedBlockPreserving(existingCodexAgentsMd ?? '', renderAgentsSection(skills)) });
+      referencePathsByEnv.codex.push(path);
+      continue;
+    }
+
+    for (const skill of skills) {
+      const path = userSkillMdPath(env, skill.slug, folders);
+      writes.push({ path, content: env === 'copilot' ? renderCopilotSkill(skill) : renderClaudeSkill(skill) });
+      referencePathsByEnv[env].push(path);
+    }
+  }
+
+  return { writes, referencePathsByEnv, skippedEnvs };
+}
+
+/** Home-relative folder holding each SKILL.md-format tool's user-level skills. */
+const USER_SKILL_ROOTS = { copilot: '.copilot', 'claude-code': '.claude' } as const;
+
+function userSkillMdPath(env: keyof typeof USER_SKILL_ROOTS, slug: string, folders: UserSkillFolders): string {
+  return joinPath(folders.home, USER_SKILL_ROOTS[env], 'skills', slug, 'SKILL.md');
+}
+
+/** Join path segments onto `base` with the separator `base` already uses (`\` on Windows homes). */
+function joinPath(base: string, ...segments: string[]): string {
+  const separator = base.includes('\\') && !base.includes('/') ? '\\' : '/';
+  return [base.replace(/[\\/]+$/, ''), ...segments].join(separator);
 }
 
 function renderEnvFile(env: Exclude<AiEnvironment, 'codex'>, skill: SkillSource): string {
@@ -239,6 +389,22 @@ function unquote(value: string): string {
 
 function quote(value: string): string {
   return JSON.stringify(value);
+}
+
+/**
+ * Locate the managed block: the first end marker, paired with the nearest start
+ * marker before it. A start marker left without its end (a hand-edited file) is
+ * then plain text, so a block appended after it never swallows the user content
+ * in between on the next upsert.
+ */
+function findManagedRegion(text: string, start: string, end: string): { from: number; to: number } | undefined {
+  for (let endAt = text.indexOf(end); endAt !== -1; endAt = text.indexOf(end, endAt + end.length)) {
+    const startAt = text.lastIndexOf(start, endAt);
+    if (startAt !== -1) {
+      return { from: startAt, to: endAt + end.length };
+    }
+  }
+  return undefined;
 }
 
 function escapeRegExp(value: string): string {

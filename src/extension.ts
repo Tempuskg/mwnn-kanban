@@ -1,6 +1,9 @@
 import { createAgentCliSettingsPanelController } from './agentCliSettingsPanelController';
 import type { AgentCliSettingsPanelState } from './types';
 import { manageAgentCliStage, stagePreferenceDescription } from './agentCliSettingsQuickPick';
+import { randomUUID } from 'node:crypto';
+import * as fsPromises from 'node:fs/promises';
+import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { registerAgentCliSettingsPanel } from './agentCliSettingsPanel';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
@@ -35,6 +38,7 @@ import {
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
+  isAgentCliProviderId,
   resolveAgentCliTarget,
   resolveAllAgentCliTargets,
   runAgentCliCardHandoff,
@@ -158,9 +162,14 @@ import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from '
 import {
   parseSkillDocument,
   planSkillInstallation,
+  planUserSkillInstallation,
   referencePathsForEnv,
+  userCodexAgentsPath,
+  userReferencePathsForEnv,
   type AiEnvironment,
+  type SkillsInstallLocation,
   type SkillSource,
+  type UserSkillFolders,
 } from './skills';
 import type { BoardState } from './types';
 import { createWorkspaceFileSystem } from './workspaceFileSystem';
@@ -215,6 +224,11 @@ const noAiLoopStateChange: vscode.Event<void> = () => ({ dispose: () => undefine
 
 function readEnableRunWithAI(): boolean {
   return vscode.workspace.getConfiguration('mwnn-kanban').get<boolean>('enableRunWithAI', true);
+}
+
+function readSkillsInstallLocation(): SkillsInstallLocation {
+  const value = vscode.workspace.getConfiguration('mwnn-kanban').get<string>('skillsInstallLocation', 'workspace');
+  return value === 'user' ? 'user' : 'workspace';
 }
 
 function readChatProviderCommands(): ChatProviderCommands {
@@ -280,6 +294,14 @@ function readAgentCliPaths(): AgentCliPathOverrides {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
     .get<AgentCliPathOverrides>('agentCliPaths', {});
+}
+
+/** Agent CLIs the Usage Orchestrator never chooses; unknown ids are dropped. */
+function readUsageOrchestratorExcludedClis(): AgentCliProviderId[] {
+  const value = vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<unknown>('usageOrchestratorExcludedClis', []);
+  return Array.isArray(value) ? value.filter(isAgentCliProviderId) : [];
 }
 
 /**
@@ -584,6 +606,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Probes nothing until a run actually picks the Usage Orchestrator.
     orchestrator: createAgentCliUsageOrchestrator({
       configuredPaths: readAgentCliPaths(),
+      excludedProviders: readUsageOrchestratorExcludedClis(),
       cwd: workspaceRoot.fsPath,
     }),
     onRanking: (lines) => {
@@ -853,15 +876,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     // Install the skills into every AI tool this workspace uses (plus the tool we
-    // are handing off to) so the guidance travels with the project on any machine.
+    // are handing off to) so the guidance travels with the project on any machine,
+    // or into each tool's user-level folder when the user keeps them out of the repo.
     // Best-effort: the prompt is self-contained, so a write failure never blocks import.
     const providerEnv = PROVIDER_ENVIRONMENTS[target.provider];
+    const installLocation = readSkillsInstallLocation();
+    const userFolders = userSkillFolders();
+    const skillPaths =
+      installLocation === 'user'
+        ? userReferencePathsForEnv(providerEnv, SKILL_SLUGS, userFolders)
+        : referencePathsForEnv(providerEnv, SKILL_SLUGS);
     try {
-      await ensureSkillsInstalled(context.extensionUri, workspaceFs, providerEnv);
+      if (installLocation === 'user') {
+        const skippedEnvs = await ensureUserSkillsInstalled(context.extensionUri, workspaceFs, providerEnv, userFolders);
+        if (skippedEnvs.includes('cursor')) {
+          void vscode.window.showInformationMessage(
+            'Cursor has no file-based user rules, so the MWNN skills were not installed for Cursor.',
+          );
+        }
+      } else {
+        await ensureSkillsInstalled(context.extensionUri, workspaceFs, providerEnv);
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      const where = installLocation === 'user' ? 'your user folder' : 'this workspace';
       void vscode.window.showWarningMessage(
-        `Could not install the MWNN skills into this workspace: ${message}. Continuing — the prompt is self-contained.`,
+        `Could not install the MWNN skills into ${where}: ${message}. Continuing — the prompt is self-contained.`,
       );
     }
 
@@ -870,7 +910,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       source,
       { columnId: targetColumn.id, columnTitle: targetColumn.title, existingCount: targetColumn.cards.length },
       normalizedBoardFolder,
-      referencePathsForEnv(providerEnv, SKILL_SLUGS),
+      skillPaths,
     );
     const handedOff = await handOffPromptToChat(target, prompt, 'the plan');
     if (!handedOff) {
@@ -1071,6 +1111,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ? {
               orchestrator: createAgentCliUsageOrchestrator({
                 configuredPaths: readAgentCliPaths(),
+                excludedProviders: readUsageOrchestratorExcludedClis(),
                 cwd: workspaceRoot.fsPath,
                 signal: loop.abortController.signal,
               }),
@@ -1296,7 +1337,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         modelCatalog: readAgentCliModels(), stageModels: readAgentCliStageModelRules(),
         thinkingLevels: readAgentCliThinkingLevelDefaults(), stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
         escalation: readAiLoopModelEscalation(),
-        ...(pick.orchestrated ? { orchestrator: createAgentCliUsageOrchestrator({ configuredPaths: readAgentCliPaths(), cwd: workspaceRoot.fsPath }), onRanking: (lines: readonly string[]) => { for (const line of lines) { cliOutputChannel.info(line); } } } : {}),
+        ...(pick.orchestrated ? { orchestrator: createAgentCliUsageOrchestrator({ configuredPaths: readAgentCliPaths(), excludedProviders: readUsageOrchestratorExcludedClis(), cwd: workspaceRoot.fsPath }), onRanking: (lines: readonly string[]) => { for (const line of lines) { cliOutputChannel.info(line); } } } : {}),
         onProgress: (message: string) => cliOutputChannel.info(message),
         onSwitch: (record) => showCliInformation(record.from.label + ' ran out of credits. Continuing with ' + record.to.label + '.'),
         onEscalate: (record) => showCliInformation('Retrying ' + record.kind + ' on model ' + record.to + '.'),
@@ -1636,6 +1677,86 @@ async function ensureSkillsInstalled(
     written.push(write.path);
   }
   return written;
+}
+
+/** The user-level folders the skills install into in `user` mode. */
+function userSkillFolders(): UserSkillFolders {
+  const codexHome = process.env['CODEX_HOME']?.trim();
+  return codexHome ? { home: os.homedir(), codexHome } : { home: os.homedir() };
+}
+
+/**
+ * Install the bundled skills into each environment's user-level folder instead
+ * of the workspace. Environments are chosen as for the workspace install, but
+ * nothing under the workspace is created, changed, or removed. Skips files
+ * whose content is unchanged. Returns the environments that have no user-level
+ * location and were therefore skipped.
+ */
+async function ensureUserSkillsInstalled(
+  extensionUri: vscode.Uri,
+  fs: FileSystemLike,
+  providerEnv: AiEnvironment,
+  folders: UserSkillFolders,
+): Promise<readonly AiEnvironment[]> {
+  const skills = await loadBundledSkills(extensionUri);
+
+  const environments = await detectAiEnvironments(fs);
+  environments.add(providerEnv);
+
+  const existingCodexAgentsMd = environments.has('codex')
+    ? await readUserFileIfPresent(vscode.Uri.file(userCodexAgentsPath(folders)))
+    : undefined;
+
+  const plan = planUserSkillInstallation(skills, [...environments], folders, existingCodexAgentsMd);
+  const encoder = new TextEncoder();
+  for (const write of plan.writes) {
+    const uri = vscode.Uri.file(write.path);
+    if ((await readUserFileIfPresent(uri)) === write.content) {
+      continue;
+    }
+    await writeUserFileAtomically(write.path, encoder.encode(write.content));
+  }
+  return plan.skippedEnvs;
+}
+
+/**
+ * Replace a user-owned file without ever leaving it truncated: write a sibling
+ * temp file, then rename it over the target. A symlinked target (such as a
+ * dotfiles-managed AGENTS.md) is resolved first so the link itself survives.
+ */
+async function writeUserFileAtomically(filePath: string, content: Uint8Array): Promise<void> {
+  const target = vscode.Uri.file(await realPathIfPresent(filePath));
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..'));
+  const tmp = vscode.Uri.file(`${target.fsPath}.mwnn-${randomUUID()}.tmp`);
+  try {
+    await vscode.workspace.fs.writeFile(tmp, content);
+    await vscode.workspace.fs.rename(tmp, target, { overwrite: true });
+  } catch (error: unknown) {
+    await Promise.resolve(vscode.workspace.fs.delete(tmp)).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function realPathIfPresent(filePath: string): Promise<string> {
+  try {
+    return await fsPromises.realpath(filePath);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return filePath;
+    }
+    throw error;
+  }
+}
+
+async function readUserFileIfPresent(uri: vscode.Uri): Promise<string | undefined> {
+  try {
+    return new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  } catch (error: unknown) {
+    if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function registerUnavailableCommands(context: vscode.ExtensionContext): void {
@@ -2004,7 +2125,8 @@ async function pickAgentCliTarget(
   if (preference === 'orchestrator') {
     // The orchestrator re-chooses before every stage; this is only where the
     // run starts if it is cancelled before its first choice.
-    return { target: first, orchestrated: true };
+    const excluded = readUsageOrchestratorExcludedClis();
+    return { target: targets.find((t) => !excluded.includes(t.provider)) ?? first, orchestrated: true };
   }
   if (targets.length === 1) {
     return { target: first, orchestrated: false };
@@ -2023,7 +2145,7 @@ async function pickAgentCliTarget(
         label: USAGE_ORCHESTRATOR_LABEL,
         description: 'orchestrator',
         detail: USAGE_ORCHESTRATOR_DETAIL,
-        target: first,
+        target: targets.find((t) => !readUsageOrchestratorExcludedClis().includes(t.provider)) ?? first,
         orchestrated: true,
       },
     ],

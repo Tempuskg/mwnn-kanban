@@ -196,6 +196,37 @@ suite('Usage Orchestrator choice', () => {
     assert.match(drained, /drained until it stops accepting work/);
     assert.doesNotMatch(drained, /^STATUS:/m);
   });
+
+  test('never resolves, probes, or chooses a CLI excluded by setting', async () => {
+    const clock: Clock = { now: START };
+    const probed: AgentCliProviderId[] = [];
+    const resolved: AgentCliProviderId[] = [];
+    const orchestrator = createAgentCliUsageOrchestrator({
+      configuredPaths: {},
+      cwd: 'E:\\workspace',
+      now: () => clock.now,
+      excludedProviders: ['copilot'],
+      resolveTarget: async (provider, paths, options) => {
+        resolved.push(provider);
+        return resolverFor(['copilot', 'codex'])(provider, paths, options);
+      },
+      probe: async (probedTarget) => {
+        probed.push(probedTarget.provider);
+        return unknownUsage(probedTarget.provider, 'usage is not supported yet.');
+      },
+    });
+
+    const decision = await orchestrator.choose();
+    assert.equal(decision.kind === 'chosen' ? decision.target.provider : 'none', 'codex');
+    assert.ok(!resolved.includes('copilot'));
+    assert.deepEqual(probed, ['codex']);
+    assert.ok(decision.ranking.skipped.some((entry) =>
+      entry.provider === 'copilot' && /excluded by mwnn-kanban\.usageOrchestratorExcludedClis/.test(entry.reason)));
+
+    orchestrator.markExhausted('codex');
+    const none = await orchestrator.choose();
+    assert.equal(none.kind, 'none');
+  });
 });
 
 interface FakeBoard {

@@ -61,6 +61,12 @@ export interface AgentCliOrchestratorDeps {
   readonly now?: () => number;
   readonly freshnessMs?: number;
   readonly probeTimeoutMs?: number;
+  /**
+   * CLIs the user excluded from orchestration
+   * (`mwnn-kanban.usageOrchestratorExcludedClis`). They are neither resolved
+   * nor probed, and appear in the ranking as skipped.
+   */
+  readonly excludedProviders?: readonly AgentCliProviderId[];
   /** Test seams; default to the real resolution and probes. */
   readonly probe?: AgentCliUsageProbe;
   readonly resolveTarget?: (
@@ -109,6 +115,7 @@ export function createAgentCliUsageOrchestrator(
   const probeTimeoutMs = deps.probeTimeoutMs ?? DEFAULT_USAGE_PROBE_TIMEOUT_MS;
   const cache = new Map<AgentCliProviderId, CachedSnapshot>();
   const exclusions = new Map<AgentCliProviderId, { readonly until?: number }>();
+  const excludedBySetting = new Set(deps.excludedProviders ?? []);
 
   const isExcluded = (provider: AgentCliProviderId, at: number): boolean => {
     const exclusion = exclusions.get(provider);
@@ -147,15 +154,28 @@ export function createAgentCliUsageOrchestrator(
 
   const choose = async (): Promise<AgentCliOrchestratorDecision> => {
     const resolutions = await Promise.all(
-      AGENT_CLI_PROVIDER_IDS.map((provider) =>
-        resolveTarget(provider, deps.configuredPaths, { cwd: deps.cwd })),
+      AGENT_CLI_PROVIDER_IDS.map(async (provider) => ({
+        provider,
+        resolution: excludedBySetting.has(provider)
+          ? undefined
+          : await resolveTarget(provider, deps.configuredPaths, { cwd: deps.cwd }),
+      })),
     );
     const startedAt = now();
     const candidates = await Promise.all(
-      resolutions.map(async (resolution): Promise<{
+      resolutions.map(async ({ provider, resolution }): Promise<{
         readonly candidate: AgentCliRankCandidate;
         readonly target?: AgentCliTarget;
       }> => {
+        if (resolution === undefined) {
+          return {
+            candidate: {
+              provider,
+              available: false,
+              unavailableReason: `${AGENT_CLI_LABELS[provider]}: excluded by mwnn-kanban.usageOrchestratorExcludedClis`,
+            },
+          };
+        }
         if (!resolution.available) {
           return {
             candidate: {
