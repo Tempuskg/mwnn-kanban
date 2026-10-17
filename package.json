@@ -262,16 +262,16 @@
         },
         "mwnn-kanban.skillsInstallLocation": {
           "type": "string",
-          "default": "workspace",
+          "default": "user",
           "enum": [
             "workspace",
             "user"
           ],
           "enumDescriptions": [
-            "Install the MWNN skills into the workspace (.github/instructions, .claude/skills, .cursor/rules, and a managed block in AGENTS.md) so they are checked in with the repo.",
-            "Install the MWNN skills into each AI tool's user-level folder (~/.claude/skills, ~/.copilot/skills, and a managed block in $CODEX_HOME/AGENTS.md or ~/.codex/AGENTS.md) so nothing is added to the repo. Cursor has no file-based user rules and is skipped."
+            "Opt in to install the MWNN skills into the workspace (.github/instructions, .claude/skills, .cursor/rules, and a managed block in AGENTS.md) so they are checked in with the repo.",
+            "Default. Install the MWNN skills into each AI tool's user-level folder (~/.claude/skills, ~/.copilot/skills, and a managed block in $CODEX_HOME/AGENTS.md or ~/.codex/AGENTS.md) so nothing is added to the repo. Cursor has no file-based user rules and is skipped."
           ],
-          "markdownDescription": "Where `MWNN Kanban: Import Plan` installs the bundled MWNN skills before handing the plan to an AI agent. MWNN skill files already in the workspace are left alone in `user` mode.",
+          "markdownDescription": "Where `MWNN Kanban: Import Plan` installs the bundled MWNN skills before handing the plan to an AI agent. Defaults to `user`, which installs into each AI tool's user-level folder and adds nothing to the repo. Set `workspace` to install the skills into the workspace so they are checked in with the repo. MWNN skill files already in the workspace are left alone in `user` mode.",
           "scope": "resource"
         },
         "mwnn-kanban.chatProviderCommands": {
