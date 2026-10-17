@@ -5,6 +5,9 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- New `mwnn-kanban.skillsInstallLocation` setting. Set it to `user` to have **Import Plan** install the MWNN skills in your home folder (`~/.claude/skills/`, `~/.copilot/skills/`, and the Codex `AGENTS.md`) so they don't get checked in with the repo. Cursor has no file-based user rules, so it is skipped with a notice. The default, `workspace`, keeps the current behavior.
+
 ## [1.0.2] - 2026-10-11
 
 ### Added

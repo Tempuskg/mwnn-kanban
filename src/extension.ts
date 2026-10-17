@@ -1,6 +1,7 @@
 import { createAgentCliSettingsPanelController } from './agentCliSettingsPanelController';
 import type { AgentCliSettingsPanelState } from './types';
 import { manageAgentCliStage, stagePreferenceDescription } from './agentCliSettingsQuickPick';
+import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { registerAgentCliSettingsPanel } from './agentCliSettingsPanel';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
@@ -159,9 +160,14 @@ import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from '
 import {
   parseSkillDocument,
   planSkillInstallation,
+  planUserSkillInstallation,
   referencePathsForEnv,
+  userCodexAgentsPath,
+  userReferencePathsForEnv,
   type AiEnvironment,
+  type SkillsInstallLocation,
   type SkillSource,
+  type UserSkillFolders,
 } from './skills';
 import type { BoardState } from './types';
 import { createWorkspaceFileSystem } from './workspaceFileSystem';
@@ -216,6 +222,11 @@ const noAiLoopStateChange: vscode.Event<void> = () => ({ dispose: () => undefine
 
 function readEnableRunWithAI(): boolean {
   return vscode.workspace.getConfiguration('mwnn-kanban').get<boolean>('enableRunWithAI', true);
+}
+
+function readSkillsInstallLocation(): SkillsInstallLocation {
+  const value = vscode.workspace.getConfiguration('mwnn-kanban').get<string>('skillsInstallLocation', 'workspace');
+  return value === 'user' ? 'user' : 'workspace';
 }
 
 function readChatProviderCommands(): ChatProviderCommands {
@@ -863,15 +874,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     // Install the skills into every AI tool this workspace uses (plus the tool we
-    // are handing off to) so the guidance travels with the project on any machine.
+    // are handing off to) so the guidance travels with the project on any machine,
+    // or into each tool's user-level folder when the user keeps them out of the repo.
     // Best-effort: the prompt is self-contained, so a write failure never blocks import.
     const providerEnv = PROVIDER_ENVIRONMENTS[target.provider];
+    const installLocation = readSkillsInstallLocation();
+    const userFolders = userSkillFolders();
+    const skillPaths =
+      installLocation === 'user'
+        ? userReferencePathsForEnv(providerEnv, SKILL_SLUGS, userFolders)
+        : referencePathsForEnv(providerEnv, SKILL_SLUGS);
     try {
-      await ensureSkillsInstalled(context.extensionUri, workspaceFs, providerEnv);
+      if (installLocation === 'user') {
+        const skippedEnvs = await ensureUserSkillsInstalled(context.extensionUri, workspaceFs, providerEnv, userFolders);
+        if (skippedEnvs.includes('cursor')) {
+          void vscode.window.showInformationMessage(
+            'Cursor has no file-based user rules, so the MWNN skills were not installed for Cursor.',
+          );
+        }
+      } else {
+        await ensureSkillsInstalled(context.extensionUri, workspaceFs, providerEnv);
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      const where = installLocation === 'user' ? 'your user folder' : 'this workspace';
       void vscode.window.showWarningMessage(
-        `Could not install the MWNN skills into this workspace: ${message}. Continuing — the prompt is self-contained.`,
+        `Could not install the MWNN skills into ${where}: ${message}. Continuing — the prompt is self-contained.`,
       );
     }
 
@@ -880,7 +908,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       source,
       { columnId: targetColumn.id, columnTitle: targetColumn.title, existingCount: targetColumn.cards.length },
       normalizedBoardFolder,
-      referencePathsForEnv(providerEnv, SKILL_SLUGS),
+      skillPaths,
     );
     const handedOff = await handOffPromptToChat(target, prompt, 'the plan');
     if (!handedOff) {
@@ -1647,6 +1675,58 @@ async function ensureSkillsInstalled(
     written.push(write.path);
   }
   return written;
+}
+
+/** The user-level folders the skills install into in `user` mode. */
+function userSkillFolders(): UserSkillFolders {
+  const codexHome = process.env['CODEX_HOME']?.trim();
+  return codexHome ? { home: os.homedir(), codexHome } : { home: os.homedir() };
+}
+
+/**
+ * Install the bundled skills into each environment's user-level folder instead
+ * of the workspace. Environments are chosen as for the workspace install, but
+ * nothing under the workspace is created, changed, or removed. Skips files
+ * whose content is unchanged. Returns the environments that have no user-level
+ * location and were therefore skipped.
+ */
+async function ensureUserSkillsInstalled(
+  extensionUri: vscode.Uri,
+  fs: FileSystemLike,
+  providerEnv: AiEnvironment,
+  folders: UserSkillFolders,
+): Promise<readonly AiEnvironment[]> {
+  const skills = await loadBundledSkills(extensionUri);
+
+  const environments = await detectAiEnvironments(fs);
+  environments.add(providerEnv);
+
+  const existingCodexAgentsMd = environments.has('codex')
+    ? await readUserFileIfPresent(vscode.Uri.file(userCodexAgentsPath(folders)))
+    : undefined;
+
+  const plan = planUserSkillInstallation(skills, [...environments], folders, existingCodexAgentsMd);
+  const encoder = new TextEncoder();
+  for (const write of plan.writes) {
+    const uri = vscode.Uri.file(write.path);
+    if ((await readUserFileIfPresent(uri)) === write.content) {
+      continue;
+    }
+    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
+    await vscode.workspace.fs.writeFile(uri, encoder.encode(write.content));
+  }
+  return plan.skippedEnvs;
+}
+
+async function readUserFileIfPresent(uri: vscode.Uri): Promise<string | undefined> {
+  try {
+    return new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  } catch (error: unknown) {
+    if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function registerUnavailableCommands(context: vscode.ExtensionContext): void {
