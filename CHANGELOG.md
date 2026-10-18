@@ -5,7 +5,16 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-18
+
+### Changed
+- Pro: in the Portfolio Allocation chart, the open-project button now sits beside the project name.
+
+### Fixed
+- Codex clipboard handoffs now allow sidebar startup before requesting the new chat, then paste the card prompt once. When clipboard confirmation is unavailable, a neutral notification lets the user confirm the complete prompt instead of falsely reporting delivery failure. Success is recorded only after automatic or user confirmation. Removed repeating diagnostic-token pastes and serialized chat handoffs so concurrent cards cannot mix prompts; actual failures retain retry guidance.
+
 ### Added
+- The running pill on a card now shows the model beside the agent CLI: the model requested for the dispatch while it starts, replaced by the model the CLI itself reports once that is confirmed (Usage Orchestrator and AI Loop dispatches). With no requested or confirmed model the pill shows only the CLI, and a model is never guessed. The thinking level passed to the CLI follows the model (omitted for Cursor, which takes none). Long names are shortened in the pill with the full name on hover.
 - New `mwnn-kanban.usageOrchestratorExcludedClis` setting. List the agent CLIs the Usage Orchestrator should never choose, even when they are installed. Excluded CLIs are not probed and are listed as skipped in the ranking. Choosing a CLI directly is not affected.
 - New `mwnn-kanban.skillsInstallLocation` setting. Set it to `user` to have **Import Plan** install the MWNN skills in your home folder (`~/.claude/skills/`, `~/.copilot/skills/`, and the Codex `AGENTS.md`) so they don't get checked in with the repo. Cursor has no file-based user rules, so it is skipped with a notice. The default, `workspace`, keeps the current behavior.
 
@@ -24,7 +33,7 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ### Added
 - **Agent CLI Models** panel: use the gear in the MWNN sidebar to edit ordered model lists, thinking levels, and per-stage/per-CLI AI-loop overrides in Workspace or User settings. Inherited values are shown separately, edits affect only the selected scope, and settings changes refresh the panel and open board pickers. The existing quick-pick manager also edits stage/CLI overrides. Legacy shared stage strings remain readable; conversion preserves the unedited CLIs, model and effort resolve independently after provider selection, and clearing restores scope inheritance.
-- **Start interview** for any defined Human card: from the card's actions or details, open an interactive AI chat (Copilot, Codex or Claude Code) that asks one question at a time and records each answer, with its source and date, in the card and its linked facts. Starting again resumes from the saved answers. The card stays assigned to Human, the AI loop never picks it up, and starting a chat never checks acceptance criteria or completes the card.
+- **Start interview** for any defined Human card: from the card's actions or details, open an interactive AI coworking chat (Copilot, Codex or Claude Code) that answers what it can from the workspace, does safe in-scope steps itself, asks one question at a time only for what needs you, and records each finding or answer, with its source and date, in the card and its linked facts. Starting again resumes from the saved answers. The card stays assigned to Human, the AI loop never picks it up, and starting a chat never checks acceptance criteria or completes the card.
 - Injected CLI portfolio-loop capability for Pro: unopened-board execution shares the public card lifecycle, provider/model rules, credit fallback and dispatch accounting, with exclusive loop ownership in the current window.
 - **Usage Orchestrator**: a new `orchestrator` value for `mwnn-kanban.aiLoopProvider`, also offered in the AI loop's local-CLI picker and the `Run Card with AI` picker. Before each dispatch it reads every installed CLI's remaining usage and reset time from that CLI and picks one. It spends the allowance that resets soonest first, then drains CLIs whose usage is unknown, then picks the CLI with the most usage left. In the AI loop, a stage that runs out of credits is retried on the next-ranked CLI. Codex usage is read through `codex app-server`; Claude Code and Copilot usage sources are pending, and Cursor's usage is always unknown.
 
