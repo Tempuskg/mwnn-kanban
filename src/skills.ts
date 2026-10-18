@@ -184,6 +184,18 @@ export function planSkillInstallation(
 /** Where `Import Plan` installs the skills: into the workspace, or the user's home folder. */
 export type SkillsInstallLocation = 'workspace' | 'user';
 
+/** The contributed default for `mwnn-kanban.skillsInstallLocation`. */
+export const DEFAULT_SKILLS_INSTALL_LOCATION: SkillsInstallLocation = 'user';
+
+/**
+ * Resolves the raw `mwnn-kanban.skillsInstallLocation` value. Only an explicit
+ * `workspace` opts in to workspace installation; a missing or invalid value falls
+ * back to the user-level default.
+ */
+export function resolveSkillsInstallLocation(value: unknown): SkillsInstallLocation {
+  return value === 'workspace' ? 'workspace' : DEFAULT_SKILLS_INSTALL_LOCATION;
+}
+
 /** Absolute user-level folders, resolved by the extension host. */
 export interface UserSkillFolders {
   /** The user's home folder. */

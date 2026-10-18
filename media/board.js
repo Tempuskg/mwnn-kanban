@@ -198,11 +198,70 @@
     return typeof stored === 'string' ? stored.trim() : '';
   }
 
+  /** @param {unknown} value */
+  function nonBlankString(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  /**
+   * Folds one `cliRunStatus` message into a card's tracked run. A message that
+   * ends a different dispatch than the one tracked is stale (an earlier attempt
+   * finishing after its replacement started) and leaves the tracked run alone;
+   * a message from a new dispatch replaces the tracked run outright, so a
+   * retry or provider switch never inherits the earlier dispatch's model.
+   * Returns null when no run remains for the card.
+   * @param {object | undefined} previous
+   * @param {{ providerLabel: string, running: boolean, statusLine?: string, stoppable?: boolean, dispatchId?: string, requestedModel?: string, actualModel?: string, thinkingLevel?: string }} message
+   */
+  function nextCliRunStatus(previous, message) {
+    if (!message.running) {
+      const stale = previous && previous.dispatchId && message.dispatchId
+        && previous.dispatchId !== message.dispatchId;
+      return stale ? previous : null;
+    }
+    const requestedModel = nonBlankString(message.requestedModel);
+    const actualModel = nonBlankString(message.actualModel);
+    const thinkingLevel = nonBlankString(message.thinkingLevel);
+    return {
+      providerLabel: message.providerLabel,
+      statusLine: message.statusLine || '',
+      stoppable: message.stoppable === true,
+      ...(message.dispatchId ? { dispatchId: message.dispatchId } : {}),
+      ...(requestedModel ? { requestedModel } : {}),
+      ...(actualModel ? { actualModel } : {}),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
+    };
+  }
+
+  /**
+   * What the running pill shows: the CLI, plus the model and thinking level
+   * when known. An actual model confirmed by the CLI replaces the requested one;
+   * with neither, no model is shown. The thinking level is always the one passed
+   * to the CLI, since no CLI confirms it. The full text goes on the title and
+   * aria-label so long names can be ellipsized in the compact pill.
+   * @param {{ providerLabel: string, requestedModel?: string, actualModel?: string, thinkingLevel?: string }} cliRun
+   */
+  function cliRunPillView(cliRun) {
+    const model = cliRun.actualModel || cliRun.requestedModel || '';
+    const confirmed = Boolean(cliRun.actualModel);
+    const thinkingLevel = cliRun.thinkingLevel || '';
+    const base = `${cliRun.providerLabel} is working on this card`;
+    const withModel = !model
+      ? base
+      : confirmed
+        ? `${base} on model ${model} (confirmed by the CLI)`
+        : `${base} on requested model ${model} (not yet confirmed by the CLI)`;
+    const title = thinkingLevel ? `${withModel} at thinking level ${thinkingLevel}` : withModel;
+    return { label: `${cliRun.providerLabel} running`, model, confirmed, thinkingLevel, title };
+  }
+
   // Loading this script from the Node test runner returns only the pure helpers
   // above; the VS Code webview has no CommonJS `module` and continues through
   // the normal browser bootstrap below.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+      nextCliRunStatus,
+      cliRunPillView,
       createActivityDraft,
       requestCardPathCopy,
       columnChangeMove,
@@ -285,7 +344,7 @@
    * Live agent-CLI run status per card, pushed by the extension host while a
    * provider CLI is working a card. Survives state re-renders; entries are
    * removed when the host reports the run finished.
-   * @type {Map<string, { providerLabel: string, statusLine: string }>}
+   * @type {Map<string, { providerLabel: string, statusLine: string, stoppable: boolean, dispatchId?: string, requestedModel?: string, actualModel?: string, thinkingLevel?: string }>}
    */
   const cliRunStatuses = new Map();
   /**
@@ -358,25 +417,30 @@
   });
 
   /**
-   * @param {{ cardId: string, providerLabel: string, running: boolean, statusLine?: string, stoppable?: boolean }} message
+   * @param {{ cardId: string, providerLabel: string, running: boolean, statusLine?: string, stoppable?: boolean, dispatchId?: string, requestedModel?: string, actualModel?: string, thinkingLevel?: string }} message
    */
   function applyCliRunStatus(message) {
     const previous = cliRunStatuses.get(message.cardId);
     const wasRunning = previous !== undefined;
-    const stoppable = message.stoppable === true;
-    if (message.running) {
-      cliRunStatuses.set(message.cardId, {
-        providerLabel: message.providerLabel,
-        statusLine: message.statusLine || '',
-        stoppable,
-      });
+    const next = nextCliRunStatus(previous, message);
+    if (next === previous) {
+      return;
+    }
+    if (next) {
+      cliRunStatuses.set(message.cardId, next);
     } else {
       cliRunStatuses.delete(message.cardId);
     }
 
     // Status-line updates arrive continuously while a CLI runs; patch the
-    // ticker in place and re-render only when the badge appears/disappears.
-    if (message.running && wasRunning && previous.stoppable === stoppable) {
+    // ticker in place and re-render only when the pill itself changes (it
+    // appears/disappears, or its stop button, dispatch, or model changes).
+    if (message.running && wasRunning && next && previous.stoppable === next.stoppable
+      && previous.dispatchId === next.dispatchId
+      && previous.providerLabel === next.providerLabel
+      && previous.requestedModel === next.requestedModel
+      && previous.actualModel === next.actualModel
+      && previous.thinkingLevel === next.thinkingLevel) {
       const ticker = root.querySelector(
         `.card[data-card-id="${CSS.escape(message.cardId)}"] .card-cli-status`,
       );
@@ -788,22 +852,38 @@
       meta.appendChild(chip);
     }
 
+    // The running pill and live command preview get their own row spanning the
+    // whole card, below the body and its action buttons.
     const cliRun = cliRunStatuses.get(card.id);
-    if (cliRun) {
-      const chip = renderChip(`${cliRun.providerLabel} running`, 'card-chip-running');
-      chip.title = `${cliRun.providerLabel} is working on this card`;
-      meta.appendChild(chip);
-    }
-
-    body.append(label, meta);
-
-    if (cliRun) {
+    const run = cliRun ? document.createElement('div') : null;
+    if (cliRun && run) {
+      run.className = 'card-run';
+      const pill = cliRunPillView(cliRun);
+      const chip = renderChip(pill.label, 'card-chip-running');
+      if (pill.model) {
+        const model = document.createElement('span');
+        model.className = pill.confirmed
+          ? 'card-chip-running-model card-chip-running-model-actual'
+          : 'card-chip-running-model';
+        model.textContent = pill.model;
+        chip.appendChild(model);
+      }
+      if (pill.thinkingLevel) {
+        const level = document.createElement('span');
+        level.className = 'card-chip-running-thinking';
+        level.textContent = pill.thinkingLevel;
+        chip.appendChild(level);
+      }
+      chip.title = pill.title;
+      chip.setAttribute('aria-label', pill.title);
       const ticker = document.createElement('div');
       ticker.className = 'card-cli-status';
       ticker.textContent = cliRun.statusLine || 'Starting…';
       ticker.title = cliRun.statusLine || '';
-      body.appendChild(ticker);
+      run.append(chip, ticker);
     }
+
+    body.append(label, meta);
 
     const actions = document.createElement('div');
     actions.className = 'card-actions';
@@ -879,6 +959,9 @@
 
     actions.append(details);
     el.append(body, actions);
+    if (run) {
+      el.appendChild(run);
+    }
 
     el.addEventListener('dragstart', () => {
       draggedCardId = card.id;
@@ -1306,7 +1389,7 @@
     startInterview.className = 'card-modal-ai';
     startInterview.type = 'button';
     startInterview.textContent = 'Start interview';
-    startInterview.title = 'Open an AI chat that asks one question at a time and records your answers. Resumes from answers already saved on the card.';
+    startInterview.title = 'Open an AI coworking chat. The AI does what it can itself and asks only for what it needs from you, one question at a time, recording everything on the card. Resumes from what is already saved.';
     startInterview.addEventListener('click', () => {
       post({ type: 'startCardInterview', cardId: record.card.id });
     });

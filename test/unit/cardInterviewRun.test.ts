@@ -164,6 +164,21 @@ suite('card interview prompt', () => {
     assert.match(prompt, /never for credentials, passwords, account numbers or customer records/);
   });
 
+  test('runs as a coworking session that answers and acts before it asks', () => {
+    assert.match(prompt, /coworking session with the person/);
+    assert.match(prompt, /Try to answer it yourself from the card, the linked artifacts, the repository and read-only commands/);
+    assert.match(prompt, /Never ask the person for something you can find out on your own/);
+    assert.match(prompt, /Do any in-scope, safe workspace step yourself instead of asking the person to do it/);
+    assert.match(prompt, /explicit go-ahead before any outward-facing, destructive or hard-to-undo action/);
+    assert.match(prompt, /only for what only they can supply: decisions, preferences, approval or sign-off, and facts that are not available in the workspace/);
+    assert.match(prompt, /state the finding and its source and ask them to confirm or correct it, instead of asking an open-ended question/);
+    assert.match(prompt, /Record each fact you found or step you did as a dated Activity entry giving its source \(file path, command or artifact\), and label it verified evidence/);
+    assert.match(prompt, /Answers from the person stay labelled user-reported/);
+    assert.doesNotMatch(prompt, /You ask, listen and record|Do not implement the work/);
+    assert.ok(prompt.indexOf('## Do it yourself first') < prompt.indexOf('## Asking'));
+    assert.match(prompt, /Never invent or guess answers/);
+  });
+
   test('records each answer durably and keeps zero, none, unknown and skipped distinct', () => {
     assert.match(prompt, /Append a dated entry under the card's "## Activity" section with the question, the answer, and its source/);
     assert.match(prompt, /Update only the linked fact or baseline artifacts/);

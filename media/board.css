@@ -315,6 +315,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: 10px;
   word-break: break-word;
 }
@@ -427,6 +428,53 @@ body {
   border-radius: 50%;
   background: currentColor;
   animation: card-chip-running-pulse 1.2s ease-in-out infinite;
+}
+
+/* The running pill and command preview wrap onto their own row and span the
+   full card width, below the body and the action buttons. */
+.card-run {
+  flex: 1 0 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The model, then the thinking level, sit after the CLI name; long values are
+   ellipsized to fit the card, and the full text is on the title. */
+.card-chip-running {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.card-chip-running-model,
+.card-chip-running-thinking {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.card-chip-running-model::before,
+.card-chip-running-thinking::before {
+  content: '· ';
+}
+
+.card-chip-running-model {
+  flex: 0 1 auto;
+}
+
+.card-chip-running-thinking {
+  flex: 0 0 auto;
+  max-width: 10ch;
+}
+
+.card-chip-running-model-actual {
+  opacity: 1;
 }
 
 @keyframes card-chip-running-pulse {

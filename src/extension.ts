@@ -19,6 +19,7 @@ import {
   requestJevRunSettings,
   type DefinitionRunSettings,
 } from './cardRunSettings';
+import { createCliRunStatusTracker } from './cliRunStatusTracker';
 import {
   createCliOutputFeed,
   formatCliRunExit,
@@ -96,8 +97,11 @@ import {
 import { cardPreferredModelFor, describeBlockedCardRelocation } from './utils';
 import {
   CHAT_PROVIDER_LABELS,
+  activateChatHandoffProvider,
   createChatHandoffInFlight,
+  createChatHandoffQueue,
   deliverClipboardHandoff,
+  resolveClipboardHandoffResult,
   describeChatHandoffTarget,
   positionalHandoffArgs,
   formatChatHandoffFailure,
@@ -160,10 +164,12 @@ import { BoardSidebarViewProvider } from './sidebarView';
 import { openProPortfolio } from './portfolioButton';
 import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from './boardStore';
 import {
+  DEFAULT_SKILLS_INSTALL_LOCATION,
   parseSkillDocument,
   planSkillInstallation,
   planUserSkillInstallation,
   referencePathsForEnv,
+  resolveSkillsInstallLocation,
   userCodexAgentsPath,
   userReferencePathsForEnv,
   type AiEnvironment,
@@ -222,13 +228,17 @@ function confirmDeletion(): boolean {
 /** Without a workspace no AI loop can run, so its state never changes. */
 const noAiLoopStateChange: vscode.Event<void> = () => ({ dispose: () => undefined });
 
+/** Monotonic source of per-process dispatch ids for the card running pill. */
+let cliRunDispatchCounter = 0;
+
 function readEnableRunWithAI(): boolean {
   return vscode.workspace.getConfiguration('mwnn-kanban').get<boolean>('enableRunWithAI', true);
 }
 
 function readSkillsInstallLocation(): SkillsInstallLocation {
-  const value = vscode.workspace.getConfiguration('mwnn-kanban').get<string>('skillsInstallLocation', 'workspace');
-  return value === 'user' ? 'user' : 'workspace';
+  return resolveSkillsInstallLocation(
+    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('skillsInstallLocation', DEFAULT_SKILLS_INSTALL_LOCATION),
+  );
 }
 
 function readChatProviderCommands(): ChatProviderCommands {
@@ -525,15 +535,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     stoppable = false,
   ): AgentCliProcessObserver => {
     let processRunning = false;
-    const postStatus = (running: boolean, statusLine?: string): void => {
-      BoardPanel.postCliRunStatusIfOpen({
-        cardId: card.id,
-        providerLabel,
-        running,
-        ...(statusLine !== undefined ? { statusLine } : {}),
-        ...(running && stoppable ? { stoppable: true } : {}),
-      });
-    };
+    // One observer serves one CLI process attempt, so each gets its own
+    // dispatch id; the board uses it to keep a stale attempt off the pill.
+    const tracker = createCliRunStatusTracker({
+      cardId: card.id,
+      providerLabel,
+      dispatchId: `${card.id}:${++cliRunDispatchCounter}`,
+      stoppable,
+      post: (status) => BoardPanel.postCliRunStatusIfOpen(status),
+    });
     const feed = createCliOutputFeed({
       onLine: (line, stream) =>
         cliOutputChannel.info(stream === 'stderr' ? `[stderr] ${line}` : line),
@@ -542,23 +552,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return;
         }
         reportProgress(line);
-        postStatus(true, line);
+        tracker.statusLine(line);
       },
     });
     return {
+      onModel: (status) => tracker.setModel(status),
       onStart: (invocation) => {
         processRunning = true;
         for (const line of formatCliRunStart(invocation, kind, card.title)) {
           cliOutputChannel.info(line);
         }
-        postStatus(true, `Starting ${providerLabel}…`);
+        tracker.start();
       },
       onOutput: (chunk, stream) => feed.write(chunk, stream),
       onExit: (result) => {
         feed.flush();
         processRunning = false;
         cliOutputChannel.info(formatCliRunExit(result));
-        postStatus(false);
+        tracker.end();
       },
     };
   };
@@ -875,9 +886,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    // Install the skills into every AI tool this workspace uses (plus the tool we
-    // are handing off to) so the guidance travels with the project on any machine,
-    // or into each tool's user-level folder when the user keeps them out of the repo.
+    // Install the skills into each AI tool's user-level folder by default so they
+    // stay out of the repo, or, when the user opts into workspace installation, into
+    // every AI tool this workspace uses (plus the tool we are handing off to) so the
+    // guidance travels with the project on any machine.
     // Best-effort: the prompt is self-contained, so a write failure never blocks import.
     const providerEnv = PROVIDER_ENVIRONMENTS[target.provider];
     const installLocation = readSkillsInstallLocation();
@@ -2169,7 +2181,7 @@ async function discoverChatHandoffTargets(): Promise<ChatProviderDiscovery> {
     const codex = vscode.extensions.getExtension('openai.chatgpt');
     if (codex) {
       try {
-        await codex.activate();
+        await activateChatHandoffProvider(async () => { await codex.activate(); });
         availableCommands = await vscode.commands.getCommands(true);
       } catch (error: unknown) {
         codexActivationFailure = error instanceof Error ? error.message : String(error);
@@ -2308,7 +2320,17 @@ function stopCardCliRun(cardId: string): void {
  * handed off (e.g. a quoted card title, or "the plan") for the user-facing
  * confirmation. Returns whether the prompt was delivered and can be recorded.
  */
-async function handOffPromptToChat(
+const chatPromptDeliveries = createChatHandoffQueue();
+
+function handOffPromptToChat(
+  target: ChatHandoffTarget,
+  prompt: string,
+  subject: string,
+): Promise<boolean> {
+  return chatPromptDeliveries.run(() => deliverPromptToChat(target, prompt, subject));
+}
+
+async function deliverPromptToChat(
   target: ChatHandoffTarget,
   prompt: string,
   subject: string,
@@ -2333,12 +2355,22 @@ async function handOffPromptToChat(
     if (shouldAutoPasteChatHandoff(target)) {
       const result = await deliverClipboardHandoff(target, prompt, {
         writeClipboard: (value) => vscode.env.clipboard.writeText(value),
+        readClipboard: () => vscode.env.clipboard.readText(),
         activateProvider: () => activateChatProvider(target),
         executeCommand: (commandId) => vscode.commands.executeCommand(commandId),
         wait: waitForMilliseconds,
       });
-      if (!result.delivered) {
-        void vscode.window.showWarningMessage(formatChatHandoffFailure(providerLabel, subject, result.error));
+      const delivered = await resolveClipboardHandoffResult(result, async () => {
+        const answer = await vscode.window.showInformationMessage(
+          `Check the new ${providerLabel} chat for ${subject}. Automatic verification was unavailable. Confirm only if the complete prompt is present; no handoff has been recorded yet.`,
+          'Prompt is present',
+          'Prompt is missing',
+        );
+        return answer === 'Prompt is present' ? true : answer === 'Prompt is missing' ? false : undefined;
+      }, (reason) => {
+        void vscode.window.showWarningMessage(formatChatHandoffFailure(providerLabel, subject, reason));
+      });
+      if (!delivered) {
         return false;
       }
       void vscode.window.showInformationMessage(

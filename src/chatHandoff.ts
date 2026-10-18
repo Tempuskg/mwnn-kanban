@@ -29,6 +29,7 @@ export type ChatProviderCommands = Partial<Record<ChatProviderId, string>>;
 
 export interface ClipboardHandoffExecutor {
   readonly writeClipboard: (prompt: string) => PromiseLike<void>;
+  readonly readClipboard: () => PromiseLike<string>;
   readonly executeCommand: (commandId: string) => PromiseLike<unknown>;
   /** Activates the provider before its command is invoked, when available. */
   readonly activateProvider?: () => PromiseLike<void>;
@@ -36,24 +37,58 @@ export interface ClipboardHandoffExecutor {
 }
 
 export interface ClipboardHandoffOptions {
-  /** Time to let a newly revealed provider view create its composer. */
+  readonly providerActivationTimeoutMs?: number;
+  /** Startup allowance before requesting the new chat from a revealed provider. */
   readonly providerReadyDelayMs?: number;
-  /** Time to let the requested new conversation focus its composer. */
+  /** Time for the new-chat request to focus its composer. */
   readonly composerReadyDelayMs?: number;
-  /** Number of times to retry pasting while the chat composer finishes loading. */
-  readonly pasteMaxAttempts?: number;
-  /** Delay between paste attempts while waiting for the chat composer. */
-  readonly pasteRetryDelayMs?: number;
+  /** Allow the webview's asynchronous paste to consume the current clipboard. */
+  readonly pasteSettleDelayMs?: number;
+  /** Number of readbacks while waiting for the paste to appear in the composer. */
+  readonly verificationMaxAttempts?: number;
+  readonly verificationRetryDelayMs?: number;
 }
 
 export type ClipboardHandoffResult =
   | { readonly delivered: true }
-  | { readonly delivered: false; readonly error: string };
+  | { readonly delivered: false; readonly error: string; readonly unconfirmed?: true };
+
+/** Resolve unavailable readback without treating it as either proven failure or success. */
+export async function resolveClipboardHandoffResult(
+  result: ClipboardHandoffResult,
+  confirmPrompt: () => PromiseLike<boolean | undefined>,
+  reportFailure: (reason: string) => void,
+): Promise<boolean> {
+  if (result.delivered) {
+    return true;
+  }
+  if (!result.unconfirmed) {
+    reportFailure(result.error);
+    return false;
+  }
+  const confirmed = await confirmPrompt();
+  if (confirmed === false) {
+    reportFailure('the complete prompt was reported missing from the new-chat composer; inspect the draft before retrying');
+  }
+  return confirmed === true;
+}
 
 export type ChatHandoffAttempt<T> = { readonly started: true; readonly value: T } | { readonly started: false };
 
 export interface ChatHandoffInFlight {
   run<T>(key: string, action: () => Promise<T>): Promise<ChatHandoffAttempt<T>>;
+}
+
+/** Different cards still share one focused chat view and one system clipboard. */
+export function createChatHandoffQueue(): { run<T>(action: () => Promise<T>): Promise<T> } {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    run<T>(action: () => Promise<T>): Promise<T> {
+      const result = tail.then(action);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  };
 }
 
 export const CHAT_PROVIDER_LABELS: Record<ChatProviderId, string> = {
@@ -218,9 +253,13 @@ function clipboardPromptChunks(prompt: string, target: ChatHandoffTarget): strin
 }
 
 /**
- * Delivers one clipboard-based hand-off. Provider activation and a
- * separate view-open command happen before the new-chat command, which avoids
- * losing Codex's initial new-chat message while its webview is starting.
+ * Reveals the provider and allows startup time before requesting a fresh chat,
+ * then inserts the card prompt once
+ * and confirms its complete composer text. No readiness text is ever pasted.
+ * Command completion alone is not a delivery receipt: a webview paste can
+ * silently do nothing. Never replay an unacknowledged card-prompt paste, since
+ * it may have taken effect even if the command threw. Once that paste starts,
+ * only the readback is retried.
  */
 export async function deliverClipboardHandoff(
   target: ChatHandoffTarget,
@@ -236,62 +275,89 @@ export async function deliverClipboardHandoff(
   try {
     await executor.writeClipboard(prompt);
     if (executor.activateProvider) {
-      await executor.activateProvider();
+      await activateChatHandoffProvider(executor.activateProvider, options.providerActivationTimeoutMs);
     }
     if (target.prepareCommandId) {
       await executor.executeCommand(target.prepareCommandId);
-      await executor.wait(options.providerReadyDelayMs ?? 300);
+      // A new-chat request queued during startup can lose composer focus when
+      // initialization replaces the input. Allow the reported five-second
+      // startup to finish before sending that request, rather than after it.
+      await executor.wait(options.providerReadyDelayMs ?? 6_000);
     }
     await executor.executeCommand(target.commandId);
-    await executor.wait(options.composerReadyDelayMs ?? 300);
+    await executor.wait(options.composerReadyDelayMs ?? (target.prepareCommandId ? 300 : 6_000));
     try {
-      for (const [index, chunk] of chunks.entries()) {
-        if (chunks.length > 1) {
-          await executor.writeClipboard(chunk);
-        }
-        const pasteResult = await pasteClipboardWhenComposerReady(executor, options);
-        if (!pasteResult.delivered) {
-          return pasteResult;
-        }
-        if (index < chunks.length - 1) {
-          await executor.wait(50);
-        }
+      for (const chunk of chunks) {
+        await executor.writeClipboard(chunk);
+        await executor.executeCommand('editor.action.clipboardPasteAction');
+        // executeCommand acknowledges dispatch, not the renderer's clipboard
+        // read. Keep this chunk available before advancing or verifying it.
+        await executor.wait(options.pasteSettleDelayMs ?? 150);
       }
+      return await verifyPastedPrompt(prompt, executor, options);
     } finally {
-      if (chunks.length > 1) {
-        await executor.writeClipboard(prompt);
-      }
+      // Verification uses Copy, so restore the full request for recovery too.
+      await executor.writeClipboard(prompt);
     }
-    return { delivered: true };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return { delivered: false, error: message || 'the Codex composer did not become ready' };
   }
 }
 
-async function pasteClipboardWhenComposerReady(
+export async function activateChatHandoffProvider(activate: () => PromiseLike<void>, timeoutMs = 15_000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(activate),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Codex activation timed out; check the Codex extension and sign-in, then retry')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function verifyPastedPrompt(
+  prompt: string,
   executor: ClipboardHandoffExecutor,
   options: ClipboardHandoffOptions,
 ): Promise<ClipboardHandoffResult> {
-  const maxAttempts = Math.max(1, Math.floor(options.pasteMaxAttempts ?? 8));
-  const retryDelayMs = Math.max(0, Math.floor(options.pasteRetryDelayMs ?? 250));
-  let lastError = 'the chat composer did not become ready';
+  const maxAttempts = Math.max(1, Math.floor(options.verificationMaxAttempts ?? 8));
+  const retryDelayMs = Math.max(0, Math.floor(options.verificationRetryDelayMs ?? 250));
+  // Copy on an empty or unfocused webview can leave the clipboard unchanged.
+  // A distinct marker prevents the source clipboard from proving delivery.
+  const marker = prompt + '\u2063';
+  let lastError = 'Codex did not acknowledge the prompt; open Codex and inspect the new-chat draft before retrying';
 
+  // Do not overwrite a delayed Copy result at the start of the next poll.
+  await executor.writeClipboard(marker);
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await executor.executeCommand('editor.action.clipboardPasteAction');
-      return { delivered: true };
+      await executor.executeCommand('editor.action.selectAll');
+      await executor.executeCommand('editor.action.clipboardCopyAction');
+      // Webview Copy is fire-and-forget. Give the renderer time to update
+      // the system clipboard before reading its delivery acknowledgement.
+      await executor.wait(retryDelayMs);
+      const copied = await executor.readClipboard();
+      if (copied === prompt) {
+        return { delivered: true };
+      }
+      if (copied !== marker) {
+        return { delivered: false, error: 'the focused composer did not contain the complete selected-card prompt; inspect the Codex draft before retrying' };
+      }
     } catch (error: unknown) {
       lastError = error instanceof Error ? error.message : String(error);
-      if (attempt < maxAttempts) {
-        await executor.wait(retryDelayMs);
-      }
     }
   }
 
   return {
     delivered: false,
-    error: `${lastError || 'the chat composer did not become ready'} after ${maxAttempts} paste attempts`,
+    unconfirmed: true,
+    error: `${lastError} after ${maxAttempts} verification attempts`,
   };
 }
 

@@ -1006,7 +1006,22 @@ export interface AgentCliProcessResult {
  * channel, progress text, board UI). Purely observational: callbacks must not
  * influence the run, and omitting the observer changes nothing.
  */
+/**
+ * What is known about the model one CLI process attempt runs on. `requested`
+ * is the model passed to the CLI (absent when none was, or the CLI cannot take
+ * one); `actual` is set only from authoritative CLI/session metadata.
+ * `thinkingLevel` is the level passed to the CLI (absent when none was, or the
+ * CLI cannot take one); no CLI reports an actual level, so it is never confirmed.
+ */
+export interface AgentCliModelStatus {
+  readonly requested?: string;
+  readonly actual?: string;
+  readonly thinkingLevel?: string;
+}
+
 export interface AgentCliProcessObserver {
+  /** Called with the requested model and thinking level before launch, then again once the actual model is confirmed. */
+  readonly onModel?: (status: AgentCliModelStatus) => void;
   readonly onStart?: (invocation: AgentCliInvocation) => void;
   readonly onOutput?: (chunk: string, stream: 'stdout' | 'stderr') => void;
   readonly onExit?: (result: AgentCliProcessResult) => void;
@@ -1470,6 +1485,21 @@ export async function runAgentCliCardHandoff(
   }
   const afterStart = findCard(await handoff.store.reload(), handoff.cardId);
   const activityBaseline = (afterStart?.activity ?? before.activity ?? '').length;
+  // Live model status for the card's running pill. Only a model actually passed
+  // to the CLI counts as requested, and only discovery evidence counts as actual.
+  const requestedModel = modelSelection?.applied ? nonBlank(modelSelection.requested) : undefined;
+  const thinkingLevel = thinkingSelection?.applied ? nonBlank(thinkingSelection.requested) : undefined;
+  const publishModelStatus = (actual?: string): void => {
+    try {
+      options.observer?.onModel?.({
+        ...(requestedModel !== undefined ? { requested: requestedModel } : {}),
+        ...(actual !== undefined ? { actual } : {}),
+        ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+      });
+    } catch {
+      // The pill is observational and must not affect a dispatch.
+    }
+  };
   let reportQueue = Promise.resolve();
   const queueModelReport = (entry: string): void => {
     publishOrchestratorReport(options.observer, entry);
@@ -1483,6 +1513,10 @@ export async function runAgentCliCardHandoff(
         cwd: handoff.cwd,
         signal: handoff.signal,
         onEvidence: (evidence) => {
+          const actual = nonBlank(evidence.model);
+          if (actual !== undefined) {
+            publishModelStatus(actual);
+          }
           queueModelReport(formatAgentCliActualModelEntry(
             attemptId,
             handoff.cardId,
@@ -1530,6 +1564,7 @@ export async function runAgentCliCardHandoff(
     });
     throw error;
   }
+  publishModelStatus();
   let processResult: AgentCliProcessResult | undefined;
   let sawProcessOutput = false;
   const observer: AgentCliProcessObserver | undefined = discovery
@@ -1906,6 +1941,10 @@ function findCard(state: BoardState, cardId: string): Card | undefined {
     }
   }
   return undefined;
+}
+
+function nonBlank(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
 async function appendIfCardExists(

@@ -1246,6 +1246,179 @@ suite('orchestrated dispatch model reporting', () => {
   });
 });
 
+suite('agent CLI live model status for the running pill', () => {
+  type ModelStatus = { requested?: string; actual?: string; thinkingLevel?: string };
+
+  function withPreferredModels(
+    initial: { readonly state: BoardState; readonly cardId: string },
+    preferredModels: Record<string, string>,
+  ): BoardState {
+    return {
+      ...initial.state,
+      columns: initial.state.columns.map((column) => ({
+        ...column,
+        cards: column.cards.map((card) => card.id === initial.cardId
+          ? { ...card, preferredModels }
+          : card),
+      })),
+    };
+  }
+
+  async function modelStatuses(options: {
+    readonly provider: AgentCliProviderId;
+    readonly requested?: string;
+    readonly thinkingLevel?: string;
+    readonly orchestrated: boolean;
+    readonly output?: string;
+  }): Promise<ModelStatus[]> {
+    const initial = boardWithCard();
+    const withModels = options.requested === undefined
+      ? initial.state
+      : withPreferredModels(initial, { [options.provider]: options.requested });
+    const board = fakeStore(options.thinkingLevel === undefined
+      ? withModels
+      : {
+          ...withModels,
+          columns: withModels.columns.map((column) => ({
+            ...column,
+            cards: column.cards.map((card) => card.id === initial.cardId
+              ? { ...card, thinkingLevels: { [options.provider]: options.thinkingLevel } }
+              : card),
+          })),
+        });
+    const statuses: ModelStatus[] = [];
+    await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target(options.provider),
+        cardId: initial.cardId,
+        prompt: 'Complete the card.',
+        cwd: 'E:\\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      {
+        orchestrated: options.orchestrated,
+        observer: { onModel: (status) => statuses.push({ ...status }) },
+        runProcess: async (_invocation, _signal, observer) => {
+          if (options.output !== undefined) {
+            observer?.onOutput?.(options.output, 'stdout');
+          }
+          await board.store.appendActivity(initial.cardId, 'Finished.\nSTATUS: DONE');
+          return successfulProcess();
+        },
+      },
+    );
+    return statuses;
+  }
+
+  test('reports the requested model before launch, then the actual model once the CLI confirms it', async () => {
+    const statuses = await modelStatuses({
+      provider: 'claude-code',
+      requested: 'sonnet',
+      orchestrated: true,
+      output: '{"type":"system","subtype":"init","model":"claude-sonnet-5-5"}\n',
+    });
+
+    assert.deepEqual(statuses, [
+      { requested: 'sonnet' },
+      { requested: 'sonnet', actual: 'claude-sonnet-5-5' },
+    ]);
+  });
+
+  test('reports no model when none was requested and none is confirmed', async () => {
+    assert.deepEqual(await modelStatuses({ provider: 'claude-code', orchestrated: true }), [{}]);
+  });
+
+  test('reports an actual model without inventing a requested one', async () => {
+    const statuses = await modelStatuses({
+      provider: 'claude-code',
+      orchestrated: true,
+      output: '{"type":"system","subtype":"init","model":"claude-sonnet-5-5"}\n',
+    });
+
+    assert.deepEqual(statuses, [{}, { actual: 'claude-sonnet-5-5' }]);
+  });
+
+  test('keeps only the requested model when the CLI metadata is missing or malformed', async () => {
+    const statuses = await modelStatuses({
+      provider: 'cursor',
+      requested: 'Gemini 3.8 Flash',
+      orchestrated: true,
+      output: '{"type":"system","subtype":"init","model":null}\n',
+    });
+
+    assert.deepEqual(statuses, [{ requested: 'Gemini 3.8 Flash' }]);
+  });
+
+  test('a direct run has no model discovery, so its pill never claims an actual model', async () => {
+    const statuses = await modelStatuses({
+      provider: 'claude-code',
+      requested: 'sonnet',
+      orchestrated: false,
+      output: '{"type":"system","subtype":"init","model":"claude-sonnet-5-5"}\n',
+    });
+
+    assert.deepEqual(statuses, [{ requested: 'sonnet' }]);
+  });
+
+  test('reports the thinking level passed to the CLI alongside the model', async () => {
+    const statuses = await modelStatuses({
+      provider: 'claude-code',
+      requested: 'sonnet',
+      thinkingLevel: 'high',
+      orchestrated: true,
+      output: '{"type":"system","subtype":"init","model":"claude-sonnet-5-5"}\n',
+    });
+
+    assert.deepEqual(statuses, [
+      { requested: 'sonnet', thinkingLevel: 'high' },
+      { requested: 'sonnet', actual: 'claude-sonnet-5-5', thinkingLevel: 'high' },
+    ]);
+  });
+
+  test('omits a thinking level the CLI cannot accept', async () => {
+    const statuses = await modelStatuses({
+      provider: 'cursor',
+      requested: 'Gemini 3.8 Flash',
+      thinkingLevel: 'high',
+      orchestrated: false,
+    });
+
+    assert.deepEqual(statuses, [{ requested: 'Gemini 3.8 Flash' }]);
+  });
+
+  test('each dispatch reports the model requested for the provider that actually runs', async () => {
+    const initial = boardWithCard();
+    const board = fakeStore(withPreferredModels(initial, { 'claude-code': 'sonnet', codex: 'gpt-6.1-sol' }));
+    const seen: Record<string, ModelStatus[]> = { 'claude-code': [], codex: [] };
+    for (const provider of ['claude-code', 'codex'] as const) {
+      await runAgentCliCardHandoff(
+        {
+          kind: 'implementation',
+          target: target(provider),
+          cardId: initial.cardId,
+          prompt: 'Complete the card.',
+          cwd: 'E:\\workspace',
+          store: board.store,
+          signal: new AbortController().signal,
+        },
+        {
+          orchestrated: true,
+          observer: { onModel: (status) => seen[provider]!.push({ ...status }) },
+          runProcess: async () => {
+            await board.store.appendActivity(initial.cardId, 'Finished.\nSTATUS: DONE');
+            return successfulProcess();
+          },
+        },
+      );
+    }
+
+    assert.deepEqual(seen['claude-code'], [{ requested: 'sonnet' }]);
+    assert.deepEqual(seen['codex'], [{ requested: 'gpt-6.1-sol' }]);
+  });
+});
+
 suite('agent CLI process cancellation', () => {
   test('aborting the signal terminates a live child process', async () => {
     const controller = new AbortController();

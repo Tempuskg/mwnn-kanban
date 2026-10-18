@@ -1,7 +1,9 @@
 import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs';
 import { suite, test } from 'node:test';
 import {
   AI_ENVIRONMENTS,
+  DEFAULT_SKILLS_INSTALL_LOCATION,
   MANAGED_BLOCK_MARKER,
   parseSkillDocument,
   planSkillInstallation,
@@ -11,6 +13,7 @@ import {
   renderCopilotInstruction,
   renderCopilotSkill,
   renderCursorRule,
+  resolveSkillsInstallLocation,
   skillFilePath,
   upsertManagedBlock,
   upsertManagedBlockPreserving,
@@ -261,5 +264,39 @@ suite('user-level install planning', () => {
       assert.doesNotMatch(second, /ONE/);
       assert.equal(upsert(second, 'TWO'), second);
     }
+  });
+});
+
+suite('skillsInstallLocation setting resolution', () => {
+  test('an unset value resolves to user', () => {
+    assert.equal(resolveSkillsInstallLocation(undefined), 'user');
+  });
+
+  test('invalid values resolve to user', () => {
+    for (const value of [null, '', 'Workspace', ' workspace', 'global', 42, true, {}, ['workspace']]) {
+      assert.equal(resolveSkillsInstallLocation(value), 'user', `value ${JSON.stringify(value)}`);
+    }
+  });
+
+  test('explicit user and workspace values resolve to their own scope', () => {
+    assert.equal(resolveSkillsInstallLocation('user'), 'user');
+    assert.equal(resolveSkillsInstallLocation('workspace'), 'workspace');
+  });
+
+  test('the manifest and runtime both default to user', () => {
+    const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8')) as {
+      readonly contributes?: {
+        readonly configuration?: {
+          readonly properties?: Record<string, { readonly default?: unknown; readonly enum?: readonly unknown[] }>;
+        };
+      };
+    };
+    const setting = manifest.contributes?.configuration?.properties?.['mwnn-kanban.skillsInstallLocation'];
+    assert.ok(setting, 'mwnn-kanban.skillsInstallLocation is contributed');
+    assert.equal(setting.default, 'user');
+    assert.deepEqual([...(setting.enum ?? [])].sort(), ['user', 'workspace']);
+    assert.equal(DEFAULT_SKILLS_INSTALL_LOCATION, 'user');
+    assert.equal(DEFAULT_SKILLS_INSTALL_LOCATION, setting.default);
+    assert.equal(resolveSkillsInstallLocation(undefined), setting.default);
   });
 });

@@ -496,15 +496,16 @@ export function describeInterviewIneligibility(reason: InterviewIneligibleReason
 }
 
 /**
- * The reusable AI-guided interview procedure. The human supplies facts and
- * decisions; the agent reads the saved records, asks one question at a time
- * and records every answer in the card and its linked artifacts, so a fresh
- * chat resumes from the files rather than from any provider conversation.
+ * The reusable AI-guided interview procedure, run as a coworking session. The
+ * agent answers what it can from the workspace and does the safe in-scope
+ * steps itself; the human supplies only decisions and facts that are not in the
+ * workspace. Everything is recorded in the card and its linked artifacts, so a
+ * fresh chat resumes from the files rather than from any provider conversation.
  */
 export function buildCardInterviewPrompt(card: BoardCard, cardFilePath: string, workspaceRoot: string): string {
   return [
-    'You are guiding an AI-assisted interview for a Methodology With No Name (MWNN) Kanban card inside VS Code.',
-    'This is a Human card: the person chatting with you supplies the facts and decisions. You ask, listen and record. Do not implement the work, do not invent answers, and do not change the card\'s assignee.',
+    'You are running a coworking session with the person for a Methodology With No Name (MWNN) Kanban card inside VS Code.',
+    'This is a Human card, but this is a working session rather than a questionnaire: you do everything you safely can in the workspace yourself, and you ask the person only for what genuinely needs them. Never invent or guess answers, and do not change the card\'s assignee.',
     '',
     `Workspace root: ${workspaceRoot}`,
     `This card is stored as a markdown file at: ${cardFilePath}`,
@@ -516,13 +517,22 @@ export function buildCardInterviewPrompt(card: BoardCard, cardFilePath: string, 
     '4. Reuse every answer already recorded in the card Activity or the linked artifacts. Never ask again for something already answered, unless the record is contradictory; then ask one question to resolve that contradiction.',
     '5. Work out the next unresolved item from the acceptance criteria and description.',
     '',
+    '## Do it yourself first',
+    'For each unresolved item, before you ask anything:',
+    '- Try to answer it yourself from the card, the linked artifacts, the repository and read-only commands. Never ask the person for something you can find out on your own.',
+    '- Do any in-scope, safe workspace step yourself instead of asking the person to do it: look something up, draft, verify, or update a linked artifact.',
+    '- Get the person\'s explicit go-ahead before any outward-facing, destructive or hard-to-undo action (for example sending, publishing, deleting, or changing anything outside the workspace). Never take such an action on your own.',
+    '- Record each fact you found or step you did as a dated Activity entry giving its source (file path, command or artifact), and label it verified evidence.',
+    '',
     '## Asking',
+    '- Ask the person only for what only they can supply: decisions, preferences, approval or sign-off, and facts that are not available in the workspace.',
+    '- When you have a finding the person should confirm, state the finding and its source and ask them to confirm or correct it, instead of asking an open-ended question.',
     '- Ask exactly one question per message, then stop and wait for the reply. Do not continue until the person answers.',
     '- Split a multipart question into separate questions and ask them one at a time.',
     '- Ask for system names, owners or where information lives, never for credentials, passwords, account numbers or customer records.',
     '',
     '## After each answer',
-    '1. Append a dated entry under the card\'s "## Activity" section with the question, the answer, and its source (for example "reported by <name> in interview chat, <YYYY-MM-DD>").',
+    '1. Append a dated entry under the card\'s "## Activity" section with the question, the answer, and its source (for example "reported by <name> in interview chat, <YYYY-MM-DD>"). Answers from the person stay labelled user-reported; only facts you checked yourself are verified evidence.',
     '2. Update only the linked fact or baseline artifacts the answer is about. Preserve unrelated facts, existing rows and all historical Activity.',
     '3. Record answers exactly as given and keep these distinct: zero (a counted value of 0), none (the thing does not exist), unknown (the person does not know), and skipped (the person explicitly chose not to answer). Never fill a missing answer by inference or guesswork.',
     '4. Reread the saved card and every changed artifact to confirm the answer was written before asking the next question.',

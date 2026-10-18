@@ -261,6 +261,21 @@ export interface CliRunStatus {
    * controls, so they omit this.
    */
   readonly stoppable?: boolean;
+  /**
+   * Identifies the dispatch (one CLI process attempt) this status belongs to,
+   * so a retry or provider switch replaces the pill and a late message from an
+   * earlier dispatch cannot overwrite it.
+   */
+  readonly dispatchId?: string;
+  /** The model the dispatch asked the CLI for; omitted when none was passed. */
+  readonly requestedModel?: string;
+  /**
+   * The model the CLI itself reported using for this dispatch. Never inferred:
+   * omitted until authoritative CLI/session metadata confirms it.
+   */
+  readonly actualModel?: string;
+  /** The thinking level the dispatch passed to the CLI; omitted when none was. */
+  readonly thinkingLevel?: string;
 }
 
 /**
