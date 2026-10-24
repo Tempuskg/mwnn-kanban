@@ -22,6 +22,20 @@ import {
   type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
 import {
+  isRecoverableModelRejection,
+  modelRecoverySuggestions,
+  providerSupportsThinkingLevel,
+  recoveryUpdatesCardFrontmatter,
+  thinkingRecoverySuggestions,
+  type AgentCliModelRecoveryRequest,
+  type AgentCliModelRecoverySelection,
+} from './agentCliModelRecovery';
+import {
+  EMPTY_AGENT_CLI_MODEL_CATALOG,
+  EMPTY_AGENT_CLI_STAGE_MODELS,
+  resolveAgentCliModel,
+} from './agentCliModels';
+import {
   formatOrchestratorChoiceEntry,
   formatOrchestratorRanking,
   type AgentCliUsageOrchestrator,
@@ -107,6 +121,8 @@ export interface AgentCliRunContext {
   readonly card: { readonly id: string; readonly title: string };
   readonly kind: RunWithAiHandoffKind;
   readonly providerLabel: string;
+  /** Selectable CLI identity; used e.g. to attach a Cursor stream-json renderer. */
+  readonly provider: AgentCliProviderId;
 }
 
 /**
@@ -118,6 +134,17 @@ export interface RunWithAiBoardStore extends AgentCliHandoffStore {
   moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<unknown>;
   setAssignee(cardId: string, assignee: Assignee | undefined): Promise<unknown>;
   setAcceptanceCriteria(cardId: string, acceptanceCriteria: string): Promise<unknown>;
+  /** Optional: used when recovering from a card-preferred model the CLI refused. */
+  setPreferredModel?(
+    cardId: string,
+    provider: AgentCliProviderId,
+    preferredModel: string | undefined,
+  ): Promise<unknown>;
+  setThinkingLevel?(
+    cardId: string,
+    provider: AgentCliProviderId,
+    thinkingLevel: string | undefined,
+  ): Promise<unknown>;
 }
 
 export interface RunCardWithAgentCliDeps {
@@ -177,6 +204,27 @@ export interface RunCardWithAgentCliDeps {
   readonly orchestrator?: Pick<AgentCliUsageOrchestrator, 'choose'>;
   /** The full orchestrator ranking (with skipped CLIs) for the output channel. */
   readonly onRanking?: (lines: readonly string[]) => void;
+  /**
+   * When a define/run fails because the CLI refused the model name, open the
+   * recovery GUI (model, thinking level, workspace/user scope), persist the
+   * choice, and return it so this attempt can re-dispatch immediately.
+   * Returning undefined (cancel) abandons the dispatch without writing.
+   * Never called for non-model failures.
+   */
+  readonly recoverFromModelRejection?: (
+    request: AgentCliModelRecoveryRequest,
+  ) => Promise<AgentCliModelRecoverySelection | undefined>;
+  /**
+   * Re-read model/thinking settings after a successful recovery write so the
+   * retry sees the updated catalog. Omitting it keeps the deps snapshot from
+   * the first attempt (the retry still passes escalated overrides).
+   */
+  readonly refreshModelSettings?: () => {
+    readonly modelCatalog?: AgentCliModelCatalog;
+    readonly stageModels?: AgentCliStageModels;
+    readonly thinkingLevels?: AgentCliThinkingLevelDefaults;
+    readonly stageThinkingLevels?: AgentCliStageThinkingLevels;
+  };
   /** Test seams; default to the shared agentCliHandoff implementations. */
   readonly resolveTarget?: (
     provider: AgentCliProviderId,
@@ -212,9 +260,21 @@ export async function runCardWithAgentCli(
       deps.showWarning('The Usage Orchestrator is not available for this run.');
       return false;
     }
+    const cursorModel = resolveAgentCliModel(
+      'cursor',
+      undefined,
+      deps.modelCatalog ?? EMPTY_AGENT_CLI_MODEL_CATALOG,
+      {
+        stage: request.kind,
+        stageModels: deps.stageModels ?? EMPTY_AGENT_CLI_STAGE_MODELS,
+      },
+    )?.model;
     const decision = await deps.runWithProgress(
       `Usage Orchestrator: reading agent CLI usage for "${request.card.title}"`,
-      () => orchestrator.choose(),
+      () => orchestrator.choose({
+        ...(cursorModel !== undefined ? { cursorModel } : {}),
+        cursorProductDefault: 'auto',
+      }),
       request.card.id,
     );
     deps.onRanking?.(formatOrchestratorRanking(decision.ranking, request.kind, request.card.title));
@@ -245,37 +305,121 @@ export async function runCardWithAgentCli(
   const progressTitle = request.kind === 'definition'
     ? `Filling in "${request.card.title}" with ${target.label}`
     : `Running "${request.card.title}" with ${target.label}`;
-  const result = await deps.runWithProgress(
-    progressTitle,
-    (signal, reportProgress) => {
-      const observer = deps.createProcessObserver?.(
-        { card: request.card, kind: request.kind, providerLabel: target.label },
-        reportProgress,
+
+  let modelCatalog = deps.modelCatalog;
+  let stageModels = deps.stageModels;
+  let thinkingLevels = deps.thinkingLevels;
+  let stageThinkingLevels = deps.stageThinkingLevels;
+  let escalatedModel: string | undefined;
+  let escalatedThinkingLevel: string | undefined;
+  let result: AgentCliCardHandoffResult;
+
+  // A model-not-found refusal opens recovery once per attempt; confirming
+  // writes settings and re-dispatches with escalated overrides so the new
+  // model is used immediately. Cancel or a non-model failure ends the loop.
+  for (;;) {
+    result = await deps.runWithProgress(
+      progressTitle,
+      (signal, reportProgress) => {
+        const observer = deps.createProcessObserver?.(
+          {
+            card: request.card,
+            kind: request.kind,
+            providerLabel: target.label,
+            provider: target.provider,
+          },
+          reportProgress,
+        );
+        return runHandoff(
+          {
+            kind: request.kind,
+            target,
+            cardId: request.card.id,
+            prompt: request.prompt,
+            cwd: deps.cwd,
+            store: deps.store,
+            signal,
+            ...(modelCatalog !== undefined ? { modelCatalog } : {}),
+            ...(stageModels !== undefined ? { stageModels } : {}),
+            ...(thinkingLevels !== undefined ? { thinkingLevels } : {}),
+            ...(stageThinkingLevels !== undefined ? { stageThinkingLevels } : {}),
+            ...(escalatedModel !== undefined ? { escalatedModel } : {}),
+            ...(escalatedThinkingLevel !== undefined
+              ? { escalatedThinkingLevel }
+              : {}),
+          },
+          {
+            ...(observer ? { observer } : {}),
+            ...(request.provider === 'orchestrator' ? { orchestrated: true } : {}),
+          },
+        );
+      },
+      request.card.id,
+    );
+
+    if (!isRecoverableModelRejection(result) || !deps.recoverFromModelRejection) {
+      break;
+    }
+    const modelSelection = result.modelSelection;
+    const rejectedModel = modelSelection?.requested;
+    if (rejectedModel === undefined || modelSelection === undefined) {
+      break;
+    }
+    const thinkingSupported = providerSupportsThinkingLevel(target.provider);
+    const recovery = await deps.recoverFromModelRejection({
+      provider: target.provider,
+      providerLabel: target.label,
+      rejectedModel,
+      source: modelSelection.source,
+      detail: result.reason ?? `${target.label} refused the model "${rejectedModel}".`,
+      modelSuggestions: modelRecoverySuggestions(
+        target.provider,
+        modelCatalog ?? EMPTY_AGENT_CLI_MODEL_CATALOG,
+        rejectedModel,
+      ),
+      thinkingSuggestions: thinkingSupported
+        ? thinkingRecoverySuggestions(
+            target.provider,
+            (() => {
+              const level = thinkingLevels?.[target.provider];
+              return level !== undefined ? [level] : [];
+            })(),
+          )
+        : [],
+      thinkingSupported,
+      workspaceAvailable: true,
+    });
+    if (!recovery) {
+      break;
+    }
+    // Card-sourced refusals also rewrite the card so the next dispatch does not
+    // re-hit the same stale preferredModel. Settings were already written by
+    // the recovery GUI; cancel never reaches here.
+    if (recoveryUpdatesCardFrontmatter(modelSelection.source)) {
+      await deps.store.setPreferredModel?.(
+        request.card.id,
+        target.provider,
+        recovery.model,
       );
-      return runHandoff(
-        {
-          kind: request.kind,
-          target,
-          cardId: request.card.id,
-          prompt: request.prompt,
-          cwd: deps.cwd,
-          store: deps.store,
-          signal,
-          ...(deps.modelCatalog !== undefined ? { modelCatalog: deps.modelCatalog } : {}),
-          ...(deps.stageModels !== undefined ? { stageModels: deps.stageModels } : {}),
-          ...(deps.thinkingLevels !== undefined ? { thinkingLevels: deps.thinkingLevels } : {}),
-          ...(deps.stageThinkingLevels !== undefined
-            ? { stageThinkingLevels: deps.stageThinkingLevels }
-            : {}),
-        },
-        {
-          ...(observer ? { observer } : {}),
-          ...(request.provider === 'orchestrator' ? { orchestrated: true } : {}),
-        },
-      );
-    },
-    request.card.id,
-  );
+      if (thinkingSupported) {
+        await deps.store.setThinkingLevel?.(
+          request.card.id,
+          target.provider,
+          recovery.thinkingLevel,
+        );
+      }
+    }
+    escalatedModel = recovery.model;
+    escalatedThinkingLevel = recovery.thinkingLevel;
+    const refreshed = deps.refreshModelSettings?.();
+    if (refreshed) {
+      modelCatalog = refreshed.modelCatalog;
+      stageModels = refreshed.stageModels;
+      thinkingLevels = refreshed.thinkingLevels;
+      stageThinkingLevels = refreshed.stageThinkingLevels;
+    }
+  }
+
   // Reported separately from the run's own outcome: the card still ran, just
   // not on the requested model, and that must not pass unnoticed.
   if (result.modelSelection && !result.modelSelection.applied && result.modelSelection.reason) {

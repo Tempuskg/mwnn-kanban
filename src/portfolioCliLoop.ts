@@ -3,14 +3,14 @@ import * as path from 'node:path';
 import { createAgentCliFallbackRunner, type AgentCliFallbackDeps } from './agentCliFallback';
 import { createAiLoopBudget, formatAiLoopBudgetStopEntry, formatAiLoopBudgetStopMessage, formatAiLoopBudgetTally } from './aiLoopBudget';
 import { createAiLoopPauseGate } from './aiLoopPause';
-import { createLoopSession, planLoopAction, pruneLoopSession, runBoardLoop, buildTriagePrompt, type LoopSession, type LoopOptions } from './boardLoop';
+import { createLoopSession, planLoopAction, pruneLoopSession, isVerifyColumn, runBoardLoop, buildTriagePrompt, type LoopSession, type LoopOptions } from './boardLoop';
 import { buildCardDefinitionPrompt, buildCardHandoffPrompt, buildCardVerificationPrompt } from './aiCards';
 import type { BoardStore } from './boardStore';
 import type { Card } from './types';
 import type { DefinitionRunSettings } from './cardRunSettings';
-import type { PortfolioAiLoopCapabilityV1, PortfolioLoopProject, PortfolioLoopSessionV1, PortfolioLoopProgress } from './pro/contracts';
+import type { PortfolioAiLoopCapabilityV1, PortfolioLoopProject, PortfolioLoopSessionV1, PortfolioLoopProgress, PortfolioLoopUsageWait } from './pro/contracts';
 
-type FallbackOptions = Omit<AgentCliFallbackDeps, 'cwd' | 'store' | 'signal' | 'isCancelled' | 'cardKey' | 'beforeDispatch' | 'afterDispatch' | 'onPause'>;
+type FallbackOptions = Omit<AgentCliFallbackDeps, 'cwd' | 'store' | 'signal' | 'isCancelled' | 'cardKey' | 'beforeDispatch' | 'afterDispatch' | 'onPause' | 'onUsageWait'>;
 export interface PortfolioCliLoopDeps {
   enabled(): boolean;
   busy(): boolean;
@@ -56,10 +56,13 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
   let running = false;
   let finished = false;
   let outcome: 'finished' | 'stopped' | 'budget' | 'credits' = 'finished';
+  /** Why the run ran out of credits, including any declined or expired wait. */
+  let creditsReason: string | undefined;
+  let usageWait: PortfolioLoopUsageWait | undefined;
   const stopped = (): boolean => abort.signal.aborted || outcome !== 'finished' || finished;
   const current = (): NonNullable<typeof active> => { if (!active) { throw new Error('No portfolio project selected'); } return active; };
   const sessionFor = (id: string): LoopSession => { let session = sessions.get(id); if (!session) { session = createLoopSession(); sessions.set(id, session); } return session; };
-  const emit = (message: string): void => { if (currentCard) { report({ cardId: currentCard.id, cardTitle: currentCard.title, stage, message }); } };
+  const emit = (message: string): void => { if (currentCard) { report({ cardId: currentCard.id, cardTitle: currentCard.title, stage, message, ...(usageWait ? { usageWait } : {}) }); } };
   // Getters resolve at dispatch, after the previous project has fully settled.
   const runner = createAgentCliFallbackRunner({
     ...fallback,
@@ -73,7 +76,8 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
     waitBeforeDispatch: () => gate.waitWhilePaused(),
     isCancelled: stopped,
     onProgress: (message) => { fallback.onProgress?.(message); emit(message); },
-    onPause: () => { outcome = 'credits'; gate.release(); },
+    onPause: (reason) => { outcome = 'credits'; creditsReason = reason; gate.release(); },
+    onUsageWait: (wait) => { usageWait = wait; },
     beforeDispatch: ({ kind, target, card }) => {
       const reservation = budget.reserve({ stage: kind, provider: target.provider, providerLabel: target.label, cardId: JSON.stringify([current().project.projectId, card.id]), cardTitle: current().project.projectName + ': ' + card.title });
       return reservation.allowed ? { allowed: true } : { allowed: false, reason: formatAiLoopBudgetStopMessage(reservation.stop) };
@@ -93,7 +97,16 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
       const session = sessionFor(project.projectId);
       pruneLoopSession(state, session);
       const action = planLoopAction(state, { ...session, skipped: new Set([...session.skipped, ...(settledCards.get(project.projectId) ?? [])]) }, options);
-      return action ? { kind: 'card', card: { cardId: action.card.id, cardTitle: action.card.title } } : { kind: 'empty', reason: 'No actionable cards (dependencies, WIP, or review holds may apply).' };
+      if (action) { return { kind: 'card', card: { cardId: action.card.id, cardTitle: action.card.title } }; }
+      // The full-board planner above remains authoritative for runnability.
+      // Distinguish remaining candidates from completed, human and settled work.
+      const settled = settledCards.get(project.projectId);
+      const blocked = state.columns.some(column => column.role !== 'done' && column.cards.some(card =>
+        card.assignee?.kind !== 'human' && !settled?.has(card.id)
+        && (card.assignee !== undefined || !isVerifyColumn(column))));
+      return blocked
+        ? { kind: 'empty', reason: 'Remaining AI work is blocked by dependencies, board capacity, review holds, or a skipped handoff.', blocked: true }
+        : { kind: 'empty', reason: 'No actionable cards (dependencies, WIP, or review holds may apply).' };
     },
     runCard: async (project, cardId, onProgress) => {
       if (running || stopped()) { return { outcome: 'stopped' }; }
@@ -118,7 +131,7 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
             return { started: false };
           }
           if (result.kind !== 'ran') { return { started: false }; }
-          if (result.result.failure === 'credit-exhausted') { outcome = 'credits'; gate.release(); }
+          if (result.result.failure === 'credit-exhausted') { outcome = 'credits'; creditsReason ??= result.result.reason; gate.release(); }
           if (!result.result.completed && !result.result.cancelled && !stopped()) {
             await store.appendActivity(cardId, '### ' + new Date().toISOString() + ' - Portfolio AI Loop handoff failed\n' + (result.result.reason ?? 'CLI handoff failed.'));
           }
@@ -155,7 +168,7 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
         if (card?.assignee?.kind === 'human') { return settle('human'); }
         if (options.reviewFreshDefinitions && session.definedThisRun.has(cardId)) { return settle('review'); }
         return { outcome: 'held', reason: summary.cancelled ? 'Run stopped.' : 'Waiting for board capacity or dependencies.' };
-      } finally { running = false; active = undefined; currentCard = undefined; }
+      } finally { running = false; active = undefined; currentCard = undefined; usageWait = undefined; }
     },
     pause: () => { gate.pause(); },
     resume: () => { gate.resume(); },
@@ -163,7 +176,9 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
     outcome: () => outcome,
     finish: () => {
       if (!finished) { finished = true; gate.release(); release(); }
-      return formatAiLoopBudgetTally(budget.tally(), outcome === 'budget' ? 'budget' : outcome === 'credits' ? 'paused' : outcome === 'stopped' ? 'cancelled' : 'finished');
+      const tally = formatAiLoopBudgetTally(budget.tally(), outcome === 'budget' ? 'budget' : outcome === 'credits' ? 'paused' : outcome === 'stopped' ? 'cancelled' : 'finished');
+      // The host's reason (e.g. a declined or expired usage wait) reaches the run summary.
+      return outcome === 'credits' && creditsReason ? creditsReason + '\n' + tally : tally;
     },
   };
 }

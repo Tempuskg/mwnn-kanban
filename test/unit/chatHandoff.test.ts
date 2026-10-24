@@ -1,11 +1,13 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
+  ChatHandoffAbandonedError,
   describeChatHandoffTarget,
   createChatHandoffInFlight,
   createChatHandoffQueue,
   type ClipboardHandoffExecutor,
   deliverClipboardHandoff,
+  repasteClipboardHandoff,
   resolveClipboardHandoffResult,
   formatChatHandoffFailure,
   listAvailableChatProviders,
@@ -598,6 +600,19 @@ suite('clipboard handoff acknowledgement', () => {
     });
   }
 
+  test('a reported-missing prompt is re-pasted into one more fresh chat and verified', async () => {
+    const { state, executor } = codexHarness({ ready: false, readyOnWait: 3 });
+    const first = await deliverClipboardHandoff(codexTarget, 'card A', executor, noDelay);
+    assert.equal(first.delivered, false);
+    assert.equal(state.composer, '');
+    assert.deepEqual(await repasteClipboardHandoff(codexTarget, 'card A', executor, noDelay), { delivered: true });
+    assert.equal(state.composer, 'card A');
+    assert.deepEqual(state.pasted, ['card A', 'card A']);
+    assert.equal(state.newChats, 2);
+    assert.equal(state.events.filter((event) => event === 'chatgpt.openSidebar').length, 1, 'recovery does not re-prepare the sidebar');
+    assert.equal(state.clipboard(), 'card A');
+  });
+
   test('an observed mismatch or explicit delivery error reports failure without offering success confirmation', async () => {
     const failures: string[] = [];
     assert.equal(await resolveClipboardHandoffResult({ delivered: false, error: 'incomplete selected-card prompt' },
@@ -605,5 +620,102 @@ suite('clipboard handoff acknowledgement', () => {
       (reason) => { failures.push(reason); },
     ), false);
     assert.deepEqual(failures, ['incomplete selected-card prompt']);
+  });
+});
+
+suite('restartable per-card hand-off lock', () => {
+  const never = (): Promise<never> => new Promise(() => undefined);
+
+  test('reports the holder kind and defaults non-interview callers to other', async () => {
+    const inFlight = createChatHandoffInFlight();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const run = inFlight.run('card-A', () => gate);
+    assert.equal(inFlight.holder('card-A'), 'other');
+    release();
+    await run;
+    assert.equal(inFlight.holder('card-A'), undefined);
+    const interview = inFlight.run('card-A', () => gate, { kind: 'interview' });
+    assert.equal(inFlight.holder('card-A'), 'interview');
+    await interview;
+  });
+
+  test('restart abandons a holder that never resolves and runs under a fresh lock', async () => {
+    const inFlight = createChatHandoffInFlight();
+    let oldLease: AbortSignal | undefined;
+    void inFlight.run('card-A', async (lease) => { oldLease = lease.signal; return never(); }, { kind: 'interview' });
+    assert.deepEqual(await inFlight.run('card-A', async () => 'x'), { started: false });
+    const restarted = await inFlight.restart('card-A', async (lease) => lease.signal.aborted, { kind: 'interview' });
+    assert.deepEqual(restarted, { started: true, value: false });
+    assert.equal(oldLease?.aborted, true);
+  });
+
+  test('a stale release does not free the restarted attempt lock', async () => {
+    const inFlight = createChatHandoffInFlight();
+    let settleOld!: () => void;
+    const old = inFlight.run('card-A', () => new Promise<void>((resolve) => { settleOld = resolve; }), { kind: 'interview' });
+    let settleNew!: () => void;
+    const fresh = inFlight.restart('card-A', () => new Promise<void>((resolve) => { settleNew = resolve; }), { kind: 'interview' });
+
+    settleOld();
+    assert.deepEqual(await old, { started: true, value: undefined });
+    assert.equal(inFlight.holder('card-A'), 'interview', 'the new lock is still held');
+    assert.deepEqual(await inFlight.run('card-A', async () => 'third'), { started: false });
+
+    settleNew();
+    await fresh;
+    assert.equal(inFlight.holder('card-A'), undefined);
+    assert.deepEqual(await inFlight.run('card-A', async () => 'later'), { started: true, value: 'later' });
+  });
+
+  test('a stale rejection also leaves the new lock held', async () => {
+    const inFlight = createChatHandoffInFlight();
+    let failOld!: (error: Error) => void;
+    const old = inFlight.run('card-A', () => new Promise<void>((_resolve, reject) => { failOld = reject; }));
+    void inFlight.restart('card-A', never);
+    failOld(new Error('late'));
+    await assert.rejects(old, /late/);
+    assert.equal(inFlight.holder('card-A'), 'other');
+  });
+
+  test('restart with no holder simply runs', async () => {
+    const inFlight = createChatHandoffInFlight();
+    assert.deepEqual(await inFlight.restart('card-A', async () => 1), { started: true, value: 1 });
+    assert.equal(inFlight.holder('card-A'), undefined);
+  });
+
+  test('an abandoned delivery stuck in the queue does not block the restarted delivery', async () => {
+    const queue = createChatHandoffQueue();
+    const old = new AbortController();
+    const order: string[] = [];
+    void queue.run(async () => { order.push('old-start'); await never(); }, old.signal);
+    await new Promise((resolve) => setImmediate(resolve));
+    old.abort();
+    const fresh = new AbortController();
+    assert.equal(await queue.run(async () => 'restarted', fresh.signal), 'restarted');
+    assert.deepEqual(order, ['old-start']);
+  });
+
+  test('a delivery abandoned while still queued never starts', async () => {
+    const queue = createChatHandoffQueue();
+    void queue.run(never);
+    const abandoned = new AbortController();
+    let ran = false;
+    const queued = queue.run(async () => { ran = true; }, abandoned.signal);
+    abandoned.abort();
+    await assert.rejects(queued, ChatHandoffAbandonedError);
+    assert.equal(ran, false);
+  });
+
+  test('queue order is unchanged for signal-less deliveries', async () => {
+    const queue = createChatHandoffQueue();
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const a = queue.run(async () => { await gate; order.push('a'); });
+    const b = queue.run(async () => { order.push('b'); });
+    release();
+    await Promise.all([a, b]);
+    assert.deepEqual(order, ['a', 'b']);
   });
 });

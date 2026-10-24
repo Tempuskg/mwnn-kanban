@@ -202,12 +202,12 @@ function realHandoffWith(
 }
 
 suite('Run with AI provider selection', () => {
-  test('offers installed chat extensions followed by all four agent CLI providers and the Usage Orchestrator', () => {
+  test('offers installed chat extensions followed by all agent CLI providers and the Usage Orchestrator', () => {
     const choices = listRunWithAiProviderChoices(CHAT_TARGETS);
 
     assert.deepEqual(
       choices.map((choice) => choice.kind),
-      ['chat', 'chat', 'cli', 'cli', 'cli', 'cli', 'cli'],
+      ['chat', 'chat', ...AGENT_CLI_PROVIDER_IDS.map(() => 'cli' as const), 'cli'],
     );
     assert.deepEqual(
       choices.slice(0, 2).map((choice) => choice.label),
@@ -393,7 +393,9 @@ suite('Run with AI agent CLI dispatch', () => {
         assert.match(warning, /command "[^"]+" on PATH/);
         assert.match(warning, /was not found or is not executable/);
       }
-      assert.ok(warning.includes(`agentCliPaths["${provider}"]`));
+      assert.ok(
+        warning.includes(`agentCliPaths["${provider === 'cursor-other' ? 'cursor' : provider}"]`),
+      );
     });
   }
 
@@ -753,6 +755,7 @@ suite('Run with AI agent CLI dispatch', () => {
       card: { id: cardId, title: 'Run the card via CLI' },
       kind: 'implementation',
       providerLabel: AGENT_CLI_LABELS['claude-code'],
+      provider: 'claude-code',
     });
     assert.equal(forwardedObserver, observer);
     assert.deepEqual(harness.progressMessages, ['CLI output line']);
@@ -790,6 +793,113 @@ suite('Run with AI agent CLI dispatch', () => {
     const firstAttempt = await first;
     assert.equal(firstAttempt.started, true);
     assert.equal(firstAttempt.started ? firstAttempt.value : undefined, true);
+  });
+});
+
+suite('Run with AI model-rejection recovery', () => {
+  test('opens recovery and re-dispatches with the chosen model after model-rejected', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const launchedModels: string[] = [];
+    let attempts = 0;
+    let recoveryCalls = 0;
+    const harness = dispatchHarness(board, {
+      modelCatalog: readAgentCliModelCatalog({ codex: ['broken-model'] }),
+      resolveTarget: fakeResolver(['C:\\Tools\\codex.EXE']),
+      runHandoff: realHandoffWith(async (invocation) => {
+        attempts += 1;
+        const modelFlag = invocation.args.indexOf('--model');
+        const model = modelFlag >= 0 ? invocation.args[modelFlag + 1] : undefined;
+        if (model !== undefined) {
+          launchedModels.push(model);
+        }
+        if (attempts === 1) {
+          return {
+            started: true,
+            cancelled: false,
+            exitCode: 1,
+            signal: null,
+            stdout: '',
+            stderr: 'Error: unknown model "broken-model"',
+          };
+        }
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+      recoverFromModelRejection: async (recoveryRequest) => {
+        recoveryCalls += 1;
+        assert.equal(recoveryRequest.provider, 'codex');
+        assert.equal(recoveryRequest.rejectedModel, 'broken-model');
+        assert.ok(recoveryRequest.modelSuggestions.length > 0);
+        return { model: 'gpt-5.5', thinkingLevel: 'high', scope: 'workspace' };
+      },
+    });
+
+    const completed = await runCardWithAgentCli(request('codex', cardId), harness.deps);
+
+    assert.equal(completed, true);
+    assert.equal(recoveryCalls, 1);
+    assert.deepEqual(launchedModels, ['broken-model', 'gpt-5.5']);
+    assert.equal(attempts, 2);
+  });
+
+  test('does not open recovery for usage-limit or generic process failures', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    let recoveryCalls = 0;
+    for (const stderr of [
+      'Error: You have exceeded your usage limit. Credits exhausted.',
+      'Error: network timeout connecting to api.example.com',
+      'fatal: authentication required',
+    ]) {
+      recoveryCalls = 0;
+      const harness = dispatchHarness(board, {
+        modelCatalog: readAgentCliModelCatalog({ codex: ['gpt-5.5'] }),
+        resolveTarget: fakeResolver(['C:\\Tools\\codex.EXE']),
+        runHandoff: realHandoffWith(async () => ({
+          started: true,
+          cancelled: false,
+          exitCode: 1,
+          signal: null,
+          stdout: '',
+          stderr,
+        })),
+        recoverFromModelRejection: async () => {
+          recoveryCalls += 1;
+          return { model: 'gpt-5.5', scope: 'user' };
+        },
+      });
+
+      const completed = await runCardWithAgentCli(request('codex', cardId), harness.deps);
+      assert.equal(completed, false, stderr);
+      assert.equal(recoveryCalls, 0, `recovery must not open for: ${stderr}`);
+    }
+  });
+
+  test('cancel leaves the dispatch abandoned without a second attempt', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    let attempts = 0;
+    const harness = dispatchHarness(board, {
+      modelCatalog: readAgentCliModelCatalog({ codex: ['broken-model'] }),
+      resolveTarget: fakeResolver(['C:\\Tools\\codex.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        attempts += 1;
+        return {
+          started: true,
+          cancelled: false,
+          exitCode: 1,
+          signal: null,
+          stdout: '',
+          stderr: 'Error: unknown model "broken-model"',
+        };
+      }),
+      recoverFromModelRejection: async () => undefined,
+    });
+
+    const completed = await runCardWithAgentCli(request('codex', cardId), harness.deps);
+    assert.equal(completed, false);
+    assert.equal(attempts, 1);
   });
 });
 

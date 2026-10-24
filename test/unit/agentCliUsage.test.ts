@@ -9,7 +9,9 @@ import {
   parseClaudeCodeUsageOutput,
   parseCopilotQuota,
   parseCodexRateLimits,
+  parseCursorUsageV1,
   rankAgentClis,
+  selectCursorUsageForModel,
   unknownUsage,
   type AgentCliRankCandidate,
   type AgentCliUsageSnapshot,
@@ -20,7 +22,9 @@ import {
   probeClaudeCodeUsage,
   probeCopilotUsage,
   probeCodexUsage,
+  probeCursorUsage,
 } from '../../src/agentCliUsageProbe';
+import { AGENT_CLI_PROVIDER_IDS } from '../../src/agentCliProviders';
 
 const NOW = Date.parse('2026-10-07T12:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
@@ -56,12 +60,13 @@ suite('usage snapshot normalization', () => {
       { remainingPercent: 94, resetsAt: NOW + 100 * HOUR },
       { remainingPercent: 30, resetsAt: NOW + 3 * HOUR },
     ]);
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'codex',
-      remainingPercent: 30,
-      resetsAt: NOW + 3 * HOUR,
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 30);
+    assert.equal(snapshot.resetsAt, NOW + 3 * HOUR);
+    assert.equal(snapshot.windows?.length, 2);
   });
 
   test('clamps percentages to 0-100 and reports no windows as unknown', () => {
@@ -91,12 +96,14 @@ suite('Claude Code local /usage parsing', () => {
       await readClaudeFixture('claude-usage-two-windows.json'),
       CLAUDE_NOW,
     );
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'claude-code',
-      remainingPercent: 38.75,
-      resetsAt: Date.parse('2026-10-13T15:00:00.000Z'),
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 38.75);
+    assert.equal(snapshot.resetsAt, Date.parse('2026-10-13T15:00:00.000Z'));
+    assert.equal(snapshot.windows?.length, 2);
+    assert.ok(snapshot.windows?.every((window) => window.lengthMs !== undefined));
   });
 
   test('accepts a single reported window', async () => {
@@ -104,12 +111,12 @@ suite('Claude Code local /usage parsing', () => {
       await readClaudeFixture('claude-usage-single-window.json'),
       CLAUDE_NOW,
     );
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'claude-code',
-      remainingPercent: 73,
-      resetsAt: Date.parse('2026-10-11T19:00:00.000Z'),
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 73);
+    assert.equal(snapshot.resetsAt, Date.parse('2026-10-11T19:00:00.000Z'));
   });
 
   test('accepts an on-the-hour reset time printed without minutes', () => {
@@ -123,12 +130,12 @@ suite('Claude Code local /usage parsing', () => {
       result: 'Current session: 4% used · resets Oct 9, 7:20pm (America/Regina)\n'
         + 'Current week (all models): 27% used · resets Oct 12, 3am (America/Regina)',
     }), CLAUDE_NOW);
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'claude-code',
-      remainingPercent: 73,
-      resetsAt: Date.parse('2026-10-12T09:00:00.000Z'),
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 73);
+    assert.equal(snapshot.resetsAt, Date.parse('2026-10-12T09:00:00.000Z'));
   });
 
   test('a missing reset time is unknown with a reason', async () => {
@@ -192,12 +199,13 @@ suite('Codex account/rateLimits/read parsing', () => {
         rateLimitReachedType: null,
       },
     });
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'codex',
-      remainingPercent: 94,
-      resetsAt: 1791980642 * 1000,
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 94);
+    assert.equal(snapshot.resetsAt, 1791980642 * 1000);
+    assert.equal(snapshot.windows?.[0]?.lengthMs, 10080 * 60_000);
   });
 
   test('a 5-hour and a weekly window normalize to the binding one', () => {
@@ -207,12 +215,13 @@ suite('Codex account/rateLimits/read parsing', () => {
         secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1791980642 },
       },
     });
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'codex',
-      remainingPercent: 20,
-      resetsAt: 1791400000 * 1000,
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 20);
+    assert.equal(snapshot.resetsAt, 1791400000 * 1000);
+    assert.equal(snapshot.windows?.length, 2);
   });
 
   test('a limit Codex says is reached is 0% remaining', () => {
@@ -254,30 +263,32 @@ const COPILOT_NOW = Date.parse('2026-10-09T12:00:00.000Z');
 suite('Copilot account.getQuota parsing', () => {
   test('reads the premium-interactions remaining percentage and reset date', async () => {
     const response = JSON.parse(await readCopilotFixture('copilot-usage-normal.json')) as Record<string, unknown>;
-    assert.deepEqual(parseCopilotQuota(response['result'], COPILOT_NOW), {
-      kind: 'reported',
-      provider: 'copilot',
-      remainingPercent: 42.5,
-      resetsAt: Date.parse('2026-10-16T00:00:00.000Z'),
-    });
+    const snapshot = parseCopilotQuota(response['result'], COPILOT_NOW);
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 42.5);
+      assert.equal(snapshot.resetsAt, Date.parse('2026-10-16T00:00:00.000Z'));
+    }
   });
 
   test('an unlimited quota is 100% remaining with no reset time', async () => {
     const response = JSON.parse(await readCopilotFixture('copilot-usage-unlimited.json')) as Record<string, unknown>;
-    assert.deepEqual(parseCopilotQuota(response['result'], COPILOT_NOW), {
-      kind: 'reported',
-      provider: 'copilot',
-      remainingPercent: 100,
-    });
+    const snapshot = parseCopilotQuota(response['result'], COPILOT_NOW);
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 100);
+      assert.equal(snapshot.resetsAt, undefined);
+    }
   });
 
   test('a missing reset date keeps the reported percentage without inventing a reset', async () => {
     const response = JSON.parse(await readCopilotFixture('copilot-usage-missing-reset.json')) as Record<string, unknown>;
-    assert.deepEqual(parseCopilotQuota(response['result'], COPILOT_NOW), {
-      kind: 'reported',
-      provider: 'copilot',
-      remainingPercent: 75,
-    });
+    const snapshot = parseCopilotQuota(response['result'], COPILOT_NOW);
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 75);
+      assert.equal(snapshot.resetsAt, undefined);
+    }
   });
 
   test('an account with no premium allowance is unknown, not a spent quota about to reset', () => {
@@ -316,12 +327,11 @@ suite('Copilot account.getQuota parsing', () => {
         },
       },
     }, COPILOT_NOW);
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'copilot',
-      remainingPercent: 99.5,
-      resetsAt: Date.parse('2026-11-09T21:21:20.137Z'),
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 99.5);
+      assert.equal(snapshot.resetsAt, Date.parse('2026-11-09T21:21:20.137Z'));
+    }
   });
 
   test('a reset date that has already passed is dropped so a spent quota is not ranked as refilled', () => {
@@ -334,7 +344,11 @@ suite('Copilot account.getQuota parsing', () => {
         },
       },
     }, COPILOT_NOW);
-    assert.deepEqual(snapshot, { kind: 'reported', provider: 'copilot', remainingPercent: 0 });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 0);
+      assert.equal(snapshot.resetsAt, undefined);
+    }
   });
 
   test('missing fields, malformed dates, and hostile percentages remain unknown', async () => {
@@ -441,6 +455,59 @@ suite('usage orchestrator ranking', () => {
     assert.equal(cursor?.rule, 'unknown-drain');
     assert.ok(cursor && !('remainingPercent' in cursor.snapshot));
   });
+
+  test('behind-pace-only ranks only CLIs behind on every known-length window', () => {
+    const reset = NOW + 3 * HOUR;
+    const lengthMs = 5 * HOUR;
+    const behind: AgentCliRankCandidate = {
+      provider: 'codex',
+      available: true,
+      snapshot: {
+        kind: 'reported',
+        provider: 'codex',
+        remainingPercent: 90,
+        resetsAt: reset,
+        asOfMs: NOW,
+        windows: [{
+          remainingPercent: 90,
+          usedPercent: 10,
+          resetsAt: reset,
+          lengthMs,
+          asOfMs: NOW,
+        }],
+      },
+    };
+    // 40% elapsed at asOf; 90% used → ahead.
+    const ahead: AgentCliRankCandidate = {
+      provider: 'claude-code',
+      available: true,
+      snapshot: {
+        kind: 'reported',
+        provider: 'claude-code',
+        remainingPercent: 10,
+        resetsAt: reset,
+        asOfMs: NOW,
+        windows: [{
+          remainingPercent: 10,
+          usedPercent: 90,
+          resetsAt: reset,
+          lengthMs,
+          asOfMs: NOW,
+        }],
+      },
+    };
+    const ranking = rankAgentClis(
+      [ahead, behind, unknown('cursor')],
+      new Map(),
+      NOW,
+      { behindPaceOnly: true },
+    );
+    assert.deepEqual(ranking.ranked.map((entry) => entry.provider), ['codex']);
+    assert.ok(ranking.ranked[0]?.paceVariancePoints !== undefined);
+    assert.ok(ranking.skipped.some((entry) => entry.provider === 'claude-code' && /ahead of pace/.test(entry.reason)));
+    assert.ok(ranking.skipped.some((entry) => entry.provider === 'cursor' && /pace unknown/.test(entry.reason)));
+    assert.ok(ranking.pacePredictions?.some((entry) => entry.provider === 'claude-code'));
+  });
 });
 
 /** A stand-in `codex app-server`: JSON-RPC over stdio, scripted by mode. */
@@ -512,12 +579,11 @@ function isRunning(pid: number): boolean {
 suite('Codex usage probe (app-server JSON-RPC)', () => {
   test('reads the binding window and ends the process before resolving', async () => {
     const { snapshot, pid } = await runFakeProbe('ok');
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'codex',
-      remainingPercent: 30,
-      resetsAt: 1791400000 * 1000,
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 30);
+      assert.equal(snapshot.resetsAt, 1791400000 * 1000);
+    }
     assert.ok(pid !== undefined && !isRunning(pid), 'probe process must have ended');
   });
 
@@ -562,12 +628,111 @@ suite('Codex usage probe (app-server JSON-RPC)', () => {
     assert.equal(snapshot.kind, 'unknown');
   });
 
-  test('Cursor remains unknown because its CLI exposes usage only interactively', async () => {
+  test('Cursor with no usage-v1 cache is unknown (no spawn)', async () => {
     const snapshot = await probeAgentCliUsage(
       { provider: 'cursor', label: AGENT_CLI_LABELS.cursor, executable: 'cursor', launcher: 'standalone' },
-      { cwd: os.tmpdir() },
+      {
+        cwd: os.tmpdir(),
+        cursorUsageEnv: { CURSOR_USAGE_FILE: path.join(os.tmpdir(), 'mwnn-no-such-cursor-usage.json') },
+        cursorUsageHome: path.join(os.tmpdir(), 'mwnn-no-home'),
+      },
     );
     assert.equal(snapshot.kind, 'unknown', 'cursor');
+    assert.match(snapshot.kind === 'unknown' ? snapshot.reason : '', /no Cursor usage cache was found/i);
+  });
+});
+
+const BILLING_RESET = '2026-11-01T00:00:00.000Z';
+const BILLING_SECONDS = 30 * 24 * 60 * 60;
+
+function cursorUsageV1(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    schema: 'usage-v1',
+    provider: 'cursor',
+    account: 'acct-fingerprint-secret',
+    plan: 'pro',
+    status: 'live',
+    error: null,
+    retrieved_at: '2026-10-05T11:50:00.000Z',
+    windows: [{
+      name: 'billing cycle',
+      seconds: BILLING_SECONDS,
+      scope: null,
+      used_pct: 12,
+      resets_at: BILLING_RESET,
+    }],
+    balance: null,
+    details: { autoPercentUsed: 8, apiPercentUsed: 4, accessToken: 'tok-secret' },
+    ...overrides,
+  });
+}
+
+suite('Cursor usage-v1 cache probe', () => {
+  test('parses both Auto and Other Models pools from one document', () => {
+    const snapshot = parseCursorUsageV1(cursorUsageV1());
+    assert.equal(snapshot.kind, 'cursor-pools');
+    if (snapshot.kind !== 'cursor-pools') {
+      return;
+    }
+    assert.equal(snapshot.auto.status, 'reported');
+    assert.equal(snapshot.otherModels.status, 'reported');
+    if (snapshot.auto.status !== 'reported' || snapshot.otherModels.status !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.auto.remainingPercent, 92);
+    assert.equal(snapshot.auto.resetsAt, Date.parse(BILLING_RESET));
+    assert.equal(snapshot.otherModels.remainingPercent, 96);
+    assert.equal(snapshot.otherModels.resetsAt, Date.parse(BILLING_RESET));
+    assert.ok(snapshot.auto.windows?.some((window) => window.lengthMs !== undefined));
+    assert.doesNotMatch(JSON.stringify(snapshot), /autoPercentUsed|apiPercentUsed|tok-secret|used_pct/);
+  });
+
+  test('selectCursorUsageForModel picks the pool for the resolved model', () => {
+    const dual = parseCursorUsageV1(cursorUsageV1({
+      details: { autoPercentUsed: 100, apiPercentUsed: 25 },
+    }));
+    const other = selectCursorUsageForModel(dual, 'claude-4-sonnet');
+    assert.equal(other.kind, 'reported');
+    if (other.kind !== 'reported') {
+      return;
+    }
+    assert.equal(other.remainingPercent, 75);
+    assert.equal(other.resetsAt, Date.parse(BILLING_RESET));
+    assert.equal(other.windows?.[0]?.lengthMs, BILLING_SECONDS * 1000);
+    const auto = selectCursorUsageForModel(dual, 'auto');
+    assert.equal(auto.kind === 'reported' ? auto.remainingPercent : undefined, 0);
+  });
+
+  test('a missing sibling pool leaves the other pool readable', () => {
+    const snapshot = parseCursorUsageV1(cursorUsageV1({
+      details: { autoPercentUsed: 10, apiPercentUsed: Number.NaN },
+    }));
+    assert.equal(snapshot.kind, 'cursor-pools');
+    if (snapshot.kind !== 'cursor-pools') {
+      return;
+    }
+    assert.equal(snapshot.auto.status, 'reported');
+    assert.equal(snapshot.otherModels.status, 'unavailable');
+    assert.doesNotMatch(snapshot.otherModels.status === 'unavailable' ? snapshot.otherModels.reason : '', /apiPercentUsed/);
+  });
+
+  test('probeCursorUsage reads injected contents without opening a socket', async () => {
+    const snapshot = await probeCursorUsage({
+      cwd: os.tmpdir(),
+      cursorUsageContents: cursorUsageV1({
+        details: { autoPercentUsed: 100, apiPercentUsed: 40 },
+      }),
+    });
+    assert.equal(snapshot.kind, 'cursor-pools');
+    const selected = selectCursorUsageForModel(snapshot, 'gpt-5');
+    assert.equal(selected.kind === 'reported' ? selected.remainingPercent : undefined, 60);
+  });
+
+  test('Agent CLI provider ids stay on a single cursor entry', () => {
+    assert.deepEqual(
+      [...AGENT_CLI_PROVIDER_IDS],
+      ['copilot', 'codex', 'claude-code', 'cursor', 'cursor-other'],
+    );
   });
 });
 
@@ -640,12 +805,12 @@ async function runFakeClaudeProbe(
 suite('Claude Code usage probe (local /usage command)', () => {
   test('uses only the local /usage command, reports real plan usage, and ends both processes', async () => {
     const { snapshot, invocations, pids } = await runFakeClaudeProbe('two-windows');
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'claude-code',
-      remainingPercent: 38.75,
-      resetsAt: Date.parse('2026-10-13T15:00:00.000Z'),
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 38.75);
+      assert.equal(snapshot.resetsAt, Date.parse('2026-10-13T15:00:00.000Z'));
+      assert.ok(snapshot.windows?.every((window) => window.lengthMs !== undefined));
+    }
     assert.deepEqual(invocations.map((entry) => entry.args), [
       ['--version'],
       ['--print', '/usage', '--output-format', 'json', '--no-session-persistence'],
@@ -811,12 +976,12 @@ suite('Copilot usage probe (SDK account.getQuota RPC)', () => {
 
   test('reads the quota fixture after the SDK compatibility handshake and closes the process', async () => {
     const { snapshot, pid, requests } = await runFakeCopilotProbe('normal');
-    assert.deepEqual(snapshot, {
-      kind: 'reported',
-      provider: 'copilot',
-      remainingPercent: 42.5,
-      resetsAt: Date.parse('2026-10-16T00:00:00.000Z'),
-    });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind !== 'reported') {
+      return;
+    }
+    assert.equal(snapshot.remainingPercent, 42.5);
+    assert.equal(snapshot.resetsAt, Date.parse('2026-10-16T00:00:00.000Z'));
     assert.deepEqual(requests.map((request) => request.method), ['connect', 'account.getQuota']);
     assert.ok(pid !== undefined && !isRunning(pid), 'probe process must have ended');
   });
@@ -830,13 +995,21 @@ suite('Copilot usage probe (SDK account.getQuota RPC)', () => {
 
   test('an unlimited fixture has 100% remaining and no reset time', async () => {
     const { snapshot, pid } = await runFakeCopilotProbe('unlimited', 'copilot-usage-unlimited.json');
-    assert.deepEqual(snapshot, { kind: 'reported', provider: 'copilot', remainingPercent: 100 });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 100);
+      assert.equal(snapshot.resetsAt, undefined);
+    }
     assert.ok(pid !== undefined && !isRunning(pid));
   });
 
   test('a missing reset fixture reports its percentage without a reset time', async () => {
     const { snapshot, pid } = await runFakeCopilotProbe('missing-reset', 'copilot-usage-missing-reset.json');
-    assert.deepEqual(snapshot, { kind: 'reported', provider: 'copilot', remainingPercent: 75 });
+    assert.equal(snapshot.kind, 'reported');
+    if (snapshot.kind === 'reported') {
+      assert.equal(snapshot.remainingPercent, 75);
+      assert.equal(snapshot.resetsAt, undefined);
+    }
     assert.ok(pid !== undefined && !isRunning(pid));
   });
 

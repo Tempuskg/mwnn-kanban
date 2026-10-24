@@ -6,6 +6,10 @@
  * "unknown" with a reason. Nothing here synthesizes a figure - an unknown CLI
  * stays unknown, and is ranked by rule, never by an invented percentage.
  *
+ * Cursor is special: one Agent CLI id (`cursor`), two usage pools (Auto and
+ * Other Models) from one on-disk usage-v1 document. The probe may return both
+ * pools; ranking selects the pool that the stage's resolved model draws from.
+ *
  * No `vscode` import and no process spawning: the probes live in
  * `agentCliUsageProbe`, the per-run state in `agentCliOrchestrator`, so the
  * whole ranking policy is unit testable.
@@ -14,15 +18,50 @@
 import { redactSecrets } from './agentCliCredit';
 import { AGENT_CLI_LABELS } from './agentCliHandoff';
 import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
+import {
+  evaluateCliPace,
+  FIVE_HOUR_WINDOW_MS,
+  WEEKLY_WINDOW_MS,
+  type UsagePaceWindow,
+} from './agentCliUsagePace';
+import {
+  classifyCursorModelPool,
+  type CursorUsagePoolId,
+} from './cursorModelPool';
 
 /** One usage window as a CLI reports it, already converted to "remaining". */
 export interface AgentCliUsageWindow {
   readonly remainingPercent: number;
+  /** Used allowance, 0-100, when the source stated it (else `100 - remaining`). */
+  readonly usedPercent?: number;
   /** Epoch milliseconds at which this window's allowance resets. */
   readonly resetsAt?: number;
+  /** Full window length from the source, when known. */
+  readonly lengthMs?: number;
+  /** When the CLI last refreshed this reading. */
+  readonly asOfMs?: number;
 }
 
-export type AgentCliUsageSnapshot =
+/** One Cursor pool reading from the shared usage-v1 document. */
+export type CursorPoolReading =
+  | {
+      readonly status: 'reported';
+      readonly remainingPercent: number;
+      readonly resetsAt?: number;
+      /** Per-window facts for pace; binding remaining/resets stay above. */
+      readonly windows?: readonly AgentCliUsageWindow[];
+      readonly asOfMs?: number;
+    }
+  | {
+      readonly status: 'unavailable';
+      readonly reason: string;
+    };
+
+/**
+ * A usable ranking / wait figure: reported remaining, or unknown with a reason.
+ * Dual-pool Cursor readings are narrowed to this before `rankAgentClis`.
+ */
+export type AgentCliRankableUsageSnapshot =
   | {
       readonly kind: 'reported';
       readonly provider: AgentCliProviderId;
@@ -30,6 +69,13 @@ export type AgentCliUsageSnapshot =
       readonly remainingPercent: number;
       /** Epoch milliseconds at which the binding window resets. */
       readonly resetsAt?: number;
+      /**
+       * Every reported window, including lengths when the source stated one.
+       * Binding remaining/resets above are unchanged for ranking and reset waits.
+       */
+      readonly windows?: readonly AgentCliUsageWindow[];
+      /** When the CLI last refreshed this reading. */
+      readonly asOfMs?: number;
     }
   | {
       readonly kind: 'unknown';
@@ -38,14 +84,324 @@ export type AgentCliUsageSnapshot =
       readonly reason: string;
     };
 
+export type AgentCliUsageSnapshot =
+  | AgentCliRankableUsageSnapshot
+  | {
+      /** Both Cursor pools from one usage-v1 read. Not a second CLI. */
+      readonly kind: 'cursor-pools';
+      readonly provider: 'cursor';
+      readonly auto: CursorPoolReading;
+      readonly otherModels: CursorPoolReading;
+      readonly asOfMs?: number;
+    };
+
 const MAX_REASON_LENGTH = 200;
 
-export function unknownUsage(provider: AgentCliProviderId, reason: string): AgentCliUsageSnapshot {
+export function unknownUsage(provider: AgentCliProviderId, reason: string): AgentCliRankableUsageSnapshot {
   const line = redactSecrets(reason).replace(/\s+/g, ' ').trim();
   return {
     kind: 'unknown',
     provider,
     reason: line.length > MAX_REASON_LENGTH ? `${line.slice(0, MAX_REASON_LENGTH - 3)}...` : line,
+  };
+}
+
+/** Convert one Cursor pool reading into a rankable snapshot for a Cursor identity. */
+export function cursorPoolReadingToSnapshot(
+  pool: CursorPoolReading,
+  provider: AgentCliProviderId = 'cursor',
+): AgentCliRankableUsageSnapshot {
+  if (pool.status === 'reported') {
+    return {
+      kind: 'reported',
+      provider,
+      remainingPercent: pool.remainingPercent,
+      ...(pool.resetsAt !== undefined ? { resetsAt: pool.resetsAt } : {}),
+      ...(pool.windows !== undefined && pool.windows.length > 0 ? { windows: pool.windows } : {}),
+      ...(pool.asOfMs !== undefined ? { asOfMs: pool.asOfMs } : {}),
+    };
+  }
+  return unknownUsage(provider, pool.reason);
+}
+
+/** Pace windows from a rankable reported snapshot (binding alone when no list). */
+export function paceWindowsFromSnapshot(
+  snapshot: AgentCliRankableUsageSnapshot,
+  now: number,
+): readonly UsagePaceWindow[] {
+  if (snapshot.kind !== 'reported') {
+    return [];
+  }
+  const asOfMs = snapshot.asOfMs ?? now;
+  const source = snapshot.windows && snapshot.windows.length > 0
+    ? snapshot.windows
+    : [{
+        remainingPercent: snapshot.remainingPercent,
+        ...(snapshot.resetsAt !== undefined ? { resetsAt: snapshot.resetsAt } : {}),
+      }];
+  const out: UsagePaceWindow[] = [];
+  for (const window of source) {
+    if (window.resetsAt === undefined || !Number.isFinite(window.resetsAt)) {
+      continue;
+    }
+    const usedPercent = window.usedPercent !== undefined && Number.isFinite(window.usedPercent)
+      ? Math.min(100, Math.max(0, window.usedPercent))
+      : Math.min(100, Math.max(0, 100 - window.remainingPercent));
+    out.push({
+      usedPercent,
+      resetsAtMs: window.resetsAt,
+      asOfMs: window.asOfMs ?? asOfMs,
+      ...(window.lengthMs !== undefined && window.lengthMs > 0
+        ? { lengthMs: window.lengthMs }
+        : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Narrow a probe snapshot for ranking or waits by selectable Cursor identity.
+ * `cursor` → Auto pool; `cursor-other` → Other Models pool. Dual-pool readings
+ * for any other provider id pass through unchanged.
+ */
+export function selectCursorUsageForProvider(
+  snapshot: AgentCliUsageSnapshot,
+  provider: AgentCliProviderId,
+): AgentCliRankableUsageSnapshot {
+  if (snapshot.kind !== 'cursor-pools') {
+    return snapshot;
+  }
+  if (provider === 'cursor-other') {
+    return cursorPoolReadingToSnapshot(snapshot.otherModels, 'cursor-other');
+  }
+  if (provider === 'cursor') {
+    return cursorPoolReadingToSnapshot(snapshot.auto, 'cursor');
+  }
+  return unknownUsage(provider, 'unexpected Cursor usage snapshot for a non-Cursor CLI');
+}
+
+/**
+ * Narrow a probe snapshot from the resolved model (classifier). Prefer
+ * {@link selectCursorUsageForProvider} when the selectable identity is known.
+ * Product default is `auto` when omitted, so a nameless Cursor dispatch ranks
+ * against the Auto pool.
+ */
+export function selectCursorUsageForModel(
+  snapshot: AgentCliUsageSnapshot,
+  model?: string,
+  productDefault: string = 'auto',
+): AgentCliRankableUsageSnapshot {
+  if (snapshot.kind !== 'cursor-pools') {
+    return snapshot;
+  }
+  const pool = classifyCursorModelPool({
+    ...(model !== undefined ? { model } : {}),
+    productDefault,
+  }).pool;
+  return cursorPoolReadingToSnapshot(pool === 'auto' ? snapshot.auto : snapshot.otherModels);
+}
+
+/** Which Cursor pool a rankable snapshot (or dual reading) represents for a model. */
+export function cursorPoolForModel(
+  model?: string,
+  productDefault: string = 'auto',
+): CursorUsagePoolId {
+  return classifyCursorModelPool({
+    ...(model !== undefined ? { model } : {}),
+    productDefault,
+  }).pool;
+}
+
+/**
+ * Parse one Cursor usage-v1 document into both pools. Source field names stay
+ * inside this function. Shared as-of / reset; each pool's used percent is its
+ * own. Aggregate billing-cycle `%` is ignored. A wholly unusable document is
+ * `unknown`; a missing pool percentage makes only that pool unavailable.
+ */
+export function parseCursorUsageV1(contents: string): AgentCliUsageSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch {
+    return unknownUsage('cursor', 'the Cursor usage cache is not valid JSON');
+  }
+  if (!isRecord(parsed)) {
+    return unknownUsage('cursor', 'the Cursor usage cache has an unrecognised shape');
+  }
+  if (parsed.schema !== 'usage-v1' || parsed.provider !== 'cursor') {
+    return unknownUsage('cursor', 'the Cursor usage cache has an unrecognised shape');
+  }
+  if (parsed.status === 'unavailable') {
+    return unknownUsage('cursor', 'the Cursor usage cache reports unavailable');
+  }
+  if (
+    parsed.status !== 'live'
+    && parsed.status !== 'cached'
+    && parsed.status !== 'stale'
+  ) {
+    return unknownUsage('cursor', 'the Cursor usage cache has an unrecognised shape');
+  }
+  if (typeof parsed.retrieved_at !== 'string' || !Number.isFinite(Date.parse(parsed.retrieved_at))) {
+    return unknownUsage('cursor', 'the Cursor usage cache has an unrecognised shape');
+  }
+  if (!Array.isArray(parsed.windows)) {
+    return unknownUsage('cursor', 'the Cursor usage cache has an unrecognised shape');
+  }
+
+  const asOfMs = Date.parse(parsed.retrieved_at);
+  const shared = parseCursorSharedWindows(parsed.windows);
+  if (shared.status === 'unavailable') {
+    return unknownUsage('cursor', shared.reason);
+  }
+
+  return {
+    kind: 'cursor-pools',
+    provider: 'cursor',
+    auto: cursorPoolFromDetails(parsed.details, 'auto', shared.window, asOfMs),
+    otherModels: cursorPoolFromDetails(parsed.details, 'other-models', shared.window, asOfMs),
+    asOfMs,
+  };
+}
+
+interface CursorSharedWindows {
+  readonly resetsAtMs: number;
+  readonly lengthMs?: number;
+  readonly extras: readonly {
+    readonly kind: 'fiveHour' | 'weekly';
+    readonly usedPercent: number;
+    readonly resetsAtMs: number;
+    readonly lengthMs?: number;
+  }[];
+}
+
+/**
+ * Billing-cycle reset and length (`seconds`), plus any 5-hour or weekly slots
+ * the cache carries. The billing-cycle aggregate percent is not read.
+ */
+function parseCursorSharedWindows(
+  windows: readonly unknown[],
+): { readonly status: 'ready'; readonly window: CursorSharedWindows } | { readonly status: 'unavailable'; readonly reason: string } {
+  let billing: { readonly resetsAtMs: number; readonly lengthMs?: number } | undefined;
+  const extras: CursorSharedWindows['extras'][number][] = [];
+  for (const slot of windows) {
+    if (slot === undefined || slot === null) {
+      continue;
+    }
+    if (!isRecord(slot) || typeof slot.name !== 'string') {
+      return { status: 'unavailable', reason: 'the Cursor usage cache has an unrecognised shape' };
+    }
+    const kind = cursorWindowKind(slot.name);
+    if (kind === undefined) {
+      continue;
+    }
+    if (kind === 'billingCycle') {
+      if (billing !== undefined) {
+        continue;
+      }
+      if (typeof slot.resets_at !== 'string') {
+        return { status: 'unavailable', reason: 'the Cursor usage cache has an unrecognised shape' };
+      }
+      const resetsAtMs = Date.parse(slot.resets_at);
+      if (!Number.isFinite(resetsAtMs)) {
+        return { status: 'unavailable', reason: 'the Cursor usage cache has an unrecognised shape' };
+      }
+      const seconds = slot.seconds;
+      billing = typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+        ? { resetsAtMs, lengthMs: seconds * 1000 }
+        : { resetsAtMs };
+      continue;
+    }
+    if (typeof slot.used_pct !== 'number' || !Number.isFinite(slot.used_pct)
+      || typeof slot.resets_at !== 'string') {
+      continue;
+    }
+    const resetsAtMs = Date.parse(slot.resets_at);
+    if (!Number.isFinite(resetsAtMs) || extras.some((window) => window.kind === kind)) {
+      continue;
+    }
+    const seconds = slot.seconds;
+    const lengthMs = typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+      ? seconds * 1000
+      : kind === 'fiveHour'
+        ? FIVE_HOUR_WINDOW_MS
+        : WEEKLY_WINDOW_MS;
+    extras.push({
+      kind,
+      usedPercent: slot.used_pct,
+      resetsAtMs,
+      lengthMs,
+    });
+  }
+  if (billing === undefined) {
+    return { status: 'unavailable', reason: 'the Cursor usage cache has no reported plan window' };
+  }
+  return { status: 'ready', window: { ...billing, extras } };
+}
+
+function cursorWindowKind(name: string): 'billingCycle' | 'fiveHour' | 'weekly' | undefined {
+  const normalised = name.trim().toLowerCase();
+  if (normalised === 'billing cycle' || normalised === 'billing-cycle') {
+    return 'billingCycle';
+  }
+  if (normalised === '5-hour' || normalised === '5 hour' || normalised === 'five-hour' || normalised === 'five hour') {
+    return 'fiveHour';
+  }
+  if (normalised === 'weekly' || normalised === 'week') {
+    return 'weekly';
+  }
+  return undefined;
+}
+
+/** Finite pool percent → remaining; source keys never leave this function. */
+function cursorPoolFromDetails(
+  details: unknown,
+  pool: CursorUsagePoolId,
+  shared: CursorSharedWindows,
+  asOfMs: number,
+): CursorPoolReading {
+  if (!isRecord(details)) {
+    return {
+      status: 'unavailable',
+      reason: pool === 'auto'
+        ? 'the Cursor pool percentage was not reported'
+        : 'the Cursor Agent CLI Other pool percentage was not reported',
+    };
+  }
+  // Parser-internal names only — never log or surface these keys.
+  const used = pool === 'auto' ? details.autoPercentUsed : details.apiPercentUsed;
+  if (typeof used !== 'number' || !Number.isFinite(used)) {
+    return {
+      status: 'unavailable',
+      reason: pool === 'auto'
+        ? 'the Cursor pool percentage was not reported'
+        : 'the Cursor Agent CLI Other pool percentage was not reported',
+    };
+  }
+  const usedPercent = Math.min(100, Math.max(0, used));
+  const remainingPercent = Math.min(100, Math.max(0, 100 - usedPercent));
+  const billing: AgentCliUsageWindow = {
+    remainingPercent,
+    usedPercent,
+    resetsAt: shared.resetsAtMs,
+    asOfMs,
+    ...(shared.lengthMs !== undefined ? { lengthMs: shared.lengthMs } : {}),
+  };
+  const windows: AgentCliUsageWindow[] = [
+    billing,
+    ...shared.extras.map((extra) => ({
+      remainingPercent: Math.min(100, Math.max(0, 100 - extra.usedPercent)),
+      usedPercent: Math.min(100, Math.max(0, extra.usedPercent)),
+      resetsAt: extra.resetsAtMs,
+      asOfMs,
+      ...(extra.lengthMs !== undefined ? { lengthMs: extra.lengthMs } : {}),
+    })),
+  ];
+  return {
+    status: 'reported',
+    remainingPercent,
+    resetsAt: shared.resetsAtMs,
+    windows,
+    asOfMs,
   };
 }
 
@@ -58,19 +414,34 @@ export function unknownUsage(provider: AgentCliProviderId, reason: string): Agen
 export function normalizeUsageWindows(
   provider: AgentCliProviderId,
   windows: readonly AgentCliUsageWindow[],
-): AgentCliUsageSnapshot {
+  asOfMs?: number,
+): AgentCliRankableUsageSnapshot {
   let binding: AgentCliUsageWindow | undefined;
+  const kept: AgentCliUsageWindow[] = [];
   for (const window of windows) {
     if (!Number.isFinite(window.remainingPercent)) {
       continue;
     }
     const remainingPercent = Math.min(100, Math.max(0, window.remainingPercent));
+    const usedPercent = window.usedPercent !== undefined && Number.isFinite(window.usedPercent)
+      ? Math.min(100, Math.max(0, window.usedPercent))
+      : Math.min(100, Math.max(0, 100 - remainingPercent));
     const candidate: AgentCliUsageWindow = {
       remainingPercent,
+      usedPercent,
       ...(window.resetsAt !== undefined && Number.isFinite(window.resetsAt)
         ? { resetsAt: window.resetsAt }
         : {}),
+      ...(window.lengthMs !== undefined && window.lengthMs > 0
+        ? { lengthMs: window.lengthMs }
+        : {}),
+      ...(window.asOfMs !== undefined && Number.isFinite(window.asOfMs)
+        ? { asOfMs: window.asOfMs }
+        : asOfMs !== undefined
+          ? { asOfMs }
+          : {}),
     };
+    kept.push(candidate);
     if (
       !binding
       || candidate.remainingPercent < binding.remainingPercent
@@ -88,6 +459,8 @@ export function normalizeUsageWindows(
     provider,
     remainingPercent: binding.remainingPercent,
     ...(binding.resetsAt !== undefined ? { resetsAt: binding.resetsAt } : {}),
+    ...(kept.length > 0 ? { windows: kept } : {}),
+    ...(asOfMs !== undefined ? { asOfMs } : binding.asOfMs !== undefined ? { asOfMs: binding.asOfMs } : {}),
   };
 }
 
@@ -103,7 +476,7 @@ export function normalizeUsageWindows(
  * read; it is the limit every Codex dispatch draws on. Anything that does not
  * match this shape is "unknown" rather than a guess.
  */
-export function parseCodexRateLimits(result: unknown): AgentCliUsageSnapshot {
+export function parseCodexRateLimits(result: unknown): AgentCliRankableUsageSnapshot {
   if (!isRecord(result)) {
     return unknownUsage('codex', 'Codex returned a malformed rate-limit response.');
   }
@@ -125,9 +498,15 @@ export function parseCodexRateLimits(result: unknown): AgentCliUsageSnapshot {
       return unknownUsage('codex', `Codex returned a ${key} rate-limit window without a usage percentage.`);
     }
     const resetsAt = readEpochSeconds(raw['resetsAt']);
+    const durationMins = raw['windowDurationMins'];
+    const lengthMs = typeof durationMins === 'number' && Number.isFinite(durationMins) && durationMins > 0
+      ? durationMins * 60_000
+      : undefined;
     windows.push({
       remainingPercent: 100 - used,
+      usedPercent: used,
       ...(resetsAt !== undefined ? { resetsAt } : {}),
+      ...(lengthMs !== undefined ? { lengthMs } : {}),
     });
   }
   const snapshot = normalizeUsageWindows('codex', windows);
@@ -310,9 +689,13 @@ export function parseClaudeCodeUsageOutput(
     if (resetsAt === undefined) {
       return unknownUsage('claude-code', 'Claude Code returned an unreadable plan reset time.');
     }
+    const lengthMs = windowName === 'session' ? FIVE_HOUR_WINDOW_MS : WEEKLY_WINDOW_MS;
     windows.push({
       remainingPercent: 100 - usedPercent,
+      usedPercent,
       resetsAt,
+      lengthMs,
+      asOfMs: now,
     });
   }
 
@@ -322,7 +705,7 @@ export function parseClaudeCodeUsageOutput(
       'Claude Code did not report subscription plan windows; this account may use an API key or may not expose plan usage.',
     );
   }
-  return normalizeUsageWindows('claude-code', windows);
+  return normalizeUsageWindows('claude-code', windows, now);
 }
 
 const CLAUDE_MONTHS: Readonly<Record<string, number>> = {
@@ -497,8 +880,12 @@ export interface AgentCliRankCandidate {
   readonly available: boolean;
   /** Why it is unavailable; used only when `available` is false. */
   readonly unavailableReason?: string;
-  /** Present for available CLIs; a missing snapshot is treated as unknown. */
-  readonly snapshot?: AgentCliUsageSnapshot;
+  /**
+   * Present for available CLIs; a missing snapshot is treated as unknown.
+   * Cursor dual-pool readings must be narrowed with `selectCursorUsageForModel`
+   * before ranking so a full sibling pool cannot block the other.
+   */
+  readonly snapshot?: AgentCliRankableUsageSnapshot;
 }
 
 /**
@@ -511,7 +898,10 @@ export type AgentCliRunExclusions = ReadonlyMap<AgentCliProviderId, { readonly u
 export interface RankedAgentCli {
   readonly provider: AgentCliProviderId;
   readonly rule: AgentCliRankRule;
-  readonly snapshot: AgentCliUsageSnapshot;
+  readonly snapshot: AgentCliRankableUsageSnapshot;
+  /** Present when behind-pace-only ranking selected this CLI. */
+  readonly paceVariancePoints?: number;
+  readonly paceElapsedPercent?: number;
 }
 
 export interface SkippedAgentCli {
@@ -519,10 +909,24 @@ export interface SkippedAgentCli {
   readonly reason: string;
 }
 
+/** Predicted wake time for one CLI under behind-pace-only waiting. */
+export interface AgentCliPacePrediction {
+  readonly provider: AgentCliProviderId;
+  /** Latest predicted behind time across that CLI's windows, when computable. */
+  readonly predictedBehindAtMs?: number;
+  /** Why it was not eligible right now (ahead / on pace / unknown). */
+  readonly reason: string;
+}
+
 export interface AgentCliRanking {
   /** Eligible CLIs, best first. Empty when nothing is eligible. */
   readonly ranked: readonly RankedAgentCli[];
   readonly skipped: readonly SkippedAgentCli[];
+  /**
+   * Behind-pace-only: every available CLI that was not behind, with its
+   * predicted behind time when computable. Used to plan a pace wait.
+   */
+  readonly pacePredictions?: readonly AgentCliPacePrediction[];
 }
 
 const RULE_ORDER: Record<AgentCliRankRule, number> = {
@@ -530,6 +934,15 @@ const RULE_ORDER: Record<AgentCliRankRule, number> = {
   'unknown-drain': 1,
   'most-remaining': 2,
 };
+
+export interface RankAgentClisOptions {
+  /**
+   * When true, only CLIs behind on every known-length window are eligible.
+   * Unknown-usage CLIs are skipped (not drained). Relative order among the
+   * behind CLIs matches the ordinary ranking.
+   */
+  readonly behindPaceOnly?: boolean;
+}
 
 /**
  * Rank the CLIs for one dispatch:
@@ -543,14 +956,20 @@ const RULE_ORDER: Record<AgentCliRankRule, number> = {
  * A reporting CLI at 0% is skipped until its reset time passes (for good when
  * it has none); an unavailable executable is skipped; remaining ties fall to
  * the built-in provider order.
+ *
+ * With `behindPaceOnly`, step 2 is skipped and only behind-pace CLIs stay
+ * ranked; every other available CLI is listed as skipped with its pace reason.
  */
 export function rankAgentClis(
   candidates: readonly AgentCliRankCandidate[],
   exclusions: AgentCliRunExclusions,
   now: number,
+  options?: RankAgentClisOptions,
 ): AgentCliRanking {
+  const behindPaceOnly = options?.behindPaceOnly === true;
   const ranked: RankedAgentCli[] = [];
   const skipped: SkippedAgentCli[] = [];
+  const pacePredictions: AgentCliPacePrediction[] = [];
   for (const candidate of candidates) {
     const { provider } = candidate;
     const label = AGENT_CLI_LABELS[provider];
@@ -574,6 +993,12 @@ export function rankAgentClis(
     const snapshot = candidate.snapshot
       ?? unknownUsage(provider, `${label} usage was not read.`);
     if (snapshot.kind === 'unknown') {
+      if (behindPaceOnly) {
+        const reason = `pace unknown (usage unknown: ${snapshot.reason})`;
+        skipped.push({ provider, reason: `${label}: ${reason}.` });
+        pacePredictions.push({ provider, reason });
+        continue;
+      }
       ranked.push({ provider, rule: 'unknown-drain', snapshot });
       continue;
     }
@@ -589,6 +1014,31 @@ export function rankAgentClis(
         });
         continue;
       }
+    }
+    if (behindPaceOnly) {
+      const pace = evaluateCliPace(paceWindowsFromSnapshot(snapshot, now), now);
+      if (pace.status !== 'behind') {
+        const reason = pace.status === 'unknown'
+          ? `pace unknown (${pace.reason})`
+          : pace.reason;
+        skipped.push({ provider, reason: `${label}: ${reason}.` });
+        pacePredictions.push({
+          provider,
+          reason,
+          ...(pace.predictedBehindAtMs !== undefined
+            ? { predictedBehindAtMs: pace.predictedBehindAtMs }
+            : {}),
+        });
+        continue;
+      }
+      ranked.push({
+        provider,
+        rule: snapshot.resetsAt !== undefined ? 'soonest-reset' : 'most-remaining',
+        snapshot,
+        paceVariancePoints: pace.variancePoints,
+        paceElapsedPercent: pace.elapsedPercent,
+      });
+      continue;
     }
     ranked.push({
       provider,
@@ -616,7 +1066,11 @@ export function rankAgentClis(
     }
     return providerOrder(left.provider) - providerOrder(right.provider);
   });
-  return { ranked, skipped };
+  return {
+    ranked,
+    skipped,
+    ...(behindPaceOnly && pacePredictions.length > 0 ? { pacePredictions } : {}),
+  };
 }
 
 function providerOrder(provider: AgentCliProviderId): number {

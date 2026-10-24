@@ -2,7 +2,7 @@ import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPortfolioCliLoopCapability, isPortfolioPrimaryBoard, type PortfolioCliLoopDeps } from '../../src/portfolioCliLoop';
 import { runAgentCliCardHandoff, type AgentCliCardHandoff, type AgentCliInvocation, type AgentCliProcessResult, type AgentCliTarget } from '../../src/agentCliHandoff';
-import type { PortfolioLoopProject, PortfolioLoopSessionV1 } from '../../src/pro/contracts';
+import type { PortfolioLoopProgress, PortfolioLoopProject, PortfolioLoopSessionV1 } from '../../src/pro/contracts';
 import type { BoardStore } from '../../src/boardStore';
 import type { BoardState, Card } from '../../src/types';
 import { cloneBoard, appendActivity, moveCard, setAssignee, setDescription, setAcceptanceCriteria } from '../../src/utils';
@@ -140,6 +140,72 @@ test('credit exhaustion without fallback is distinct from a budget stop', async 
   await session.runCard(project('A'), 'same', () => undefined); assert.equal(session.outcome(), 'credits'); assert.equal(h.calls.length, 1); session.finish();
 });
 
+test('a reset within the cap waits instead of ending with credits, and reports the wait as progress', async () => {
+  const h = harness(); const original = h.deps.pick;
+  let now = Date.parse('2026-10-21T09:00:00.000Z'); const reset = now + 2 * 3_600_000;
+  h.deps.pick = async () => { const options = await original(); return options ? {
+    ...options, settings: { enabled: false, providers: [] }, now: () => new Date(now),
+    usageResetWait: {
+      maxWaitHours: 6,
+      probe: async probed => now < reset ? { kind: 'reported', provider: probed.provider, remainingPercent: 0, resetsAt: reset } : { kind: 'reported', provider: probed.provider, remainingPercent: 80 },
+      delay: async ms => { now += ms; await new Promise<void>(resolve => setImmediate(resolve)); },
+    },
+  } : undefined; };
+  h.hook(async () => h.calls.length === 1 ? exit('This account is out of credits.', 1) : undefined);
+  const messages: string[] = []; const session = await start(h);
+  const result = await session.runCard(project('A'), 'same', progress => { messages.push(progress.message); });
+  assert.notEqual(session.outcome(), 'credits'); assert.notEqual(result.outcome, 'stopped');
+  assert.equal(h.calls.length, 2); assert.ok(now >= reset);
+  assert.ok(messages.some(message => /^Waiting for .+ usage limit to reset at /.test(message)));
+  session.finish();
+});
+
+test('a usage-reset wait reports structured usageWait, then omits the key once the stage resumes', async () => {
+  const h = harness(); const original = h.deps.pick;
+  let now = Date.parse('2026-10-21T09:00:00.000Z'); const reset = now + 2 * 3_600_000;
+  h.deps.pick = async () => { const options = await original(); return options ? {
+    ...options, settings: { enabled: false, providers: [] }, now: () => new Date(now),
+    usageResetWait: {
+      maxWaitHours: 6,
+      probe: async probed => now < reset ? { kind: 'reported', provider: probed.provider, remainingPercent: 0, resetsAt: reset } : { kind: 'reported', provider: probed.provider, remainingPercent: 80 },
+      delay: async ms => { now += ms; await new Promise<void>(resolve => setImmediate(resolve)); },
+    },
+  } : undefined; };
+  h.hook(async () => h.calls.length === 1 ? exit('This account is out of credits.', 1) : undefined);
+  const reports: PortfolioLoopProgress[] = []; const session = await start(h);
+  await session.runCard(project('A'), 'same', progress => { reports.push(progress); });
+  const waiting = reports.findIndex(progress => progress.usageWait !== undefined);
+  assert.ok(waiting >= 0);
+  assert.deepEqual(reports[waiting]!.usageWait, { providerLabel: 'OpenAI Codex CLI', resetsAt: reset });
+  assert.match(reports[waiting]!.message, /^Waiting for /);
+  const after = reports.slice(waiting + 1).find(progress => !('usageWait' in progress));
+  assert.ok(after, 'a later report omits usageWait'); assert.match(after.message, /has reset/);
+  assert.ok(reports.filter(progress => progress.usageWait === undefined).every(progress => !('usageWait' in progress)));
+  session.finish();
+});
+
+test('a wait that runs out clears usageWait and puts the host reason in the credits summary', async () => {
+  const h = harness(); const original = h.deps.pick;
+  let now = Date.parse('2026-10-21T09:00:00.000Z');
+  h.deps.pick = async () => { const options = await original(); return options ? {
+    ...options, settings: { enabled: false, providers: [] }, now: () => new Date(now),
+    usageResetWait: {
+      maxWaitHours: 1,
+      probe: async probed => ({ kind: 'unknown', provider: probed.provider, reason: 'no usage report' }),
+      delay: async ms => { now += ms; await new Promise<void>(resolve => setImmediate(resolve)); },
+    },
+  } : undefined; };
+  h.hook(async () => exit('This account is out of credits.', 1));
+  const reports: PortfolioLoopProgress[] = []; const session = await start(h);
+  await session.runCard(project('A'), 'same', progress => { reports.push(progress); });
+  const waiting = reports.find(progress => progress.usageWait !== undefined);
+  assert.equal(waiting?.usageWait?.providerLabel, 'OpenAI Codex CLI');
+  assert.equal(typeof waiting?.usageWait?.nextCheckAt, 'number'); assert.ok(!('resetsAt' in waiting!.usageWait!));
+  assert.ok(!('usageWait' in reports[reports.length - 1]!));
+  assert.equal(session.outcome(), 'credits'); assert.equal(h.calls.length, 1);
+  assert.match(session.finish(), /No usage reset was reported for .+ within the 1-hour maximum wait/);
+});
+
 test('pause allows current CLI to finish but holds advancement; Stop releases a paused run', async () => {
   const h = harness(); const stage = deferred(); h.hook(async () => { await stage.promise; return undefined; }); const session = await start(h);
   const running = session.runCard(project('A'), 'same', () => undefined); await until(() => h.calls.length === 1); session.pause(); stage.resolve();
@@ -180,4 +246,50 @@ test('primary-store matching respects Windows aliases and Linux root case', () =
   assert.equal(isPortfolioPrimaryBoard('C:/Repo/', '.tasks', 'c:/repo', './.tasks', 'win32'), true);
   assert.equal(isPortfolioPrimaryBoard('/repos/A', '.tasks', '/repos/a', '.tasks', 'linux'), false);
   assert.equal(isPortfolioPrimaryBoard('/repos/A', '.tasks', '/repos/A', '.mwnn', 'linux'), false);
+});
+
+
+test('blocked selection metadata distinguishes empty and completed boards from dependency and capacity holds', async () => {
+  const h = harness(); const session = await start(h);
+  for (const state of [board({ assignee: { kind: 'human' } }), board({}, 'done')]) {
+    h.boards.set('/repos/A', memory(state));
+    const choice = await session.selectCard(project('A'));
+    assert.equal(choice.kind, 'empty');
+    if (choice.kind === 'empty') { assert.equal(choice.blocked, undefined); }
+  }
+  const dependent = board({ dependsOn: ['dependency'] }, 'ready');
+  dependent.columns[0]!.cards.push({ id: 'dependency', title: 'Human prerequisite', createdAt: 2, assignee: { kind: 'human' } });
+  const limited = board({}, 'ready'); limited.columns[2]!.wipLimit = 0;
+  for (const state of [dependent, limited]) {
+    const data = memory(state); h.boards.set('/repos/A', data);
+    const before = data.state();
+    const choice = await session.selectCard(project('A'));
+    assert.equal(choice.kind, 'empty');
+    if (choice.kind === 'empty') { assert.equal(choice.blocked, true); }
+    assert.deepEqual(data.state(), before, 'selection preserves placement, dependencies and evidence');
+  }
+  assert.equal(h.calls.length, 0);
+  session.finish();
+});
+
+test('a blocked handoff reports remaining blocked work and a fresh session can select it again', async () => {
+  const h = harness();
+  h.hook(async handoff => {
+    h.boards.get(handoff.cwd)!.mutate(s => appendActivity(s, handoff.cardId, 'STATUS: BLOCKED: needs a person'));
+    return exit();
+  });
+  const session = await start(h);
+  assert.equal((await session.runCard(project('A'), 'same', () => undefined)).outcome, 'skipped');
+  const before = h.boards.get('/repos/A')!.state();
+  const choice = await session.selectCard(project('A'));
+  assert.equal(choice.kind, 'empty');
+  if (choice.kind === 'empty') { assert.equal(choice.blocked, true); }
+  assert.equal((await session.selectCard(project('B'))).kind, 'card', 'the same id in another project remains runnable');
+  assert.deepEqual(h.boards.get('/repos/A')!.state(), before);
+  assert.equal(h.calls.length, 1);
+  session.finish();
+  const next = await start(h);
+  assert.equal((await next.selectCard(project('A'))).kind, 'card', 'new Play has fresh session skips');
+  next.finish();
+  assert.equal(h.counts().released, 2);
 });

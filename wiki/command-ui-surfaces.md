@@ -58,7 +58,6 @@ Decision values: **add button** (a new visible control is worth adding), **keep 
 | `mwnn-kanban.stopCardRun` | Stop Card AI Run | palette only | `enableRunWithAI` | **add button** | **Board webview**, on the card's "&lt;provider&gt; running" chip · visible when `enableRunWithAI` and that card has a live CLI run | The board already shows which card is running, but stopping it needs the palette. The command aborts *all* runs, so the button must abort only that card's run. | [card-mv2ik8oc-1](../.mwnn/cards/card-mv2ik8oc-1.md) |
 | `mwnn-kanban.importPlan` | Import Plan | Sidebar view "Import plan" button | `enableRunWithAI` | keep as-is | — | Already surfaced. See the gating mismatch under [Duplicates and conflicts](#duplicates-and-conflicts). | — |
 | `mwnn-kanban.populateAgentCliModels` | Populate Agent CLI Models and Thinking Levels | palette only | — | palette only | — | One-off discovery that seeds settings. The Agent CLI Models panel is the UI home for model management. | — |
-| `mwnn-kanban.manageAgentCliModels` | Manage Agent CLI Models and Thinking Levels | palette only | — | palette only | — | A quick-pick alternative to the Agent CLI Models panel. A second button would duplicate the gear. | — |
 | `mwnn-kanban.openAgentCliModels` | Agent CLI Models | Sidebar view title (gear, `navigation@1`) | — | keep as-is | — | Already surfaced. The board's model-picker link should route here instead of raw settings (see conflicts). | [card-mv2ik8oc-5](../.mwnn/cards/card-mv2ik8oc-5.md) |
 | `mwnn-kanban.resetBoard` | Reset Board | palette only (host modal confirm) | — | palette only | — | **Destructive and rare.** It deletes every card file. No button, so it cannot be clicked by accident. If one is ever added, it must keep the extension-host modal confirm, because webviews cannot use `window.confirm`. | — |
 | `mwnn-kanban.upgradeToPro` | Get MWNN Kanban Pro | palette only (has a `$(star-full)` icon but no menu) | `!hasProLicense` | **add button** | **Sidebar view title**, `navigation@2` · visible when `view == mwnn-kanban.sidebar && !mwnn-kanban.hasProLicense` | Pro features are hard to discover otherwise. The icon is already declared, and the button disappears once licensed. | [card-mv2ik8oc-2](../.mwnn/cards/card-mv2ik8oc-2.md) |
@@ -88,7 +87,7 @@ Totals: 31 commands, with 11 add button, 16 keep as-is, and 4 palette only.
 | `mwnn-kanban.clearProLicenseKey` | **No button**, palette only | Already a host modal in `src/pro/upgrade.ts`. Same rule applies. |
 | `mwnn-kanban.deleteColumn` | Keep the existing board button | The host modal in `src/boardPanel.ts` (`case 'deleteColumn'`) already covers it. |
 | `mwnn-kanban.stopCardRun` (new board button) | Add button | Aborting a run is recoverable (the card can be rerun), so no confirm is required. If a confirm is wanted, it must be a host-side modal. |
-| `mwnn-kanban.populateAgentCliModels`, `manageAgentCliModels` | Palette only | Rare. The Agent CLI Models panel is the UI. |
+| `mwnn-kanban.populateAgentCliModels` | Palette only | Rare. The Agent CLI Models panel is the UI. |
 
 Webviews in this extension cannot use `window.confirm`, `alert`, or `prompt`, because they are no-ops. Any confirmation for a webview-triggered destructive action must come from the extension host.
 
@@ -96,7 +95,7 @@ Webviews in this extension cannot use `window.confirm`, `alert`, or `prompt`, be
 
 > ⚠️ Note: **Open Portfolio has two surfaces.** It appears in the My Work view title and as a sidebar view Portfolio button, both license-gated. This is an acceptable intentional duplicate, because the sidebar is the always-visible entry point. Keep both, and do not add a third.
 
-> ⚠️ Note: **Three Agent CLI model commands overlap.** `populateAgentCliModels`, `manageAgentCliModels` (quick pick), and `openAgentCliModels` (panel) all manage the same settings. Only the panel has a button. Consider folding populate into the panel and retiring the quick pick later. No change is proposed here.
+> ⚠️ Note: **Two Agent CLI model commands overlap.** `populateAgentCliModels` (palette) and `openAgentCliModels` (panel) both manage the same settings. Only the panel has a button. Consider folding populate into the panel later. No change is proposed here.
 
 > ⚠️ Note: **The board model picker bypasses the Agent CLI Models panel.** The board's "Configure model lists in settings…" link (`openModelSettings` in `media/board.js`, handled in `src/boardPanel.ts`) opens raw `workbench.action.openSettings`, while the sidebar gear opens the dedicated panel. The same intent leads to two different destinations. Follow-up: [card-mv2ik8oc-5](../.mwnn/cards/card-mv2ik8oc-5.md).
 

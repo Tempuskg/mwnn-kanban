@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { detectCreditExhaustion, redactSecrets, type CreditExhaustionSignal } from './agentCliCredit';
+import { expandCursorStreamJsonOutput } from './cursorStreamJson';
 import {
   AGENT_CLI_ESCALATION_LADDER_SETTING,
   AGENT_CLI_MODELS_SETTING,
@@ -31,7 +32,13 @@ import {
   type AgentCliModelDiscoveryOutcome,
   type AgentCliModelDiscoverySession,
 } from './agentCliModelDiscovery';
-import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
+import {
+  AGENT_CLI_LABELS,
+  AGENT_CLI_PROVIDER_IDS,
+  agentCliExecutableProvider,
+  type AgentCliExecutableProviderId,
+  type AgentCliProviderId,
+} from './agentCliProviders';
 import type { AgentCliHandoffKind } from './agentCliStages';
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
@@ -41,22 +48,31 @@ import { cardPreferredModelFor, cardThinkingLevelFor } from './utils';
 // The provider identity lives in its own module so the model catalog can depend
 // on it without importing the spawn machinery; re-exported here so callers keep
 // a single import site.
-export { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId } from './agentCliProviders';
-export type { AgentCliProviderId } from './agentCliProviders';
+export {
+  AGENT_CLI_CURSOR_OTHER_ID,
+  AGENT_CLI_CURSOR_OTHER_STAGE_ID,
+  AGENT_CLI_LABELS,
+  AGENT_CLI_PROVIDER_IDS,
+  AGENT_CLI_STAGE_PROVIDER_IDS,
+  agentCliExecutableProvider,
+  agentCliProviderForStageProvider,
+  isAgentCliProviderId,
+  isAgentCliStageProviderId,
+  isCursorAgentCliProvider,
+} from './agentCliProviders';
+export type {
+  AgentCliExecutableProviderId,
+  AgentCliProviderId,
+  AgentCliStageProviderId,
+} from './agentCliProviders';
 // Stage ids live beside the provider ids, for the same reason: the model
 // settings reader keys on them and must not import the spawn machinery.
 export { AGENT_CLI_HANDOFF_KINDS, isAgentCliHandoffKind } from './agentCliStages';
 export type { AgentCliHandoffKind } from './agentCliStages';
 
-export type AgentCliPathOverrides = Partial<Record<AgentCliProviderId, string>>;
+/** Path overrides are keyed by executable providers; `cursor-other` shares `cursor`. */
+export type AgentCliPathOverrides = Partial<Record<AgentCliExecutableProviderId, string>>;
 export type AgentCliLauncher = 'standalone' | 'gh-copilot';
-
-export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
-  copilot: 'GitHub Copilot CLI',
-  codex: 'OpenAI Codex CLI',
-  'claude-code': 'Anthropic Claude Code CLI',
-  cursor: 'Cursor Agent CLI',
-};
 
 /**
  * How one provider names a model on its own command line. A provider that
@@ -154,7 +170,7 @@ interface AgentCliProviderSpec {
  * argument, so it carries no spec and a level resolved for it is reported as
  * not applied while the run proceeds on that CLI's own default effort.
  */
-const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
+const PROVIDER_SPECS: Record<AgentCliExecutableProviderId, AgentCliProviderSpec> = {
   copilot: {
     defaultCommands: ['copilot'],
     args: ['--allow-all-tools', '--no-ask-user', '--silent'],
@@ -186,21 +202,34 @@ const PROVIDER_SPECS: Record<AgentCliProviderId, AgentCliProviderSpec> = {
   },
   cursor: {
     defaultCommands: ['cursor-agent'],
-    args: ['-p', '--force', '--output-format', 'text'],
-    modelDiscoveryArgs: ['-p', '--force', '--output-format', 'stream-json'],
+    // stream-json (+ partial deltas) so the MWNN Agent CLI channel and status
+    // ticker update while the run is in progress; text mode only emits once.
+    args: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
+    modelDiscoveryArgs: [
+      '-p',
+      '--force',
+      '--output-format',
+      'stream-json',
+      '--stream-partial-output',
+    ],
     model: { flag: '--model' },
   },
 };
 
+function providerSpec(provider: AgentCliProviderId): AgentCliProviderSpec {
+  return PROVIDER_SPECS[agentCliExecutableProvider(provider)];
+}
+
 /**
  * The model flag each provider accepts, or undefined for a provider that takes
  * no model selection. Exported as data so callers (and tests) can reason about
- * model support without reaching into the spawn logic.
+ * model support without reaching into the spawn logic. `cursor-other` shares
+ * Cursor Agent CLI's model flag with `cursor`.
  */
 export const AGENT_CLI_MODEL_FLAGS: Readonly<Record<AgentCliProviderId, string | undefined>> =
   Object.freeze(
     Object.fromEntries(
-      AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, PROVIDER_SPECS[provider].model?.flag]),
+      AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, providerSpec(provider).model?.flag]),
     ) as Record<AgentCliProviderId, string | undefined>,
   );
 
@@ -208,12 +237,13 @@ export const AGENT_CLI_MODEL_FLAGS: Readonly<Record<AgentCliProviderId, string |
  * The thinking-level flag each provider accepts, or undefined for a provider
  * that takes no effort selection. Exported as data, like the model flags, so
  * callers and tests can reason about support without reaching into the spawn
- * logic - and so the "unsupported" path stays injectable.
+ * logic - and so the "unsupported" path stays injectable. Cursor Agent CLI
+ * Other, like Cursor Agent CLI, has no effort flag.
  */
 export const AGENT_CLI_THINKING_FLAGS: Readonly<Record<AgentCliProviderId, string | undefined>> =
   Object.freeze(
     Object.fromEntries(
-      AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, PROVIDER_SPECS[provider].thinking?.flag]),
+      AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, providerSpec(provider).thinking?.flag]),
     ) as Record<AgentCliProviderId, string | undefined>,
   );
 
@@ -394,7 +424,7 @@ export function resolveAgentCliThinkingSelection(
       args: [],
     };
   }
-  const spec = PROVIDER_SPECS[provider].thinking;
+  const spec = providerSpec(provider).thinking;
   // One value argument either way, so a level containing a space or a shell
   // metacharacter can never become a second argument or a command.
   const value = spec?.valuePrefix !== undefined ? `${spec.valuePrefix}${requested}` : requested;
@@ -435,7 +465,7 @@ function providerArgs(
   thinkingSelection?: AgentCliThinkingSelection,
   modelDiscovery = false,
 ): string[] {
-  const spec = PROVIDER_SPECS[provider];
+  const spec = providerSpec(provider);
   const args = [...(modelDiscovery ? spec.modelDiscoveryArgs ?? spec.args : spec.args)];
   const clamp = (index: number | undefined): number =>
     Math.min(Math.max(index ?? args.length, 0), args.length);
@@ -500,12 +530,14 @@ export async function resolveAgentCliTarget(
   configuredPaths: AgentCliPathOverrides = {},
   options: ExecutableDiscoveryOptions = {},
 ): Promise<AgentCliResolution> {
-  const configured = normalizeConfiguredPath(configuredPaths[provider]);
-  if (provider === 'copilot') {
+  // Cursor Agent CLI Other shares the Cursor Agent CLI executable and path key.
+  const executableProvider = agentCliExecutableProvider(provider);
+  const configured = normalizeConfiguredPath(configuredPaths[executableProvider]);
+  if (executableProvider === 'copilot') {
     return resolveCopilotCliTarget(configured, options);
   }
 
-  const commands = configured ? [configured] : PROVIDER_SPECS[provider].defaultCommands;
+  const commands = configured ? [configured] : providerSpec(provider).defaultCommands;
   for (const command of commands) {
     const executable = await findExecutable(command, options);
     if (executable) {
@@ -521,8 +553,8 @@ export async function resolveAgentCliTarget(
     }
   }
 
-  const attemptedCommand = commands[0] ?? provider;
-  const setting = `mwnn-kanban.agentCliPaths["${provider}"]`;
+  const attemptedCommand = commands[0] ?? executableProvider;
+  const setting = `mwnn-kanban.agentCliPaths["${executableProvider}"]`;
   const source = configured ? `configured path "${attemptedCommand}"` : `command "${attemptedCommand}" on PATH`;
   return {
     available: false,
@@ -883,11 +915,17 @@ export async function prepareAgentCliInvocation(
     options.thinkingSelection,
     options.modelDiscovery,
   );
-  if (target.provider !== 'cursor') {
+  // cursor-other shares Cursor Agent CLI's executable and Windows shim quirks.
+  if (agentCliExecutableProvider(target.provider) !== 'cursor') {
     return { invocation };
   }
 
-  const cursorArgs = providerArgs('cursor', options.modelSelection, options.thinkingSelection, options.modelDiscovery);
+  const cursorArgs = providerArgs(
+    target.provider,
+    options.modelSelection,
+    options.thinkingSelection,
+    options.modelDiscovery,
+  );
   const platform = options.platform ?? process.platform;
   const unwrapped = await resolveCursorWindowsLaunch(target.executable, platform);
   if (unwrapped) {
@@ -1752,7 +1790,7 @@ export function detectModelRejection(
     return undefined;
   }
 
-  const lines = `${result.stderr}\n${result.stdout}\n${result.error ?? ''}`
+  const lines = `${result.stderr}\n${expandCursorStreamJsonOutput(result.stdout)}\n${result.error ?? ''}`
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
@@ -1839,7 +1877,9 @@ function describeProcessFailure(
 }
 
 function conciseProcessOutput(output: string): string {
-  return output
+  // Cursor (and other) stream-json dumps are expanded so the exit summary
+  // quotes a human-readable fragment instead of a raw `{"type":...}` line.
+  return expandCursorStreamJsonOutput(output)
     .trim()
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)

@@ -6,7 +6,13 @@
  * same contract. The webview script (media/board.js) mirrors these shapes.
  */
 
-import { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId, type AgentCliProviderId } from './agentCliProviders';
+import {
+  AGENT_CLI_PROVIDER_IDS,
+  isAgentCliProviderId,
+  isAgentCliStageProviderId,
+  type AgentCliProviderId,
+  type AgentCliStageProviderId,
+} from './agentCliProviders';
 import { isAgentCliHandoffKind, type AgentCliHandoffKind } from './agentCliStages';
 
 /** Protocol for the settings editor, separate from board mutations. */
@@ -25,7 +31,7 @@ export type AgentCliSettingsPanelMessage =
     }
   | {
       readonly type: 'settingsStageEdit';
-      readonly provider: AgentCliProviderId;
+      readonly provider: AgentCliStageProviderId;
       readonly scope: AgentCliSettingsScope;
       readonly list: AgentCliPanelList;
       readonly stage: AgentCliHandoffKind;
@@ -46,7 +52,9 @@ export interface AgentCliSettingsPanelProvider {
 }
 
 export interface AgentCliSettingsPanelStage {
-  readonly provider: AgentCliProviderId;
+  readonly provider: AgentCliStageProviderId;
+  readonly label: string;
+  readonly thinkingApplied: boolean;
   readonly suggestedModels: readonly string[];
   readonly suggestedThinkingLevels: readonly string[];
   readonly id: AgentCliHandoffKind;
@@ -90,7 +98,7 @@ export function isAgentCliSettingsPanelMessage(value: unknown): value is AgentCl
       ['add', 'remove', 'makeDefault', 'clear'].includes(message['action']);
   }
   if (message['type'] === 'settingsStageEdit') {
-    return isAgentCliHandoffKind(message['stage']) && isAgentCliProviderId(message['provider']) &&
+    return isAgentCliHandoffKind(message['stage']) && isAgentCliStageProviderId(message['provider']) &&
       (message['action'] === 'set' || message['action'] === 'remove');
   }
   return false;

@@ -46,7 +46,12 @@
  * has to read the configuration key.
  */
 
-import { AGENT_CLI_PROVIDER_IDS, type AgentCliProviderId } from './agentCliProviders';
+import {
+  AGENT_CLI_PROVIDER_IDS,
+  AGENT_CLI_STAGE_PROVIDER_IDS,
+  type AgentCliProviderId,
+  type AgentCliStageProviderId,
+} from './agentCliProviders';
 import type { AgentCliModelSuggestions } from './types';
 import { AGENT_CLI_HANDOFF_KINDS, type AgentCliHandoffKind } from './agentCliStages';
 import { normalizePreferredModel, normalizeThinkingLevel } from './utils';
@@ -172,7 +177,7 @@ export const AGENT_CLI_STAGE_MODELS_SETTING = 'mwnn-kanban.agentCliStageModels';
 export const AGENT_CLI_ESCALATION_LADDER_SETTING = 'mwnn-kanban.aiLoopModelEscalationLadder';
 
 /** A stage can hold CLI-specific names or a legacy shared string. */
-export type AgentCliStagePreference = string | { readonly [K in AgentCliProviderId]?: string };
+export type AgentCliStagePreference = string | { readonly [K in AgentCliStageProviderId]?: string };
 export type AgentCliStageModels = { readonly [K in AgentCliHandoffKind]?: AgentCliStagePreference };
 export const EMPTY_AGENT_CLI_STAGE_MODELS: AgentCliStageModels = Object.freeze({});
 
@@ -198,8 +203,8 @@ function readStagePreferences(
         rules[stage] = name;
       }
     } else if (typeof entry === 'object' && entry !== null && !Array.isArray(entry)) {
-      const providers: { -readonly [K in AgentCliProviderId]?: string } = {};
-      for (const provider of AGENT_CLI_PROVIDER_IDS) {
+      const providers: { -readonly [K in AgentCliStageProviderId]?: string } = {};
+      for (const provider of AGENT_CLI_STAGE_PROVIDER_IDS) {
         const name = normalize(typeof (entry as Record<string, unknown>)[provider] === 'string'
           ? (entry as Record<string, string>)[provider] : undefined);
         if (name !== undefined) {
@@ -240,14 +245,26 @@ export function mergeAgentCliStagePreferences(...values: readonly unknown[]): Ag
   return Object.freeze(result);
 }
 
-/** Legacy strings apply to every CLI; provider maps apply only to that CLI. */
+/** Legacy strings apply to every CLI; provider maps apply only to that key. */
 export function stageAgentCliModel(
   rules: AgentCliStageModels,
   stage: AgentCliHandoffKind,
-  provider?: AgentCliProviderId,
+  provider?: AgentCliStageProviderId,
 ): string | undefined {
   const entry = rules[stage];
   return typeof entry === 'string' ? entry : provider === undefined ? undefined : entry?.[provider];
+}
+
+/**
+ * Stage model for a selectable provider id. `cursor` and `cursor-other` are
+ * independent peers — each reads only its own stage key.
+ */
+export function stageAgentCliModelForProvider(
+  rules: AgentCliStageModels,
+  stage: AgentCliHandoffKind,
+  provider: AgentCliProviderId,
+): string | undefined {
+  return stageAgentCliModel(rules, stage, provider);
 }
 
 /**
@@ -340,7 +357,9 @@ export function resolveAgentCliModel(
   if (fromCard !== undefined) {
     return { model: fromCard, source: 'card' };
   }
-  const fromStage = stage ? stageAgentCliModel(stage.stageModels, stage.stage, provider) : undefined;
+  const fromStage = stage
+    ? stageAgentCliModelForProvider(stage.stageModels, stage.stage, provider)
+    : undefined;
   if (fromStage !== undefined) {
     return { model: fromStage, source: 'stage-rule' };
   }
@@ -479,9 +498,18 @@ export function readAgentCliStageThinkingLevels(value: unknown): AgentCliStageTh
 export function stageAgentCliThinkingLevel(
   rules: AgentCliStageThinkingLevels,
   stage: AgentCliHandoffKind,
-  provider?: AgentCliProviderId,
+  provider?: AgentCliStageProviderId,
 ): string | undefined {
   return stageAgentCliModel(rules, stage, provider);
+}
+
+/** Stage thinking level for a selectable provider id (peers, no fallthrough). */
+export function stageAgentCliThinkingLevelForProvider(
+  rules: AgentCliStageThinkingLevels,
+  stage: AgentCliHandoffKind,
+  provider: AgentCliProviderId,
+): string | undefined {
+  return stageAgentCliModelForProvider(rules, stage, provider);
 }
 
 /**
@@ -563,7 +591,7 @@ export function resolveAgentCliThinkingLevel(
     return { level: fromCard, source: 'card' };
   }
   const fromStage = stage
-    ? stageAgentCliThinkingLevel(stage.stageThinkingLevels, stage.stage, provider)
+    ? stageAgentCliThinkingLevelForProvider(stage.stageThinkingLevels, stage.stage, provider)
     : undefined;
   if (fromStage !== undefined) {
     return { level: fromStage, source: 'stage-rule' };

@@ -63,13 +63,90 @@ import {
   type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
 import {
+  formatNoEligibleCliReason,
   formatOrchestratorChoiceEntry,
   formatOrchestratorRanking,
   type AgentCliOrchestratorDecision,
   type AgentCliUsageOrchestrator,
 } from './agentCliOrchestrator';
+import {
+  cursorPoolForModel,
+  selectCursorUsageForModel,
+  unknownUsage,
+  type AgentCliRanking,
+} from './agentCliUsage';
+import {
+  DEFAULT_USAGE_PROBE_TIMEOUT_MS,
+  probeAgentCliUsage,
+  type AgentCliUsageProbe,
+} from './agentCliUsageProbe';
+import {
+  delayWithSignal,
+  formatPaceWaitProgress,
+  formatPaceWaitResumeEntry,
+  formatPaceWaitStartEntry,
+  formatUsageResetHandoffNote,
+  formatUsageWaitProgress,
+  formatUsageWaitResumeEntry,
+  formatUsageWaitStartEntry,
+  planPaceWait,
+  planUsageWait,
+  selectRecoveredCli,
+  usageWaitProviderLabel,
+  waitUntilWallClock,
+  type UsageWaitCandidate,
+} from './aiLoopUsageWait';
 import type { BoardState, Card } from './types';
 import { cardPreferredModelFor } from './utils';
+
+/**
+ * The model that drew from a Cursor usage pool on this dispatch. Prefer the
+ * observed CLI model; otherwise the applied requested name. Absent when the
+ * run left Cursor on its default (classifier productDefault `auto`).
+ */
+function modelForUsageWaitPool(result: AgentCliCardHandoffResult): string | undefined {
+  const observed = result.actualModel?.model.trim();
+  if (observed) {
+    return observed;
+  }
+  if (result.modelSelection?.applied === true) {
+    const requested = result.modelSelection.requested.trim();
+    if (requested.length > 0) {
+      return requested;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Wait-for-reset policy for a run (`mwnn-kanban.aiLoopUsageResetMaxWaitHours`).
+ * Omitted, or `maxWaitHours` of 0, keeps the existing stop-on-exhaustion
+ * behavior exactly.
+ */
+export interface AgentCliUsageResetWaitSettings {
+  /** Validated by `readAiLoopUsageResetMaxWaitHours`; caps each wait on its own. */
+  readonly maxWaitHours: number;
+  /** Test seams; default to the real usage probes and a real abortable delay. */
+  readonly probe?: AgentCliUsageProbe;
+  readonly delay?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
+
+/** What a usage-reset or behind-pace wait is waiting for; times are epoch ms. */
+export interface AgentCliUsageWaitState {
+  readonly providerLabel: string;
+  /** The reported reset time, when one was reported. */
+  readonly resetsAt?: number;
+  /**
+   * The next probe / wake time. Always set for a pace wait (and for a reset
+   * recheck) so older Portfolio UI still shows a check time.
+   */
+  readonly nextCheckAt?: number;
+  /**
+   * Additive: present when waiting for a CLI to fall behind pace rather than
+   * for a usage-limit reset. Older Pro packages ignore this field.
+   */
+  readonly paceWait?: true;
+}
 
 export interface AgentCliFallbackSettings {
   /** Off by default: a disabled fallback preserves the single-CLI behavior. */
@@ -225,6 +302,12 @@ export interface AgentCliFallbackDeps {
   /** Called once when the run pauses because no eligible CLI is left. */
   readonly onPause?: (reason: string) => void;
   /**
+   * Structured state of a usage-reset wait: called with the wait before its
+   * progress line, and with `undefined` before any later progress line once
+   * the wait resumes, is declined, or is cancelled.
+   */
+  readonly onUsageWait?: (wait: AgentCliUsageWaitState | undefined) => void;
+  /**
    * Consulted immediately before *every* CLI process this runner launches -
    * the first attempt of a stage, a credit-fallback replacement, and a model
    * escalation retry alike - so a per-run dispatch budget counts and caps all
@@ -257,6 +340,13 @@ export interface AgentCliFallbackDeps {
   readonly orchestrator?: AgentCliUsageOrchestrator;
   /** The full orchestrator ranking (with skipped CLIs) for each choice it makes. */
   readonly onRanking?: (lines: readonly string[]) => void;
+  /**
+   * When an exhaustion leaves no replacement CLI (fallback off, order used up,
+   * or the orchestrator finds none), wait for the earliest reported reset
+   * within the cap and retry the same stage, instead of pausing the run.
+   * The wall clock is `now`; the wait is announced through `onProgress`.
+   */
+  readonly usageResetWait?: AgentCliUsageResetWaitSettings;
   /** Test seams; default to the shared agentCliHandoff implementations. */
   readonly resolveTarget?: (
     provider: AgentCliProviderId,
@@ -310,15 +400,248 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
 
   const cancelled = (): boolean => deps.signal.aborted || deps.isCancelled?.() === true;
 
+  const maxWaitHours = deps.usageResetWait?.maxWaitHours ?? 0;
+  /** The exhausted CLIs' targets, so a wait can probe them and resume on one. */
+  const exhaustedTargets = new Map<AgentCliProviderId, AgentCliTarget>();
+  /**
+   * Resolved model that exhausted each Cursor wait (pool label only). Other
+   * CLIs ignore this map; cleared when that CLI is eligible again.
+   */
+  const exhaustedModels = new Map<AgentCliProviderId, string | undefined>();
+  const nowMs = (): number => now().getTime();
+  const labelForWait = (provider: AgentCliProviderId): string =>
+    usageWaitProviderLabel(provider, exhaustedModels.get(provider));
+
+  const probeExhausted = (): Promise<UsageWaitCandidate[]> => {
+    const probe = deps.usageResetWait?.probe ?? probeAgentCliUsage;
+    return Promise.all([...exhaustedTargets.values()].map(async (target) => {
+      const raw = await probe(target, {
+        cwd: deps.cwd,
+        timeoutMs: DEFAULT_USAGE_PROBE_TIMEOUT_MS,
+        signal: deps.signal,
+        now: nowMs(),
+      }).catch((error: unknown) => unknownUsage(
+        target.provider,
+        `${target.label} usage probe failed: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return {
+        provider: target.provider,
+        snapshot: selectCursorUsageForModel(raw, exhaustedModels.get(target.provider)),
+      };
+    }));
+  };
+
+  /**
+   * Wait for an exhausted CLI's allowance to reset. Probes every exhausted CLI,
+   * sleeps until the earliest reported reset inside the cap (or rechecks every
+   * 30 minutes when none is reported), and resumes on the CLI that recovered.
+   * Nothing is dispatched while this runs, and a pause does not shorten it:
+   * the caller's next attempt still holds at the pause gate.
+   */
+  const waitForUsageReset = async (
+    kind: AgentCliHandoffKind,
+    card: Card,
+    failed: AgentCliTarget,
+    detail: string,
+  ): Promise<
+    | { readonly kind: 'resumed'; readonly target: AgentCliTarget }
+    | { readonly kind: 'declined'; readonly reason: string }
+    | { readonly kind: 'cancelled' }
+  > => {
+    const deadline = nowMs() + maxWaitHours * 3_600_000;
+    const clock = {
+      now: nowMs,
+      delay: deps.usageResetWait?.delay ?? delayWithSignal,
+      signal: deps.signal,
+      isCancelled: cancelled,
+    };
+    let waitedFor: AgentCliProviderId | undefined;
+    let waited = false;
+    const clearWait = (): void => {
+      if (waited) {
+        deps.onUsageWait?.(undefined);
+      }
+    };
+    try {
+      for (;;) {
+        if (cancelled()) {
+          return { kind: 'cancelled' };
+        }
+        const candidates = await probeExhausted();
+        if (cancelled()) {
+          return { kind: 'cancelled' };
+        }
+        if (waited) {
+          const recovered = selectRecoveredCli(candidates, waitedFor);
+          const target = recovered !== undefined ? exhaustedTargets.get(recovered) : undefined;
+          if (recovered !== undefined && target) {
+            // Eligible again in this runner and in the orchestrator; every other
+            // exhausted CLI stays out.
+            exhausted.delete(recovered);
+            exhaustedTargets.delete(recovered);
+            exhaustedModels.delete(recovered);
+            deps.orchestrator?.clearExhausted(recovered);
+            await appendIfCardExists(deps.store, card.id, formatUsageWaitResumeEntry(now(), kind, recovered));
+            clearWait();
+            waited = false;
+            deps.onProgress?.(
+              `${target.label}'s usage limit has reset; retrying the ${STAGE_LABELS[kind]} stage for "${card.title}".`,
+            );
+            return { kind: 'resumed', target };
+          }
+        }
+        const plan = planUsageWait(candidates, nowMs(), deadline, maxWaitHours);
+        if (plan.kind === 'decline') {
+          return { kind: 'declined', reason: plan.reason };
+        }
+        if (!waited) {
+          await appendIfCardExists(
+            deps.store,
+            card.id,
+            formatUsageWaitStartEntry({
+              at: now(),
+              kind,
+              exhausted: failed.provider,
+              detail,
+              plan,
+              maxWaitHours,
+            }),
+          );
+        }
+        waited = true;
+        deps.onUsageWait?.(plan.kind === 'reset'
+          ? { providerLabel: labelForWait(plan.provider), resetsAt: plan.resetsAt }
+          : { providerLabel: plan.providers.map(labelForWait).join(', '), nextCheckAt: plan.until });
+        deps.onProgress?.(formatUsageWaitProgress(plan));
+        waitedFor = plan.kind === 'reset' ? plan.provider : undefined;
+        if (!(await waitUntilWallClock(plan.until, clock))) {
+          return { kind: 'cancelled' };
+        }
+      }
+    } finally {
+      // Declined, cancelled, or thrown: the next progress line is not a wait.
+      clearWait();
+    }
+  };
+
+  /** Cursor model that would run if the orchestrator chose `cursor` for this stage. */
+  const cursorModelForStage = (
+    kind: AgentCliHandoffKind,
+    card: Card,
+  ): string | undefined =>
+    resolveAgentCliModel(
+      'cursor',
+      cardPreferredModelFor(card, 'cursor'),
+      deps.modelCatalog,
+      {
+        stage: kind,
+        stageModels: deps.stageModels ?? EMPTY_AGENT_CLI_STAGE_MODELS,
+      },
+    )?.model;
+
   /** Ask the orchestrator for a CLI and log the full ranking it produced. */
   const orchestrate = async (
     orchestrator: AgentCliUsageOrchestrator,
     kind: AgentCliHandoffKind,
     card: Card,
   ): Promise<AgentCliOrchestratorDecision> => {
-    const decision = await orchestrator.choose();
+    const cursorModel = cursorModelForStage(kind, card);
+    const decision = await orchestrator.choose({
+      ...(cursorModel !== undefined ? { cursorModel } : {}),
+      cursorProductDefault: 'auto',
+    });
     deps.onRanking?.(formatOrchestratorRanking(decision.ranking, kind, card.title));
     return decision;
+  };
+
+  /**
+   * Wait until a CLI falls behind pace, then re-rank. Reuses the wall-clock
+   * tick wait. Nothing is dispatched during the wait; Stop ends it; Pause
+   * holds the next dispatch after it.
+   */
+  const waitForBehindPace = async (
+    kind: AgentCliHandoffKind,
+    card: Card,
+    initial: AgentCliRanking,
+  ): Promise<
+    | { readonly kind: 'resumed'; readonly decision: Extract<AgentCliOrchestratorDecision, { kind: 'chosen' }> }
+    | { readonly kind: 'declined'; readonly reason: string }
+    | { readonly kind: 'cancelled' }
+  > => {
+    const orchestrator = deps.orchestrator;
+    if (!orchestrator) {
+      return { kind: 'declined', reason: formatNoEligibleCliReason(initial) };
+    }
+    const deadline = nowMs() + maxWaitHours * 3_600_000;
+    const clock = {
+      now: nowMs,
+      delay: deps.usageResetWait?.delay ?? delayWithSignal,
+      signal: deps.signal,
+      isCancelled: cancelled,
+    };
+    let ranking = initial;
+    let waited = false;
+    const clearWait = (): void => {
+      if (waited) {
+        deps.onUsageWait?.(undefined);
+      }
+    };
+    try {
+      for (;;) {
+        if (cancelled()) {
+          return { kind: 'cancelled' };
+        }
+        if (waited) {
+          const decision = await orchestrate(orchestrator, kind, card);
+          if (decision.kind === 'chosen') {
+            await appendIfCardExists(
+              deps.store,
+              card.id,
+              formatPaceWaitResumeEntry(now(), kind, decision.chosen.provider),
+            );
+            clearWait();
+            waited = false;
+            deps.onProgress?.(
+              `${decision.target.label} fell behind pace; retrying the ${STAGE_LABELS[kind]} stage for "${card.title}".`,
+            );
+            return { kind: 'resumed', decision };
+          }
+          ranking = decision.ranking;
+        }
+        const plan = planPaceWait(ranking.pacePredictions ?? [], nowMs(), deadline, maxWaitHours);
+        if (plan.kind === 'decline') {
+          return { kind: 'declined', reason: plan.reason };
+        }
+        if (!waited) {
+          await appendIfCardExists(
+            deps.store,
+            card.id,
+            formatPaceWaitStartEntry({
+              at: now(),
+              kind,
+              predictions: ranking.pacePredictions ?? [],
+              plan,
+              maxWaitHours,
+            }),
+          );
+        }
+        waited = true;
+        const providerLabel = plan.kind === 'pace'
+          ? AGENT_CLI_LABELS[plan.provider]
+          : 'an AI CLI';
+        deps.onUsageWait?.({
+          providerLabel,
+          nextCheckAt: plan.until,
+          paceWait: true,
+        });
+        deps.onProgress?.(formatPaceWaitProgress(plan));
+        if (!(await waitUntilWallClock(plan.until, clock))) {
+          return { kind: 'cancelled' };
+        }
+      }
+    } finally {
+      clearWait();
+    }
   };
 
   /** Pause the run because the orchestrator has no eligible CLI left. */
@@ -488,7 +811,29 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
       let escalatedModel: string | undefined;
       if (deps.orchestrator && !cancelled()) {
         // Re-ranked before every stage: the allowances move between stages.
-        const decision = await orchestrate(deps.orchestrator, request.kind, card);
+        let decision = await orchestrate(deps.orchestrator, request.kind, card);
+        if (decision.kind === 'none' && deps.orchestrator.behindPaceOnly) {
+          const waited = await waitForBehindPace(request.kind, card, decision.ranking);
+          if (waited.kind === 'cancelled') {
+            return {
+              kind: 'ran',
+              target: active,
+              result: {
+                completed: false,
+                cancelled: true,
+                activityBaseline: (card.activity ?? '').length,
+              },
+              switches,
+              escalations,
+              exhaustedWithoutFallback: false,
+            };
+          }
+          if (waited.kind === 'declined') {
+            await pauseOrchestrated(card, request.kind, waited.reason);
+            return { kind: 'paused', reason: waited.reason };
+          }
+          decision = waited.decision;
+        }
         if (decision.kind === 'none') {
           await pauseOrchestrated(card, request.kind, decision.reason);
           return { kind: 'paused', reason: decision.reason };
@@ -517,7 +862,47 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         ? AGENT_CLI_PROVIDER_IDS.length
         : deps.settings.providers.length + 1;
       const maxAttempts = providerAttempts * (maxLadder + 1);
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      // Each wait for a usage reset grants a fresh attempt budget: the bound
+      // above is per allowance window, and a wait always lies between windows.
+      let attemptLimit = maxAttempts;
+
+      /**
+       * Retry the same stage after a waited-out reset. Returns an outcome only
+       * when the card vanished during the wait, so nothing is dispatched.
+       */
+      const resumeAfterWait = async (
+        resumed: AgentCliTarget,
+        previous: AgentCliTarget,
+        detail: string,
+      ): Promise<AgentCliFallbackOutcome | undefined> => {
+        active = resumed;
+        if (resumed.provider !== previous.provider) {
+          // A ladder rung is spelled for one CLI only.
+          escalatedModel = undefined;
+        }
+        handoffNote = formatUsageResetHandoffNote(previous.provider, request.kind, detail);
+        attemptLimit += maxAttempts;
+        const fresh = findCard(await deps.store.reload(), card.id);
+        if (!fresh) {
+          return {
+            kind: 'ran',
+            target: resumed,
+            result: {
+              completed: false,
+              cancelled: false,
+              activityBaseline: (card.activity ?? '').length,
+              reason: `Card ${card.id} no longer exists, so ${resumed.label} was not started.`,
+            },
+            switches,
+            escalations,
+            exhaustedWithoutFallback: false,
+          };
+        }
+        card = fresh;
+        return undefined;
+      };
+
+      for (let attempt = 0; attempt < attemptLimit; attempt += 1) {
         await deps.waitBeforeDispatch?.();
         if (cancelled()) {
           return {
@@ -605,7 +990,48 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         }
 
         exhausted.add(target.provider);
-        deps.orchestrator?.markExhausted(target.provider);
+        exhaustedTargets.set(target.provider, target);
+        const exhaustedModel = modelForUsageWaitPool(result);
+        exhaustedModels.set(target.provider, exhaustedModel);
+        deps.orchestrator?.markExhausted(
+          target.provider,
+          target.provider === 'cursor'
+            ? { cursorPool: cursorPoolForModel(exhaustedModel) }
+            : undefined,
+        );
+        const waitEnabled = maxWaitHours > 0;
+        // Stopped during a wait: no failure is reported, so the run ends as
+        // cancelled rather than as spent credits.
+        const cancelledDuringWait: AgentCliFallbackOutcome = {
+          kind: 'ran',
+          target,
+          result: { completed: false, cancelled: true, activityBaseline: result.activityBaseline },
+          switches,
+          escalations,
+          exhaustedWithoutFallback: false,
+        };
+        if (!deps.settings.enabled && !deps.orchestrator && waitEnabled && !cancelled()) {
+          const waited = await waitForUsageReset(request.kind, card, target, exhaustion.detail);
+          if (waited.kind === 'cancelled') {
+            return cancelledDuringWait;
+          }
+          if (waited.kind === 'resumed') {
+            const gone = await resumeAfterWait(waited.target, target, exhaustion.detail);
+            if (gone) {
+              return gone;
+            }
+            continue;
+          }
+          deps.onProgress?.(waited.reason);
+          return {
+            kind: 'ran',
+            target,
+            result: { ...result, reason: `${result.reason ?? ''} ${waited.reason}`.trim() },
+            switches,
+            escalations,
+            exhaustedWithoutFallback: false,
+          };
+        }
         if ((!deps.settings.enabled && !deps.orchestrator) || cancelled()) {
           // Disabled fallback (or a loop cancelled while the failure was being
           // handled) keeps the existing single-CLI outcome.
@@ -623,21 +1049,56 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         if (cancelled()) {
           return { kind: 'ran', target, result, switches, escalations, exhaustedWithoutFallback: false };
         }
+        let declinedWait: string | undefined;
+        if (
+          orchestrated?.kind === 'none'
+          && deps.orchestrator?.behindPaceOnly === true
+        ) {
+          const paced = await waitForBehindPace(request.kind, card, orchestrated.ranking);
+          if (paced.kind === 'cancelled') {
+            return cancelledDuringWait;
+          }
+          if (paced.kind === 'resumed') {
+            replacement = paced.decision.target;
+            orchestrated = paced.decision;
+            await appendIfCardExists(
+              deps.store,
+              card.id,
+              formatOrchestratorChoiceEntry(paced.decision.chosen, request.kind, now()),
+            );
+          } else {
+            declinedWait = paced.reason;
+          }
+        }
+        if ((orchestrated?.kind === 'none' || !replacement) && waitEnabled && !replacement) {
+          const waited = await waitForUsageReset(request.kind, card, target, exhaustion.detail);
+          if (waited.kind === 'cancelled') {
+            return cancelledDuringWait;
+          }
+          if (waited.kind === 'resumed') {
+            const gone = await resumeAfterWait(waited.target, target, exhaustion.detail);
+            if (gone) {
+              return gone;
+            }
+            continue;
+          }
+          declinedWait = waited.reason;
+        }
         if (orchestrated?.kind === 'none') {
           await pauseOrchestrated(
             card,
             request.kind,
-            `${target.label} ran out of credits or hit its usage limit (${exhaustion.detail}). ${orchestrated.reason}`,
+            `${target.label} ran out of credits or hit its usage limit (${exhaustion.detail}). ${orchestrated.reason}${declinedWait !== undefined ? ` ${declinedWait}` : ''}`,
           );
           return { kind: 'ran', target, result, switches, escalations, exhaustedWithoutFallback: true };
         }
         if (!replacement) {
-          const reason = formatNoFallbackReason(target, exhaustion.detail, [...exhausted]);
+          const reason = formatNoFallbackReason(target, exhaustion.detail, [...exhausted], declinedWait);
           pausedReason = reason;
           await appendIfCardExists(
             deps.store,
             card.id,
-            formatNoFallbackPauseEntry(target, request.kind, exhaustion.detail, [...exhausted], now()),
+            formatNoFallbackPauseEntry(target, request.kind, exhaustion.detail, [...exhausted], now(), declinedWait),
           );
           deps.onProgress?.(reason);
           deps.onPause?.(reason);
@@ -767,10 +1228,11 @@ export function formatNoFallbackPauseEntry(
   detail: string,
   exhaustedProviders: readonly AgentCliProviderId[],
   timestamp: Date = new Date(),
+  declinedWait?: string,
 ): string {
   return [
     `### ${timestamp.toISOString()} - AI loop paused: no AI CLI with an available allowance`,
-    formatNoFallbackReason(target, detail, exhaustedProviders),
+    formatNoFallbackReason(target, detail, exhaustedProviders, declinedWait),
     `The ${STAGE_LABELS[kind]} stage was not completed and the card was not advanced.`,
   ].join('\n');
 }
@@ -779,9 +1241,11 @@ export function formatNoFallbackReason(
   target: AgentCliTarget,
   detail: string,
   exhaustedProviders: readonly AgentCliProviderId[],
+  /** Why the loop did not wait for a reset, when waiting was enabled. */
+  declinedWait?: string,
 ): string {
   const spent = exhaustedProviders.map((provider) => AGENT_CLI_LABELS[provider]).join(', ');
-  return `${target.label} ran out of credits or hit its usage limit (${detail}), and no configured fallback CLI is available. Allowance already spent this run: ${spent || target.label}. Restore credits for one of these CLIs, or add an available CLI to mwnn-kanban.aiLoopCliFallbackOrder, then run the loop again.`;
+  return `${target.label} ran out of credits or hit its usage limit (${detail}), and no configured fallback CLI is available. Allowance already spent this run: ${spent || target.label}.${declinedWait !== undefined ? ` ${declinedWait}` : ''} Restore credits for one of these CLIs, or add an available CLI to mwnn-kanban.aiLoopCliFallbackOrder, then run the loop again.`;
 }
 
 function findCard(state: BoardState, cardId: string): Card | undefined {

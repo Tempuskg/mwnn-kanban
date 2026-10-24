@@ -1,6 +1,6 @@
 # MWNN Kanban
 
-[![VS Marketplace v1.0.3](https://img.shields.io/badge/VS%20Marketplace-v1.0.3-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
+[![VS Marketplace v1.0.4](https://img.shields.io/badge/VS%20Marketplace-v1.0.4-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
 [![Open VSX](https://img.shields.io/open-vsx/v/darrenjmcleod/mwnn-kanban?label=Open%20VSX)](https://open-vsx.org/extension/darrenjmcleod/mwnn-kanban)
 
 An in-editor Kanban board for VS Code built around the [Methodology With No Name (MWNN)](https://www.darrenmcleod.com/2025/07/kanban-and-methodology-with-no-name.html). The board lives in workspace files, supports human and AI assignees, and keeps methodology signals like WIP and reverse-WIP visible directly in the editor.
@@ -18,7 +18,7 @@ An in-editor Kanban board for VS Code built around the [Methodology With No Name
 
 ## Privacy and network access
 
-MWNN Kanban never transmits usage, board, or time data. When a Pro license is validated, the extension contacts Polar and sends the license key; the validation result is cached locally for up to 24 hours. This license check is the only network request MWNN Kanban makes directly; the Usage Orchestrator reads usage only by asking your locally installed agent CLIs. AI handoffs run through the chat extension or local agent CLI you choose and are subject to that provider's privacy terms.
+MWNN Kanban never sends board, card, tracked-time, or local usage records to MWNN. Pro license validation contacts Polar and sends the license key; the result is cached locally for up to 24 hours. When you open Pro's AI Provider Usage report, the extension can also send your VS Code GitHub authentication token to GitHub's internal, undocumented Copilot endpoint to retrieve your Free premium-request balance and reset time. This user-triggered request may prompt you to sign in, includes no workspace or board data, and may stop working if GitHub changes the endpoint. The report does not send the returned quota or account information to MWNN. The Usage Orchestrator reads usage from locally installed agent CLIs. AI handoffs run through the chat extension or local agent CLI you choose and are subject to that provider's privacy terms.
 
 ## Commands
 
@@ -45,7 +45,7 @@ MWNN Kanban never transmits usage, board, or time data. When a Pro license is va
 | `mwnn-kanban.boardFolder` | `.mwnn` | Workspace-relative folder that stores the board files. |
 | `mwnn-kanban.defaultReadyReverseWip` | `3` | Default minimum number of defined cards the Ready column should keep available. |
 | `mwnn-kanban.enableRunWithAI` | `true` | Enable AI-assisted board actions when supported language models are available. |
-| `mwnn-kanban.skillsInstallLocation` | `workspace` | Where `Import Plan` installs the bundled MWNN skills. `workspace` writes `.github/instructions/`, `.claude/skills/`, `.cursor/rules/`, and a managed block in `AGENTS.md`, so they are checked in with the repo. `user` writes them to your home folder instead: Claude Code `~/.claude/skills/<slug>/SKILL.md`, Copilot `~/.copilot/skills/<slug>/SKILL.md`, and Codex a managed block in `$CODEX_HOME/AGENTS.md` (or `~/.codex/AGENTS.md`). Cursor has no file-based user rules, so `user` mode skips it with a notice. Skill files already in the workspace are left alone. Can be set in user or workspace settings. |
+| `mwnn-kanban.skillsInstallLocation` | `user` | Where `Import Plan` installs the bundled MWNN skills. The default, `user`, writes them to your home folder so nothing is added to the repo: Claude Code `~/.claude/skills/<slug>/SKILL.md`, Copilot `~/.copilot/skills/<slug>/SKILL.md`, and Codex a managed block in `$CODEX_HOME/AGENTS.md` (or `~/.codex/AGENTS.md`). Cursor has no file-based user rules, so `user` mode skips it with a notice. Set `workspace` to write `.github/instructions/`, `.claude/skills/`, `.cursor/rules/`, and a managed block in `AGENTS.md` instead, so they are checked in with the repo. MWNN skill files a previous workspace install left in the repo are kept as they are; `user` mode neither updates nor deletes them. An explicit `workspace` value already in your user or workspace settings still wins over the default. If a user-folder write fails, Import Plan warns and continues with its self-contained prompt; it never falls back to writing the workspace. Can be set in user or workspace settings. |
 | `mwnn-kanban.aiLoopProvider` | `prompt` | Choose `chat`, `copilot`, `codex`, `claude-code`, `cursor`, or `orchestrator` (Usage Orchestrator); `prompt` asks whether to use a VS Code chat extension or local CLI. |
 | `mwnn-kanban.usageOrchestratorExcludedClis` | `[]` | Agent CLIs (`copilot`, `codex`, `claude-code`, `cursor`) the Usage Orchestrator never chooses, even when installed — for example a CLI whose plan doesn't offer the models you want. Excluded CLIs are not probed and are listed as skipped in the ranking. Choosing a CLI directly is not affected. |
 | `mwnn-kanban.aiLoopReviewFreshDefinitions` | `false` | Pause newly AI-defined cards in Ready until the next loop run so a human can review the definition first. |
@@ -121,7 +121,7 @@ The Copilot probe starts the already-resolved CLI in headless stdio mode and sen
 
 ### Models and thinking levels by stage and CLI
 
-Use **MWNN Kanban: Agent CLI Models** (the sidebar gear), or **MWNN Kanban: Manage Agent CLI Models and Thinking Levels**, to edit each of the four stages for Copilot, Codex, Claude Code, and Cursor. Select **User** or **Workspace** scope; inherited values are identified separately and are never copied into the selected scope. Stage suggestions contain only that CLI’s configured values. Any other model or thinking-level name can be typed and saved.
+Use **MWNN Kanban: Agent CLI Models** (the sidebar gear) to edit each of the four stages for Copilot, Codex, Claude Code, Cursor Agent CLI, and Cursor Agent CLI Other (same Cursor Agent CLI executable; Other Models usage pool). Select **User** or **Workspace** scope; inherited values are identified separately and are never copied into the selected scope. Stage suggestions contain only that CLI’s configured values (Cursor rows are split by Auto vs Other Models). Any other model or thinking-level name can be typed and saved.
 
 For example, these preferences give two CLIs distinct values at the same stage and use less effort for triage:
 
@@ -140,7 +140,7 @@ For example, these preferences give two CLIs distinct values at the same stage a
 
 The two settings are independent: a model does not require a thinking level, and a thinking level does not require a model. For the CLI actually chosen, each axis resolves from its card override, then its stage/CLI override, then its configured provider default, then the CLI’s own default. A missing value adds no corresponding CLI argument. Settings defaults are never written into the card. **Run Card with AI** uses the implementation stage; orchestrator selection and credit fallback resolve the replacement CLI’s own values for the current stage. Opt-in model escalation keeps its existing behavior.
 
-Legacy values such as `"implementation": "shared-model"` still apply to every CLI. Editing that stage in either editor converts the legacy value stored in the selected scope into four CLI entries, retaining the unedited CLIs’ values. Removing an override deletes only its CLI key and restores lower-scope stage settings, then provider/CLI defaults. Empty stage and setting containers are removed. Unknown stages/providers, malformed entries, and blank names are ignored on read; invalid editor input gives a visible reason without saving. Cursor’s requested effort is recorded as not applied, and it runs at its default effort. Saving or editing settings.json externally refreshes the open panel and board suggestions without a reload.
+Legacy values such as `"implementation": "shared-model"` still apply to every CLI. Editing that stage in either editor converts the legacy value stored in the selected scope into per-CLI entries, retaining the unedited CLIs’ values. Removing an override deletes only its CLI key and restores lower-scope stage settings, then provider/CLI defaults. Empty stage and setting containers are removed. Unknown stages/providers, malformed entries, and blank names are ignored on read; invalid editor input gives a visible reason without saving. Cursor’s requested effort is recorded as not applied, and it runs at its default effort. Saving or editing settings.json externally refreshes the open panel and board suggestions without a reload.
 
 ### Model escalation after a failed attempt
 

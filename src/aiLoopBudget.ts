@@ -30,6 +30,7 @@
 
 import { redactSecrets } from './agentCliCredit';
 import type { AgentCliHandoffKind } from './agentCliStages';
+import { expandCursorStreamJsonOutput } from './cursorStreamJson';
 
 /** The user-facing id of the per-run dispatch cap. */
 export const AI_LOOP_MAX_DISPATCHES_SETTING = 'mwnn-kanban.aiLoopMaxDispatches';
@@ -390,9 +391,12 @@ export function parseCliUsageLines(output: unknown): readonly string[] {
   if (typeof output !== 'string' || output.length === 0) {
     return [];
   }
-  const scanned = output.length > MAX_SCANNED_OUTPUT
-    ? output.slice(output.length - MAX_SCANNED_OUTPUT)
-    : output;
+  // Expand Cursor stream-json so usage phrases inside result/assistant events
+  // are visible as plain lines; non-JSON output is unchanged.
+  const expanded = expandCursorStreamJsonOutput(output);
+  const scanned = expanded.length > MAX_SCANNED_OUTPUT
+    ? expanded.slice(expanded.length - MAX_SCANNED_OUTPUT)
+    : expanded;
 
   const found: string[] = [];
   const seen = new Set<string>();

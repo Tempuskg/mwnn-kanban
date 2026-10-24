@@ -98,9 +98,9 @@ Rules for direct board edits:
 - Respect `wipLimit` on flow columns and `reverseWip` on the Ready column when claiming or moving work.
 - Prefer appending dated entries to `## Activity` when claiming, handing off, or reporting progress.
 - AI agents should usually select work where `assignee.kind === 'ai'`, keep acceptance criteria current, and leave the board in a consistent state after edits.
-- `preferredModel.<provider>` is optional and free-form: the name of the AI model the card should be run with **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. The model is scoped per provider because a card never chooses its own CLI — the CLI is picked per dispatch and the credit fallback can change it mid-run — so the entry for whichever provider actually runs is the one passed to that CLI as its model argument, without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else that CLI's own default model when none is set. During an orchestrated AI Loop, the selected CLI's effective stage model rule overrides the card's preferred model; if no stage rule exists for that CLI, its workspace default and then its CLI default apply. Other AI run modes retain card-first model selection.
+- `preferredModel.<provider>` is optional and free-form: the name of the AI model the card should be run with **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, `cursor`, or `cursor-other`. The model is scoped per provider because a card never chooses its own CLI — the CLI is picked per dispatch and the credit fallback can change it mid-run — so the entry for whichever provider actually runs is the one passed to that CLI as its model argument, without validation. `cursor-other` (**Cursor Agent CLI Other**) shares the Cursor Agent CLI executable with `cursor` but keeps its own preferred model and ranks against Cursor’s Other Models usage pool. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else that CLI's own default model when none is set. During an orchestrated AI Loop, the selected CLI's effective stage model rule overrides the card's preferred model; if no stage rule exists for that CLI, its workspace default and then its CLI default apply. Other AI run modes retain card-first model selection.
 - A single bare `preferredModel` scalar is the legacy, pre-scoping shape. It is still read and applies to every provider the card does not scope explicitly, so existing cards keep working; the extension never writes it again and migrates the card to the per-provider keys on its next write.
-- `thinkingLevel.<provider>` is optional and free-form: the *thinking level* (reasoning effort) the card should be run at **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, or `cursor`. It is a second axis of the same selection and fully independent of the model — "how hard should it think", not "which model runs" — and it is scoped per provider for exactly the reasons the model is, since the CLI is picked per dispatch and the credit fallback can change it mid-run. The entry for whichever provider actually runs is passed to that CLI without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default effort. There is no legacy bare `thinkingLevel` scalar: the key was per-provider from the start.
+- `thinkingLevel.<provider>` is optional and free-form: the *thinking level* (reasoning effort) the card should be run at **on that agent CLI**, spelled as that CLI spells it, with `<provider>` one of `copilot`, `codex`, `claude-code`, `cursor`, or `cursor-other`. It is a second axis of the same selection and fully independent of the model — "how hard should it think", not "which model runs" — and it is scoped per provider for exactly the reasons the model is, since the CLI is picked per dispatch and the credit fallback can change it mid-run. The entry for whichever provider actually runs is passed to that CLI without validation. An unknown provider key or a blank value is ignored. Omit a key entirely (never write it empty) to use the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default effort. There is no legacy bare `thinkingLevel` scalar: the key was per-provider from the start.
 - Codex CLI, Copilot CLI, and Claude Code CLI accept thinking levels on their command lines. Cursor Agent CLI does not; its level is recorded on the card as not applied and the run proceeds at the CLI's default effort. A level that cannot be applied never fails a run.
 
 ---
@@ -461,14 +461,16 @@ What the slice of work is.
   never list the card's own id or form a cycle. Omit the key when empty.
 - `preferredModel.<provider>` (optional) — free-form name of the AI model this
   card should be run with **on that agent CLI**, one key per provider, where
-  `<provider>` is one of `copilot`, `codex`, `claude-code`, or `cursor`, e.g.
-  `preferredModel.claude-code: claude-opus-5`. Scoped per provider because a
-  card never chooses its own CLI: the CLI is picked at dispatch and the credit
-  fallback can change it mid-run, and model names are CLI-specific. The
-  extension passes the entry for whichever provider actually runs straight
-  through to that CLI as its model argument and never validates it against a
-  list of model names, so use the exact spelling that CLI accepts. JSON-quote a
-  value when it contains any of the characters listed under scalar quoting, e.g.
+  `<provider>` is one of `copilot`, `codex`, `claude-code`, `cursor`, or
+  `cursor-other`, e.g. `preferredModel.claude-code: claude-opus-5`. Scoped per
+  provider because a card never chooses its own CLI: the CLI is picked at
+  dispatch and the credit fallback can change it mid-run, and model names are
+  CLI-specific. `cursor-other` shares Cursor Agent CLI's executable with
+  `cursor` but keeps an independent preferred model. The extension passes the
+  entry for whichever provider actually runs straight through to that CLI as
+  its model argument and never validates it against a list of model names, so
+  use the exact spelling that CLI accepts. JSON-quote a value when it contains
+  any of the characters listed under scalar quoting, e.g.
   `preferredModel.codex: "openai/gpt-5: preview"`. An unknown provider key, and
   a value that is blank or whitespace-only, is ignored rather than stored. Omit
   a key entirely rather than writing an empty value; a provider the card names

@@ -50,10 +50,33 @@ export interface PortfolioLoopCard {
 }
 export type PortfolioLoopSelection =
   | { readonly kind: 'card'; readonly card: PortfolioLoopCard }
-  | { readonly kind: 'empty'; readonly reason: string };
+  | {
+      readonly kind: 'empty';
+      readonly reason: string;
+      /** Additive: the host found remaining work but its planner cannot run it this session. Older hosts omit it. */
+      readonly blocked?: true;
+    };
+/** A CLI waiting for its usage limit to reset or to fall behind pace. */
+export interface PortfolioLoopUsageWait {
+  readonly providerLabel: string;
+  /** The reported reset time, when the CLI reported one. */
+  readonly resetsAt?: number;
+  /**
+   * The next usage recheck or pace wake time. Pace waits always set this so
+   * older Pro packages still show a check time.
+   */
+  readonly nextCheckAt?: number;
+  /**
+   * Additive optional: present when waiting for a CLI to fall behind pace.
+   * Older Pro packages ignore this field and keep using `nextCheckAt`.
+   */
+  readonly paceWait?: true;
+}
 export interface PortfolioLoopProgress extends PortfolioLoopCard {
   readonly stage: string;
   readonly message: string;
+  /** Present only while the stage waits for a usage reset; omitted otherwise. */
+  readonly usageWait?: PortfolioLoopUsageWait;
 }
 export interface PortfolioLoopCardResult {
   readonly outcome: 'completed' | 'human' | 'review' | 'skipped' | 'held' | 'stopped';
@@ -77,9 +100,28 @@ export interface PortfolioAiLoopCapabilityV1 {
   readonly onDidChange: vscode.Event<void>;
 }
 
+export interface CopilotPremiumUsageV1 {
+  readonly asOfMs: number;
+  readonly used: number;
+  readonly remaining: number;
+  readonly entitlement: number;
+  readonly resetsAtMs?: number;
+  readonly quotaKind?: 'premium' | 'chat';
+}
+
+export type CopilotPremiumUsageResult =
+  | { readonly status: 'ok'; readonly reading: CopilotPremiumUsageV1 }
+  | { readonly status: 'unavailable'; readonly reason: string };
+
+export interface CopilotUsageCapabilityV1 {
+  readonly version: 1;
+  readPremiumUsage(): Promise<CopilotPremiumUsageResult>;
+}
+
 export interface ProFeatureCapabilities {
   readonly board?: BoardCapabilityV1;
   readonly portfolioAiLoop?: PortfolioAiLoopCapabilityV1;
+  readonly copilotUsage?: CopilotUsageCapabilityV1;
 }
 
 export interface ProFeatureRegistrationContext {

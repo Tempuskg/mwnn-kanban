@@ -54,6 +54,7 @@ const PER_PROVIDER: Record<AgentCliProviderId, string> = {
   codex: LEVEL,
   'claude-code': 'claude-effort',
   cursor: 'cursor-effort',
+  'cursor-other': 'cursor-other-effort',
 };
 
 /**
@@ -72,7 +73,8 @@ const BASELINE_ARGS: Record<AgentCliProviderId, readonly string[]> = {
   copilot: ['--allow-all-tools', '--no-ask-user', '--silent'],
   codex: ['exec', '--sandbox', 'workspace-write', '-'],
   'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
-  cursor: ['-p', '--force', '--output-format', 'text'],
+  cursor: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
+  'cursor-other': ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
 };
 
 function cardDocument(card: Card): CardDocument {

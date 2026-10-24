@@ -255,11 +255,28 @@
     return { label: `${cliRun.providerLabel} running`, model, confirmed, thinkingLevel, title };
   }
 
+  /**
+   * The agent CLI providers a card can name a model for, mirroring
+   * `AGENT_CLI_PROVIDER_IDS` and `AGENT_CLI_LABELS` on the host exactly as this
+   * script mirrors the `Card` shape. A card never picks its own CLI, so it
+   * names one model per CLI and a dispatch uses the entry for whichever
+   * provider actually runs.
+   * @type {ReadonlyArray<{ id: string, label: string }>}
+   */
+  const AGENT_CLI_PROVIDERS = [
+    { id: 'copilot', label: 'GitHub Copilot CLI' },
+    { id: 'codex', label: 'OpenAI Codex CLI' },
+    { id: 'claude-code', label: 'Anthropic Claude Code CLI' },
+    { id: 'cursor', label: 'Cursor Agent CLI' },
+    { id: 'cursor-other', label: 'Cursor Agent CLI Other' },
+  ];
+
   // Loading this script from the Node test runner returns only the pure helpers
   // above; the VS Code webview has no CommonJS `module` and continues through
   // the normal browser bootstrap below.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+      AGENT_CLI_PROVIDERS,
       nextCliRunStatus,
       cliRunPillView,
       createActivityDraft,
@@ -300,21 +317,6 @@
    *   cards: Card[]
    * }} Column
    */
-
-  /**
-   * The agent CLI providers a card can name a model for, mirroring
-   * `AGENT_CLI_PROVIDER_IDS` and `AGENT_CLI_LABELS` on the host exactly as this
-   * script mirrors the `Card` shape. A card never picks its own CLI, so it
-   * names one model per CLI and a dispatch uses the entry for whichever
-   * provider actually runs.
-   * @type {ReadonlyArray<{ id: string, label: string }>}
-   */
-  const AGENT_CLI_PROVIDERS = [
-    { id: 'copilot', label: 'GitHub Copilot CLI' },
-    { id: 'codex', label: 'OpenAI Codex CLI' },
-    { id: 'claude-code', label: 'Anthropic Claude Code CLI' },
-    { id: 'cursor', label: 'Cursor Agent CLI' },
-  ];
 
   /** Just the provider ids, in the same order, for the per-provider drafts. */
   const AGENT_CLI_PROVIDER_IDS = AGENT_CLI_PROVIDERS.map((provider) => provider.id);
@@ -1992,7 +1994,7 @@
       AGENT_CLI_PROVIDERS.find((provider) => provider.id === providerSelect.value) ||
       AGENT_CLI_PROVIDERS[0];
 
-    // The selector doubles as the overview of the other three entries, since
+    // The selector doubles as the overview of the other provider entries, since
     // only one is visible at a time.
     const syncProviderOptions = () => {
       for (const provider of AGENT_CLI_PROVIDERS) {

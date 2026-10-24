@@ -176,13 +176,18 @@ function render(current: AgentCliSettingsPanelState): void {
   root.append(providers);
   const stages = element('section');
   stages.className = 'stages';
-  stages.append(element('h2', 'AI loop stage overrides'), element('p', 'Each stage has independent overrides for each CLI. Remove an override to use inherited stage settings, then that CLI’s default. Legacy shared values remain active until edited.'));
+  stages.append(
+    element('h2', 'AI loop stage overrides'),
+    element(
+      'p',
+      'Each stage has independent overrides for each CLI, including Cursor Agent CLI and Cursor Agent CLI Other (same executable, different usage pool). Remove an override to use inherited stage settings, then that CLI’s default. Legacy shared values remain active until edited.',
+    ),
+  );
   for (const stage of current.stages) {
     const row = element('section');
     row.className = 'stage';
-    const provider = current.providers.find((entry) => entry.id === stage.provider);
-    row.append(element('h3', stage.id.charAt(0).toUpperCase() + stage.id.slice(1) + ' · ' + (provider?.label ?? stage.provider)));
-    if (provider?.thinkingApplied === false) {
+    row.append(element('h3', stage.id.charAt(0).toUpperCase() + stage.id.slice(1) + ' · ' + stage.label));
+    if (!stage.thinkingApplied) {
       row.append(element('p', 'Thinking level is not applied by this CLI; it runs at its default effort.'));
     }
     for (const list of ['models', 'thinkingLevels'] as const) {

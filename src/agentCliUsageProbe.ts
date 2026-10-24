@@ -13,12 +13,17 @@
  * - Claude Code: local `/usage` command in print mode, for the verified CLI
  *   version and accounts that expose subscription plan windows.
  * - Copilot: SDK JSON-RPC `account.getQuota` over the local CLI server.
- * - Cursor: no documented quota query; always unknown.
+ * - Cursor: on-disk usage-v1 cache (same document the Pro report reads). Both
+ *   Auto and Other Models pools are returned; ranking selects by model. No
+ *   spawn and no socket.
  *
  * No `vscode` import.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   terminateProcess,
   windowsLaunchCommand,
@@ -28,6 +33,7 @@ import {
   parseClaudeCodeUsageOutput,
   parseCopilotQuota,
   parseCodexRateLimits,
+  parseCursorUsageV1,
   unknownUsage,
   type AgentCliUsageSnapshot,
 } from './agentCliUsage';
@@ -62,6 +68,26 @@ export interface AgentCliUsageProbeOptions {
   readonly claudeLaunch?: { readonly command: string; readonly args: readonly string[] };
   /** Test seam: the clock used to judge reported reset times. */
   readonly now?: number;
+  /**
+   * Test seam for Cursor: raw usage-v1 document. When set, no file is read.
+   * Production probes always read the on-disk cache.
+   */
+  readonly cursorUsageContents?: string;
+  /**
+   * Test seam for Cursor path resolution. Defaults to `process.env` and
+   * `os.homedir()`.
+   */
+  readonly cursorUsageEnv?: Readonly<Record<string, string | undefined>>;
+  readonly cursorUsageHome?: string;
+  /** Test seam: replace Node fs for Cursor cache reads. */
+  readonly cursorUsageFs?: CursorUsageCacheFs;
+}
+
+/** Read-only fs surface for the Cursor usage-v1 cache. */
+export interface CursorUsageCacheFs {
+  readonly readFile: (filePath: string) => Promise<string>;
+  readonly readdir: (directoryPath: string) => Promise<readonly string[]>;
+  readonly stat: (filePath: string) => Promise<{ readonly mtimeMs: number }>;
 }
 
 export type AgentCliUsageProbe = (
@@ -75,13 +101,149 @@ export const probeAgentCliUsage: AgentCliUsageProbe = async (target, options) =>
     case 'codex':
       return probeCodexUsage(target, options);
     case 'cursor':
-      return unknownUsage('cursor', 'Cursor Agent CLI shows usage only in its interactive /usage view; print mode sends /usage to the model, so usage cannot be read.');
+    case 'cursor-other':
+      return probeCursorUsage(options);
     case 'claude-code':
       return probeClaudeCodeUsage(target, options);
     case 'copilot':
       return probeCopilotUsage(target, options);
   }
 };
+
+/**
+ * Read Cursor's on-disk usage-v1 cache for both Auto and Other Models pools.
+ * Same locations the Pro report uses (`CURSOR_USAGE_FILE`, else
+ * `~/.cursor/usage-limits.json`, else newest `clanker-usage/cursor/*.json`).
+ * Never spawns a process and never opens a network socket.
+ */
+export async function probeCursorUsage(
+  options: AgentCliUsageProbeOptions,
+): Promise<AgentCliUsageSnapshot> {
+  if (options.signal?.aborted) {
+    return unknownUsage('cursor', 'The usage probe was cancelled.');
+  }
+  if (options.cursorUsageContents !== undefined) {
+    return parseCursorUsageV1(options.cursorUsageContents);
+  }
+  try {
+    const contents = await readCursorUsageCacheContents(options);
+    if (contents === undefined) {
+      return unknownUsage('cursor', 'no Cursor usage cache was found');
+    }
+    return parseCursorUsageV1(contents);
+  } catch (error: unknown) {
+    return unknownUsage(
+      'cursor',
+      `the Cursor usage cache could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+interface CursorUsageCachePaths {
+  readonly cursorUsageFile: string;
+  readonly cursorUsageFileIsOverride: boolean;
+  readonly cursorUsageDirectory: string;
+}
+
+function resolveCursorUsageCachePaths(
+  env: Readonly<Record<string, string | undefined>>,
+  homeDirectory: string,
+  platform: NodeJS.Platform,
+): CursorUsageCachePaths {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const override = nonEmptyEnv(env.CURSOR_USAGE_FILE);
+  const cacheHome = nonEmptyEnv(env.XDG_CACHE_HOME)
+    ?? pathApi.join(homeDirectory, '.cache');
+  return {
+    cursorUsageFile: override ?? pathApi.join(homeDirectory, '.cursor', 'usage-limits.json'),
+    cursorUsageFileIsOverride: override !== undefined,
+    cursorUsageDirectory: pathApi.join(cacheHome, 'clanker-usage', 'cursor'),
+  };
+}
+
+function nonEmptyEnv(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+async function readCursorUsageCacheContents(
+  options: AgentCliUsageProbeOptions,
+): Promise<string | undefined> {
+  const fileSystem = options.cursorUsageFs ?? defaultCursorUsageFs();
+  const paths = resolveCursorUsageCachePaths(
+    options.cursorUsageEnv ?? process.env,
+    options.cursorUsageHome ?? os.homedir(),
+    process.platform,
+  );
+  try {
+    return await fileSystem.readFile(paths.cursorUsageFile);
+  } catch (error: unknown) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+    if (paths.cursorUsageFileIsOverride) {
+      return undefined;
+    }
+  }
+  return readNewestCursorCacheFile(fileSystem, paths.cursorUsageDirectory);
+}
+
+async function readNewestCursorCacheFile(
+  fileSystem: CursorUsageCacheFs,
+  directoryPath: string,
+): Promise<string | undefined> {
+  let names: readonly string[];
+  try {
+    names = await fileSystem.readdir(directoryPath);
+  } catch (error: unknown) {
+    if (isNotFoundError(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+  const candidates: { readonly filePath: string; readonly mtimeMs: number }[] = [];
+  for (const name of names) {
+    if (!name.toLowerCase().endsWith('.json')) {
+      continue;
+    }
+    const filePath = path.join(directoryPath, name);
+    try {
+      candidates.push({ filePath, mtimeMs: (await fileSystem.stat(filePath)).mtimeMs });
+    } catch {
+      // Removed between listing and stat.
+    }
+  }
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const newest = candidates[0];
+  if (newest === undefined) {
+    return undefined;
+  }
+  return fileSystem.readFile(newest.filePath);
+}
+
+function defaultCursorUsageFs(): CursorUsageCacheFs {
+  return {
+    readFile: (filePath) => fs.readFile(filePath, 'utf8'),
+    readdir: (directoryPath) => fs.readdir(directoryPath),
+    stat: async (filePath) => {
+      const stats = await fs.stat(filePath);
+      return { mtimeMs: stats.mtimeMs };
+    },
+  };
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'ENOENT';
+}
 
 /**
  * Claude Code v2.1.295 and later expose subscription limits through the local

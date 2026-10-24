@@ -28,6 +28,7 @@ import {
   readAgentCliModelCatalog,
   readAgentCliThinkingLevelSuggestions,
 } from './agentCliModels';
+import { classifyCursorModelPool } from './cursorModelPool';
 import { normalizePreferredModel } from './utils';
 
 /** Where one discovered list came from. */
@@ -70,6 +71,8 @@ export const BUNDLED_AGENT_CLI_MODELS: Readonly<Record<AgentCliProviderId, reado
     // recommended model, which is what an unconfigured run uses.
     'claude-code': ['default', 'sonnet', 'opus', 'fable', 'haiku'],
     cursor: ['auto'],
+    // Other Models pool — no Auto; users type third-party / API model ids.
+    'cursor-other': [],
   });
 
 export const BUNDLED_AGENT_CLI_THINKING_LEVELS: Readonly<Record<AgentCliProviderId, readonly string[]>> =
@@ -78,6 +81,7 @@ export const BUNDLED_AGENT_CLI_THINKING_LEVELS: Readonly<Record<AgentCliProvider
     codex: ['medium', 'low', 'high', 'xhigh'],
     'claude-code': ['medium', 'low', 'high', 'xhigh', 'max'],
     cursor: [],
+    'cursor-other': [],
   });
 
 /* ------------------------------------------------------------------------ *
@@ -249,6 +253,16 @@ const PROVIDER_PROBES: Readonly<Record<AgentCliProviderId, ProviderProbes>> = {
   },
   cursor: {
     models: { args: ['models'], parse: parseCursorModels },
+  },
+  // Same Cursor Agent CLI `models` listing; Other Models suggestions filter
+  // out Auto-pool ids so the catalog stays pool-aligned.
+  'cursor-other': {
+    models: {
+      args: ['models'],
+      parse: (stdout) => parseCursorModels(stdout).filter(
+        (name) => classifyCursorModelPool({ model: name }).pool === 'other-models',
+      ),
+    },
   },
 };
 

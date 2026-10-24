@@ -439,7 +439,13 @@ suite('workspace default model: dispatch', () => {
     });
 
     // The exhausted provider default is not carried over to the replacement.
-    assert.deepEqual(invocations[1]?.args, ['-p', '--force', '--output-format', 'text']);
+    assert.deepEqual(invocations[1]?.args, [
+      '-p',
+      '--force',
+      '--output-format',
+      'stream-json',
+      '--stream-partial-output',
+    ]);
     assert.equal(switches[0]?.toModel, undefined);
     assert.ok(
       board.activity(cardId).includes(`${AGENT_CLI_LABELS.cursor} runs on its own default model.`),

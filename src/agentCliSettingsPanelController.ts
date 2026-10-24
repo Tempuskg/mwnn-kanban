@@ -1,5 +1,11 @@
 /** Host-side settings bridge. Injected inspect/update functions keep it testable. */
-import { AGENT_CLI_PROVIDER_IDS } from './agentCliProviders';
+import {
+  AGENT_CLI_LABELS,
+  AGENT_CLI_PROVIDER_IDS,
+  AGENT_CLI_STAGE_PROVIDER_IDS,
+  agentCliExecutableProvider,
+  type AgentCliStageProviderId,
+} from './agentCliProviders';
 import { AGENT_CLI_HANDOFF_KINDS } from './agentCliStages';
 import {
   addAgentCliSettingsEntry,
@@ -13,6 +19,10 @@ import {
   type AgentCliSettingsValue,
 } from './agentCliSettingsEditor';
 import { mergeAgentCliStagePreferences, readAgentCliStageModels, stageAgentCliModel } from './agentCliModels';
+import {
+  classifyCursorModelPool,
+  type CursorUsagePoolId,
+} from './cursorModelPool';
 import {
   isAgentCliSettingsPanelMessage,
   type AgentCliSettingsPanelProvider,
@@ -95,7 +105,7 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
       providers: AGENT_CLI_PROVIDER_IDS.map((id) => {
         const suggestions = deps.suggestions.find((provider) => provider.id === id);
         return {
-          id, label: suggestions?.label ?? id,
+          id, label: suggestions?.label ?? AGENT_CLI_LABELS[id],
           models: agentCliSettingsEntries(models, id),
           thinkingLevels: agentCliSettingsEntries(levels, id),
           inheritedModels: owns(models, id) ? [] : agentCliSettingsEntries(inheritedModels, id),
@@ -105,25 +115,43 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
           thinkingApplied: suggestions?.thinkingApplied ?? true,
         };
       }),
-      stages: AGENT_CLI_HANDOFF_KINDS.flatMap((id) => AGENT_CLI_PROVIDER_IDS.map((provider) => {
+      stages: AGENT_CLI_HANDOFF_KINDS.flatMap((id) => AGENT_CLI_STAGE_PROVIDER_IDS.map((provider) => {
+        const executable = agentCliExecutableProvider(provider);
         const model = stageAgentCliModel(ownStageModels, id, provider) ?? null;
         const thinkingLevel = stageAgentCliModel(ownStageLevels, id, provider) ?? null;
         const configuredNames = (own: typeof ownStageModels, lower: typeof ownStageModels): string[] =>
           AGENT_CLI_HANDOFF_KINDS.flatMap((stage) => [
             stageAgentCliModel(own, stage, provider), stageAgentCliModel(lower, stage, provider),
           ]).filter((name): name is string => name !== undefined);
+        const pool = cursorStagePool(provider);
+        const stageModelNames = configuredNames(ownStageModels, lowerStageModels);
+        const stageLevelNames = configuredNames(ownStageLevels, lowerStageLevels);
+        // Prefer this identity's own catalog; fall back to the shared Cursor
+        // executable catalog (filtered by pool) when the identity has none yet.
+        const ownCatalogModels = [
+          ...agentCliSettingsEntries(models, provider), ...agentCliSettingsEntries(inheritedModels, provider),
+        ];
+        const sharedCatalogModels = [
+          ...agentCliSettingsEntries(models, executable), ...agentCliSettingsEntries(inheritedModels, executable),
+        ];
+        const catalogModels = ownCatalogModels.length > 0 ? ownCatalogModels : sharedCatalogModels;
+        const catalogLevels = [
+          ...agentCliSettingsEntries(levels, provider), ...agentCliSettingsEntries(inheritedLevels, provider),
+          ...agentCliSettingsEntries(levels, executable), ...agentCliSettingsEntries(inheritedLevels, executable),
+        ];
         return {
-          id, provider, model, thinkingLevel,
+          id, provider,
+          label: AGENT_CLI_LABELS[provider],
+          // Cursor Agent CLI and Cursor Agent CLI Other have no effort flag.
+          thinkingApplied: executable !== 'cursor',
+          model, thinkingLevel,
           inheritedModel: model === null ? stageAgentCliModel(lowerStageModels, id, provider) ?? null : null,
           inheritedThinkingLevel: thinkingLevel === null ? stageAgentCliModel(lowerStageLevels, id, provider) ?? null : null,
           suggestedModels: [...new Set([
-            ...agentCliSettingsEntries(models, provider), ...agentCliSettingsEntries(inheritedModels, provider),
-            ...configuredNames(ownStageModels, lowerStageModels),
+            ...filterCursorPoolSuggestions(catalogModels, pool),
+            ...stageModelNames,
           ])],
-          suggestedThinkingLevels: [...new Set([
-            ...agentCliSettingsEntries(levels, provider), ...agentCliSettingsEntries(inheritedLevels, provider),
-            ...configuredNames(ownStageLevels, lowerStageLevels),
-          ])],
+          suggestedThinkingLevels: [...new Set([...catalogLevels, ...stageLevelNames])],
         };
       })),
       error,
@@ -201,4 +229,25 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
       return pending;
     },
   };
+}
+
+/** Auto vs Other Models for Cursor stage rows; other stage providers are unfiltered. */
+function cursorStagePool(provider: AgentCliStageProviderId): CursorUsagePoolId | undefined {
+  if (provider === 'cursor') {
+    return 'auto';
+  }
+  if (provider === 'cursor-other') {
+    return 'other-models';
+  }
+  return undefined;
+}
+
+function filterCursorPoolSuggestions(
+  names: readonly string[],
+  pool: CursorUsagePoolId | undefined,
+): string[] {
+  if (pool === undefined) {
+    return [...names];
+  }
+  return names.filter((name) => classifyCursorModelPool({ model: name }).pool === pool);
 }

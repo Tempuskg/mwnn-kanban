@@ -100,6 +100,8 @@ suite('ai card helpers', () => {
     assert.match(prompt, /every acceptance criterion is met and checked/i);
     assert.match(prompt, /STATUS: DONE/);
     assert.match(prompt, /STATUS: BLOCKED/);
+    assert.match(prompt, /Do not change the card's `column` frontmatter/);
+    assert.match(prompt, /leave the card in its current column/i);
   });
 
   test('buildCardDefinitionPrompt asks the agent to define the card without implementing it', () => {

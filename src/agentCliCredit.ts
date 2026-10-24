@@ -11,6 +11,8 @@
  * the handoff layer and the tests can classify raw process output directly.
  */
 
+import { expandCursorStreamJsonOutput } from './cursorStreamJson';
+
 /** The parts of a finished CLI process this classifier looks at. */
 export interface CreditFailureInput {
   readonly started: boolean;
@@ -102,7 +104,9 @@ export function detectCreditExhaustion(input: CreditFailureInput): CreditExhaust
     return undefined;
   }
 
-  const lines = `${input.stderr}\n${input.stdout}\n${input.error ?? ''}`
+  // Cursor stream-json wraps error text inside NDJSON events; expand those so
+  // the same phrase patterns match without requiring a raw-JSON substring hit.
+  const lines = `${input.stderr}\n${expandCursorStreamJsonOutput(input.stdout)}\n${input.error ?? ''}`
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);

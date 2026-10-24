@@ -55,6 +55,7 @@ const PER_PROVIDER: Record<AgentCliProviderId, string> = {
   codex: 'gpt-5-codex',
   'claude-code': MODEL,
   cursor: 'cursor-fast',
+  'cursor-other': 'claude-opus-other',
 };
 
 /** A card file with the frontmatter lines given, for parser-level cases. */
@@ -209,6 +210,7 @@ suite('card preferred model: card file contract', () => {
       codex: MODEL,
       'claude-code': MODEL,
       cursor: MODEL,
+      'cursor-other': MODEL,
     });
 
     // A scoped key wins over the legacy scalar for its own provider only.
@@ -428,7 +430,24 @@ suite('card preferred model: provider argument mapping', () => {
         '--model',
         MODEL,
       ],
-      cursor: ['-p', '--force', '--output-format', 'text', '--model', MODEL],
+      cursor: [
+        '-p',
+        '--force',
+        '--output-format',
+        'stream-json',
+        '--stream-partial-output',
+        '--model',
+        MODEL,
+      ],
+      'cursor-other': [
+        '-p',
+        '--force',
+        '--output-format',
+        'stream-json',
+        '--stream-partial-output',
+        '--model',
+        MODEL,
+      ],
     };
 
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
@@ -448,7 +467,8 @@ suite('card preferred model: provider argument mapping', () => {
       copilot: ['--allow-all-tools', '--no-ask-user', '--silent'],
       codex: ['exec', '--sandbox', 'workspace-write', '-'],
       'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
-      cursor: ['-p', '--force', '--output-format', 'text'],
+      cursor: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
+      'cursor-other': ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
     };
 
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
@@ -485,8 +505,8 @@ suite('card preferred model: provider argument mapping', () => {
       );
       const invocation = buildAgentCliInvocation(target(provider), 'prompt', 'E:\\workspace', selection);
 
-      if (provider === 'cursor') {
-        assert.equal(selection, undefined, 'cursor names no model on this card');
+      if (provider === 'cursor' || provider === 'cursor-other') {
+        assert.equal(selection, undefined, `${provider} names no model on this card`);
         assert.ok(!invocation.args.includes('--model'));
         continue;
       }
@@ -539,16 +559,17 @@ suite('card preferred model: provider argument mapping', () => {
       const args = prepared.invocation.args;
       // The model flag stays with the other options; the prompt pointer is the
       // positional argument and must remain last.
-      assert.deepEqual(args.slice(0, 6), [
+      assert.deepEqual(args.slice(0, 7), [
         '-p',
         '--force',
         '--output-format',
-        'text',
+        'stream-json',
+        '--stream-partial-output',
         '--model',
         MODEL,
       ]);
-      assert.equal(args.length, 7);
-      assert.ok(args[6]?.includes('Read the UTF-8 file at'));
+      assert.equal(args.length, 8);
+      assert.ok(args[7]?.includes('Read the UTF-8 file at'));
     } finally {
       await prepared.cleanup?.();
     }
@@ -569,7 +590,7 @@ suite('card preferred model: provider argument mapping', () => {
     // Nothing is added to argv, so the run still uses the CLI's own default.
     assert.deepEqual(
       buildAgentCliInvocation(target('cursor'), 'prompt', 'E:\\workspace', selection).args,
-      ['-p', '--force', '--output-format', 'text'],
+      ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
     );
     // Every provider shipped today does accept a model.
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
@@ -902,7 +923,13 @@ suite('card preferred model: credit fallback interaction', () => {
       '-',
     ]);
     // Cursor runs on its own default: no model argument, and nothing inherited.
-    assert.deepEqual(invocations[1]?.args, ['-p', '--force', '--output-format', 'text']);
+    assert.deepEqual(invocations[1]?.args, [
+      '-p',
+      '--force',
+      '--output-format',
+      'stream-json',
+      '--stream-partial-output',
+    ]);
     assert.equal(switches[0]?.toModel, undefined);
   });
 
@@ -942,7 +969,13 @@ suite('card preferred model: credit fallback interaction', () => {
     });
 
     assert.deepEqual(invocations[0]?.args, ['exec', '--sandbox', 'workspace-write', '-']);
-    assert.deepEqual(invocations[1]?.args, ['-p', '--force', '--output-format', 'text']);
+    assert.deepEqual(invocations[1]?.args, [
+      '-p',
+      '--force',
+      '--output-format',
+      'stream-json',
+      '--stream-partial-output',
+    ]);
     assert.ok(!board.activity(cardId).includes('Card preferred model'));
   });
 });

@@ -5,6 +5,24 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Cursor Agent CLI Other** (`cursor-other`) is a first-class agent CLI identity alongside Cursor Agent CLI: Run Card with AI / AI loop pickers, `mwnn-kanban.aiLoopProvider`, usage-orchestrator exclusions, card `preferredModel.cursor-other` / `thinkingLevel.cursor-other`, Agent CLI Models (top-level and stage), and related settings. It launches the same Cursor Agent CLI executable and path override as `cursor`, and ranks against Cursor’s Other Models usage pool while `cursor` remains the Auto / Cursor-models identity.
+- Pro's AI Provider Usage report can retrieve GitHub Copilot Free premium-request usage on demand through the signed-in GitHub session. This calls an internal, undocumented GitHub endpoint; no workspace or board data is included.
+
+### Fixed
+- Card editing now offers **Cursor Agent CLI Other** in the preferred model and thinking-level provider selector, with independent values and suggestions.
+- AI Loop skips dependency-blocked cards during definition, triage, implementation, and verification, continues with eligible cards, and resumes held cards once their dependencies are done.
+- Copilot usage reporting now reads the reported premium-request quota without requiring an exact GitHub plan label.
+- Copilot usage reporting supports GitHub's `remaining` and `quota_reset_date` fields, and timestamps live readings when the response omits one.
+- Copilot usage reporting now accepts the account quota response shape and falls back to chat quota when no premium-request allowance exists.
+
+### Removed
+- Removed the **MWNN Kanban: Manage Agent CLI Models and Thinking Levels** palette command (`mwnn-kanban.manageAgentCliModels`). Use the **Agent CLI Models** panel (the sidebar gear) instead; it edits the same model and thinking-level settings in User or Workspace scope.
+
+### Changed
+- Renamed in-product and settings copy from **Cursor Other Models** to **Cursor Agent CLI Other**, and removed the “stage-only; dispatches still run as cursor” framing now that `cursor-other` is a selectable provider id.
+- **Import Plan** now installs the MWNN skills in your home folder by default (`mwnn-kanban.skillsInstallLocation` defaults to `user`), so nothing is added to the repo. Set it to `workspace` to keep the previous behavior; an explicit `workspace` value already in your settings still applies. Skill files from earlier workspace installs are left in place, and a failed user-folder install warns and continues without writing to the workspace.
+
 ## [1.0.3] - 2026-10-18
 
 ### Changed

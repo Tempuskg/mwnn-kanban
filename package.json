@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -122,11 +122,6 @@
       {
         "command": "mwnn-kanban.populateAgentCliModels",
         "title": "Populate Agent CLI Models and Thinking Levels",
-        "category": "MWNN Kanban"
-      },
-      {
-        "command": "mwnn-kanban.manageAgentCliModels",
-        "title": "Manage Agent CLI Models and Thinking Levels",
         "category": "MWNN Kanban"
       },
       {
@@ -300,6 +295,7 @@
             "codex",
             "claude-code",
             "cursor",
+            "cursor-other",
             "orchestrator"
           ],
           "enumDescriptions": [
@@ -309,6 +305,7 @@
             "Run the loop with OpenAI Codex CLI.",
             "Run the loop with Anthropic Claude Code CLI.",
             "Run the loop with Cursor Agent CLI.",
+            "Run the loop with Cursor Agent CLI Other (same executable as Cursor Agent CLI; Other Models usage pool).",
             "Usage Orchestrator: before every dispatch, choose among the installed agent CLIs by their own reported remaining usage - soonest reset first, then CLIs whose usage is unknown (drained until they stop accepting work), then most remaining usage."
           ],
           "default": "prompt",
@@ -342,13 +339,15 @@
               "copilot",
               "codex",
               "claude-code",
-              "cursor"
+              "cursor",
+              "cursor-other"
             ],
             "enumDescriptions": [
               "GitHub Copilot CLI.",
               "OpenAI Codex CLI.",
               "Anthropic Claude Code CLI.",
-              "Cursor Agent CLI."
+              "Cursor Agent CLI.",
+              "Cursor Agent CLI Other."
             ]
           },
           "uniqueItems": true,
@@ -397,6 +396,14 @@
               },
               "uniqueItems": true,
               "description": "Models to escalate through for Cursor Agent CLI, weakest first, as that CLI spells them. The loop moves to the next entry after an inconclusive attempt."
+            },
+            "cursor-other": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Models to escalate through for Cursor Agent CLI Other, weakest first, as that CLI spells them. The loop moves to the next entry after an inconclusive attempt."
             }
           },
           "additionalProperties": false,
@@ -413,6 +420,14 @@
           "default": 0,
           "minimum": 0,
           "markdownDescription": "Maximum number of agent handoffs a single AI board loop run may dispatch before it stops on its own. Every launched handoff counts, including credit-fallback replacements and model-escalation retries. `0` (the default) disables the cap: run length and behavior are unchanged. When the cap is reached the loop stops *before* starting the next handoff, so no CLI is left running and the in-flight card is not advanced; the reason is recorded in that card's Activity. This is a count of dispatches, not a spend limit — the extension has no price table and never estimates cost. Any monetary or token figure in the end-of-run report is a line the CLI printed itself, quoted and attributed to that CLI.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.aiLoopUsageResetMaxWaitHours": {
+          "type": "number",
+          "default": 6,
+          "minimum": 0,
+          "maximum": 168,
+          "markdownDescription": "When the agent CLI running an AI loop stage hits its usage limit (for example Claude Code's 5-hour window) and no fallback CLI can take over, wait for the limit to reset and retry the same card stage on that CLI, for at most this many hours per wait. The reset time comes from the CLI's own usage report; when none is reported the loop rechecks every 30 minutes. A reset that falls beyond this cap (such as a weekly or monthly limit) still stops the run, as does a wait that runs out. `0` disables waiting: a spent allowance stops the run as before. Stop ends a wait immediately.",
           "scope": "resource"
         },
         "mwnn-kanban.agentCliPaths": {
@@ -449,16 +464,24 @@
               "copilot",
               "codex",
               "claude-code",
-              "cursor"
+              "cursor",
+              "cursor-other"
             ],
             "enumDescriptions": [
               "GitHub Copilot CLI",
               "OpenAI Codex CLI",
               "Anthropic Claude Code CLI",
-              "Cursor Agent CLI"
+              "Cursor Agent CLI",
+              "Cursor Agent CLI Other"
             ]
           },
           "markdownDescription": "Agent CLIs the Usage Orchestrator never chooses, even when installed - for example a CLI whose plan does not offer the models you want. Excluded CLIs are not probed and are listed as skipped in the orchestrator's ranking. Choosing a CLI directly (in `#mwnn-kanban.aiLoopProvider#` or the Run Card picker) is not affected. Leave empty to let the orchestrator choose among every installed CLI.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.usageOrchestratorBehindPaceOnly": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When the Usage Orchestrator runs an AI board loop or Portfolio AI loop, choose only agent CLIs that are **behind pace** on every known-length usage window they report. Pace is the same rule as the Pro AI Provider Usage report: variance is used % minus elapsed % at the reading's as-of time; below −5 percentage points is behind, within ±5 is on pace, and above +5 is ahead. Unknown, stale (older than a tenth of the window), and reset windows cannot be classified, and unknown-usage CLIs are not drained in this mode. When no CLI is behind, the loop waits until the earliest predicted behind time (assuming no further use) plus a short grace, capped by `#mwnn-kanban.aiLoopUsageResetMaxWaitHours#` (`0` disables the wait and ends the run as having no eligible CLI). On by default. Run Card with AI and fixed-CLI / configured-fallback runs are unchanged.",
           "scope": "resource"
         },
         "mwnn-kanban.defineUseJev": {
@@ -507,6 +530,14 @@
               },
               "uniqueItems": true,
               "description": "Model names Cursor Agent CLI accepts, as it spells them. The first entry is the default used when a card names no preferred model."
+            },
+            "cursor-other": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true,
+              "description": "Model names Cursor Agent CLI Other accepts (Other Models pool), as Cursor Agent CLI spells them. The first entry is the default used when a card names no preferred model for cursor-other."
             }
           },
           "additionalProperties": false,
@@ -515,7 +546,7 @@
         "mwnn-kanban.agentCliStageModels": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Independent model overrides per AI loop stage and CLI, for example `implementation: { codex: \"custom-name\", \"claude-code\": \"another-name\" }`. Each stage accepts a provider map with `copilot`, `codex`, `claude-code`, and `cursor` keys. Names are optional, free-form, and CLI-specific. Precedence for the CLI actually selected: card override, stage/CLI override, provider default, CLI default. Model and thinking level are independent. Legacy stage strings remain readable and apply to every CLI; editing one converts only that scope to provider entries and preserves unedited CLIs. Remove a provider key to restore inherited stage settings and defaults. The Agent CLI Models panel and Manage Agent CLI Models and Thinking Levels command edit User or Workspace scope. Unsupported thinking levels are reported as not applied without stopping a run.",
+          "markdownDescription": "Independent model overrides per AI loop stage and CLI, for example `implementation: { codex: \"custom-name\", \"claude-code\": \"another-name\" }`. Each stage accepts a provider map with `copilot`, `codex`, `claude-code`, `cursor`, and `cursor-other` keys. `cursor-other` is Cursor Agent CLI Other (same executable as `cursor`; Other Models usage pool). Names are optional, free-form, and CLI-specific. Precedence for the CLI actually selected: card override, stage/CLI override, provider default, CLI default. Model and thinking level are independent. Legacy stage strings remain readable and apply to every CLI; editing one converts only that scope to provider entries and preserves unedited CLIs. Remove a provider key to restore inherited stage settings and defaults. The Agent CLI Models panel edits User or Workspace scope. Unsupported thinking levels are reported as not applied without stopping a run.",
           "properties": {
             "definition": {
               "type": [
@@ -543,6 +574,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form model for cursor at definition."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for Cursor Agent CLI Other at definition."
                 }
               },
               "additionalProperties": false
@@ -573,6 +609,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form model for cursor at triage."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for Cursor Agent CLI Other at triage."
                 }
               },
               "additionalProperties": false
@@ -603,6 +644,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form model for cursor at implementation."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for Cursor Agent CLI Other at implementation."
                 }
               },
               "additionalProperties": false
@@ -633,6 +679,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form model for cursor at verification."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form model for Cursor Agent CLI Other at verification."
                 }
               },
               "additionalProperties": false
@@ -685,6 +736,16 @@
                 "type": "string"
               },
               "description": "Thinking level for Cursor Agent CLI, as it spells it. Cursor Agent CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
+            },
+            "cursor-other": {
+              "type": [
+                "string",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Thinking level for Cursor Agent CLI Other, as Cursor Agent CLI spells it. Cursor Agent CLI exposes no reasoning-effort argument today, so a level set here is reported as not applied and the run uses that CLI's default effort."
             }
           },
           "additionalProperties": false,
@@ -693,7 +754,7 @@
         "mwnn-kanban.agentCliStageThinkingLevels": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Independent thinking level overrides per AI loop stage and CLI, for example `implementation: { codex: \"custom-name\", \"claude-code\": \"another-name\" }`. Each stage accepts a provider map with `copilot`, `codex`, `claude-code`, and `cursor` keys. Names are optional, free-form, and CLI-specific. Precedence for the CLI actually selected: card override, stage/CLI override, provider default, CLI default. Model and thinking level are independent. Legacy stage strings remain readable and apply to every CLI; editing one converts only that scope to provider entries and preserves unedited CLIs. Remove a provider key to restore inherited stage settings and defaults. The Agent CLI Models panel and Manage Agent CLI Models and Thinking Levels command edit User or Workspace scope. Unsupported thinking levels are reported as not applied without stopping a run.",
+          "markdownDescription": "Independent thinking level overrides per AI loop stage and CLI, for example `implementation: { codex: \"custom-name\", \"claude-code\": \"another-name\" }`. Each stage accepts a provider map with `copilot`, `codex`, `claude-code`, `cursor`, and `cursor-other` keys. `cursor-other` is Cursor Agent CLI Other (same executable as `cursor`; Other Models usage pool). Names are optional, free-form, and CLI-specific. Precedence for the CLI actually selected: card override, stage/CLI override, provider default, CLI default. Model and thinking level are independent. Legacy stage strings remain readable and apply to every CLI; editing one converts only that scope to provider entries and preserves unedited CLIs. Remove a provider key to restore inherited stage settings and defaults. The Agent CLI Models panel edits User or Workspace scope. Unsupported thinking levels are reported as not applied without stopping a run.",
           "properties": {
             "definition": {
               "type": [
@@ -721,6 +782,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form thinking level for cursor at definition."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for Cursor Agent CLI Other at definition."
                 }
               },
               "additionalProperties": false
@@ -751,6 +817,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form thinking level for cursor at triage."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for Cursor Agent CLI Other at triage."
                 }
               },
               "additionalProperties": false
@@ -781,6 +852,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form thinking level for cursor at implementation."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for Cursor Agent CLI Other at implementation."
                 }
               },
               "additionalProperties": false
@@ -811,6 +887,11 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Optional free-form thinking level for cursor at verification."
+                },
+                "cursor-other": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Optional free-form thinking level for Cursor Agent CLI Other at verification."
                 }
               },
               "additionalProperties": false
@@ -983,6 +1064,12 @@
           "default": false,
           "description": "Include eligible historical card activity when building flow metrics.",
           "scope": "application"
+        },
+        "mwnn-kanban-pro.aiUsage.refreshCursorCacheOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "When opening the AI Provider Usage report, run `cursor-cli-usage refresh` first so the Cursor section can use a freshly written third-party usage-v1 cache. Defaults to on; refresh runs only when cursor-cli-usage is found on PATH (or CURSOR_CLI_USAGE points at an executable). This package opens no network sockets itself; the external tool may contact Cursor. Refresh failures still show Claude Code, Codex, and any existing Cursor cache. Set to false to keep a read-only report.",
+          "scope": "application"
         }
       }
     },
@@ -1029,9 +1116,6 @@
         },
         {
           "command": "mwnn-kanban.populateAgentCliModels"
-        },
-        {
-          "command": "mwnn-kanban.manageAgentCliModels"
         },
         {
           "command": "mwnn-kanban.openAgentCliModels"

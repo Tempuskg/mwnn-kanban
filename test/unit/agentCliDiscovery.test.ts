@@ -126,7 +126,13 @@ function fakeResolve(installed: readonly AgentCliProviderId[]) {
       : { available: false, provider, attemptedCommand: provider, reason: 'missing' };
 }
 
-const THINKING_FLAGS = { copilot: undefined, codex: '-c', 'claude-code': undefined, cursor: undefined };
+const THINKING_FLAGS = {
+  copilot: undefined,
+  codex: '-c',
+  'claude-code': undefined,
+  cursor: undefined,
+  'cursor-other': undefined,
+};
 
 suite('agent CLI discovery: sources and fallback', () => {
   test('uses CLI listings when available and bundled lists otherwise, without aborting', async () => {

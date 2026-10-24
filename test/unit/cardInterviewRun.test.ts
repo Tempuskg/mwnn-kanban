@@ -61,11 +61,18 @@ interface Harness {
   info: string[];
   warnings: string[];
   picks: number;
+  restartOffers: number;
+  inFlight: ReturnType<typeof createChatHandoffInFlight>;
 }
 
 function harness(
   initial: BoardState,
-  options: { pick?: () => Promise<InterviewProviderPick>; delivered?: boolean } = {},
+  options: {
+    pick?: () => Promise<InterviewProviderPick>;
+    delivered?: boolean;
+    handOff?: (prompt: string, signal: AbortSignal) => Promise<boolean>;
+    restart?: boolean;
+  } = {},
 ): Harness {
   let state = cloneBoard(initial);
   const inFlight = createChatHandoffInFlight();
@@ -74,20 +81,28 @@ function harness(
     info: [],
     warnings: [],
     picks: 0,
+    restartOffers: 0,
+    inFlight,
     getState: () => state,
     setState: (next) => {
       state = next;
     },
     deps: {
       reloadState: async () => cloneBoard(state),
-      runExclusive: (key, action) => inFlight.run(key, action),
+      runExclusive: (key, action) => inFlight.run(key, action, { kind: 'interview' }),
+      restartExclusive: (key, action) => inFlight.restart(key, action, { kind: 'interview' }),
+      isInterviewInFlight: (key) => inFlight.holder(key) === 'interview',
+      confirmRestart: async () => {
+        result.restartOffers += 1;
+        return options.restart ?? false;
+      },
       pickProvider: async () => {
         result.picks += 1;
         return options.pick ? options.pick() : { kind: 'picked', target: CLAUDE };
       },
-      handOff: async (_target, prompt) => {
+      handOff: async (_target, prompt, _subject, signal) => {
         result.prompts.push(prompt);
-        return options.delivered ?? true;
+        return options.handOff ? options.handOff(prompt, signal) : (options.delivered ?? true);
       },
       appendActivity: async (cardId, entry) => {
         state = appendActivity(state, cardId, entry);
@@ -303,7 +318,22 @@ suite('startCardInterview dispatch', () => {
 
     assert.equal(h.prompts.length, 1);
     assert.equal((findCard(h.getState(), cardId).activity ?? '').match(/interview started/g)?.length, 1);
+    assert.equal(h.restartOffers, 1, 'a stuck-looking interview is offered a restart');
+  });
+
+  test('a hand-off of another kind keeps the busy message with no restart offer', async () => {
+    const { state, cardId } = interviewBoard();
+    const h = harness(state, { restart: true });
+    let release: () => void = () => undefined;
+    const other = h.inFlight.run(cardId, () => new Promise<void>((resolve) => (release = resolve)));
+
+    assert.equal(await startCardInterview(cardId, h.deps), 'busy');
+    assert.equal(h.restartOffers, 0);
+    assert.equal(h.picks, 0);
     assert.match(h.info.at(-1)!, /already starting/);
+    release();
+    await other;
+    assert.equal(h.inFlight.holder(cardId), undefined);
   });
 
   test('restarting after partial progress resumes from the saved card and preserves answers', async () => {
@@ -325,6 +355,151 @@ suite('startCardInterview dispatch', () => {
     assert.ok(h.prompts[0]!.includes(`.mwnn/cards/${cardId}.md`));
     assert.match(h.prompts[0]!, /it may already hold answers from an earlier interview chat/);
     assert.equal(findCard(h.getState(), cardId).acceptanceCriteria?.includes('[x]'), false);
+  });
+});
+
+suite('restarting a stuck interview', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+  const startEntries = (h: Harness, cardId: string): number =>
+    (findCard(h.getState(), cardId).activity ?? '').match(/interview started/g)?.length ?? 0;
+
+  /** An interview whose first provider pick never settles until the test releases it. */
+  function stuckInterview(options: { restart?: boolean } = {}) {
+    const { state, cardId } = interviewBoard();
+    const releases: ((pick: InterviewProviderPick) => void)[] = [];
+    let first = true;
+    const h = harness(state, {
+      ...options,
+      pick: () => {
+        if (first) {
+          first = false;
+          return new Promise((resolve) => releases.push(resolve));
+        }
+        return Promise.resolve({ kind: 'picked', target: CLAUDE });
+      },
+    });
+    const started = startCardInterview(cardId, h.deps);
+    return { h, cardId, releases, started };
+  }
+
+  test('restart while the earlier attempt never resolves ends started with exactly one start entry', async () => {
+    const { h, cardId } = stuckInterview({ restart: true });
+    await tick();
+
+    assert.equal(await startCardInterview(cardId, h.deps), 'started');
+
+    assert.equal(h.restartOffers, 1);
+    assert.equal(h.picks, 2, 'the restart runs the full flow, including a fresh provider pick');
+    assert.equal(h.prompts.length, 1);
+    assert.equal(startEntries(h, cardId), 1);
+    assert.deepEqual(findCard(h.getState(), cardId).assignee, { kind: 'human', name: 'Alice' });
+  });
+
+  test('declining or waiting leaves the earlier attempt untouched and ends busy with no picker call', async () => {
+    const { h, cardId, releases, started } = stuckInterview({ restart: false });
+    await tick();
+
+    assert.equal(await startCardInterview(cardId, h.deps), 'busy');
+    assert.equal(h.restartOffers, 1);
+    assert.equal(h.picks, 1, 'only the earlier attempt opened a picker');
+    assert.equal(startEntries(h, cardId), 0);
+
+    releases[0]!({ kind: 'picked', target: CLAUDE });
+    assert.equal(await started, 'started', 'the untouched earlier attempt still completes');
+    assert.equal(startEntries(h, cardId), 1);
+  });
+
+  test('the abandoned attempt resolving late writes nothing and shows no message', async () => {
+    const { h, cardId, releases, started } = stuckInterview({ restart: true });
+    await tick();
+    assert.equal(await startCardInterview(cardId, h.deps), 'started');
+    const infoBefore = h.info.length;
+
+    releases[0]!({ kind: 'cancelled' });
+    assert.equal(await started, 'superseded');
+    assert.equal(h.info.length, infoBefore, 'no "no chat was chosen" notice');
+    assert.deepEqual(h.warnings, []);
+    assert.equal(startEntries(h, cardId), 1);
+    assert.equal(h.prompts.length, 1);
+  });
+
+  test('an abandoned delivery that reports late success or failure neither records nor refreshes', async () => {
+    for (const lateResult of [true, false]) {
+      const { state, cardId } = interviewBoard();
+      let finish: (delivered: boolean) => void = () => undefined;
+      let calls = 0;
+      let refreshes = 0;
+      const h = harness(state, {
+        restart: true,
+        handOff: (_prompt, signal) => {
+          calls += 1;
+          if (calls === 1) {
+            return new Promise<boolean>((resolve) => (finish = resolve));
+          }
+          assert.equal(signal.aborted, false);
+          return Promise.resolve(true);
+        },
+      });
+      h.deps = { ...h.deps, refreshBoard: () => { refreshes += 1; } };
+      const first = startCardInterview(cardId, h.deps);
+      await tick();
+
+      assert.equal(await startCardInterview(cardId, h.deps), 'started');
+      assert.equal(refreshes, 1);
+      finish(lateResult);
+      assert.equal(await first, 'superseded');
+      assert.equal(refreshes, 1);
+      assert.equal(startEntries(h, cardId), 1);
+      assert.deepEqual(h.warnings, []);
+    }
+  });
+
+  test('a card that became ineligible is refused on restart with the existing message', async () => {
+    const { h, cardId } = stuckInterview({ restart: true });
+    await tick();
+    h.setState(moveCard(h.getState(), cardId, h.getState().columns[4]!.id, 0));
+
+    assert.equal(await startCardInterview(cardId, h.deps), 'ineligible');
+    assert.match(h.info.at(-1)!, /done column/);
+    assert.equal(h.prompts.length, 0);
+    assert.equal(startEntries(h, cardId), 0);
+  });
+
+  test('a restart chosen after the earlier attempt finished starts normally with one prompt', async () => {
+    const { state, cardId } = interviewBoard();
+    const h = harness(state, { restart: true });
+    // restartExclusive finds no holder when the lock was already freed.
+    assert.deepEqual(await h.deps.restartExclusive(cardId, async () => 'ran'), { started: true, value: 'ran' });
+    assert.equal(await startCardInterview(cardId, h.deps), 'started');
+    assert.equal(h.restartOffers, 0);
+    assert.equal(h.prompts.length, 1);
+    assert.equal(startEntries(h, cardId), 1);
+  });
+
+  test('a third click during the restarted attempt still sees the busy state', async () => {
+    const { state, cardId } = interviewBoard();
+    const releases: ((pick: InterviewProviderPick) => void)[] = [];
+    const h = harness(state, {
+      restart: true,
+      pick: () => new Promise((resolve) => releases.push(resolve)),
+    });
+    const first = startCardInterview(cardId, h.deps);
+    await tick();
+    const second = startCardInterview(cardId, h.deps);
+    await tick();
+
+    releases[0]!({ kind: 'cancelled' });
+    assert.equal(await first, 'superseded');
+    assert.equal(h.inFlight.holder(cardId), 'interview', 'the stale release did not free the new lock');
+
+    h.deps = { ...h.deps, confirmRestart: async () => false };
+    assert.equal(await startCardInterview(cardId, h.deps), 'busy');
+    assert.equal(h.picks, 2, 'the declined third click opened no picker');
+
+    releases[1]!({ kind: 'picked', target: CLAUDE });
+    assert.equal(await second, 'started');
+    assert.equal(h.inFlight.holder(cardId), undefined);
+    assert.equal(startEntries(h, cardId), 1);
   });
 });
 

@@ -1,6 +1,5 @@
 /**
- * List-editing rules for the "Manage Agent CLI Models and Thinking Levels"
- * command: how one provider's entry in `mwnn-kanban.agentCliModels` or
+ * List-editing rules for the Agent CLI Models panel: how one provider's entry in `mwnn-kanban.agentCliModels` or
  * `mwnn-kanban.agentCliThinkingLevels` changes when the user adds, removes, or
  * promotes a name, and the text the command's overview shows for it.
  *
@@ -16,7 +15,11 @@
 import { AGENT_CLI_THINKING_FLAGS, type AgentCliProviderId } from './agentCliHandoff';
 import { normalizePreferredModel } from './utils';
 import { isAgentCliHandoffKind, type AgentCliHandoffKind } from './agentCliStages';
-import { AGENT_CLI_PROVIDER_IDS, isAgentCliProviderId } from './agentCliProviders';
+import {
+  AGENT_CLI_PROVIDER_IDS,
+  isAgentCliStageProviderId,
+  type AgentCliStageProviderId,
+} from './agentCliProviders';
 
 /** Which of the two settings an edit targets; they differ only in shape. */
 export type AgentCliSettingsList = 'models' | 'thinkingLevels';
@@ -182,7 +185,7 @@ export function setAgentCliSettingsStage(
   value: unknown,
   list: AgentCliSettingsList,
   stage: AgentCliHandoffKind,
-  provider: AgentCliProviderId,
+  provider: AgentCliStageProviderId,
   input: string,
 ): AgentCliSettingsEdit {
   const problem = stageEntryProblem(stage, provider);
@@ -202,7 +205,7 @@ export function setAgentCliSettingsStage(
 export function removeAgentCliSettingsStage(
   value: unknown,
   stage: AgentCliHandoffKind,
-  provider: AgentCliProviderId,
+  provider: AgentCliStageProviderId,
 ): AgentCliSettingsEdit {
   const problem = stageEntryProblem(stage, provider);
   if (problem !== undefined) {
@@ -217,8 +220,11 @@ export function removeAgentCliSettingsStage(
   return { ok: true, value: Object.keys(next).length > 0 ? next : undefined, list: [] };
 }
 
-function stageEntryProblem(stage: AgentCliHandoffKind, provider: AgentCliProviderId): string | undefined {
-  return !isAgentCliHandoffKind(stage) || !isAgentCliProviderId(provider)
+function stageEntryProblem(
+  stage: AgentCliHandoffKind,
+  provider: AgentCliStageProviderId,
+): string | undefined {
+  return !isAgentCliHandoffKind(stage) || !isAgentCliStageProviderId(provider)
     ? 'Unknown AI loop stage or CLI; nothing was written.' : undefined;
 }
 

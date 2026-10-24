@@ -1,5 +1,8 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
+import { AGENT_CLI_LABELS, AGENT_CLI_PROVIDER_IDS } from '../../src/agentCliProviders';
+import { parseCard, serializeCard } from '../../src/serialization';
+import { addCard, defaultBoard, setPreferredModel, setThinkingLevel } from '../../src/utils';
 import {
   agentCliModelSuggestions,
   readAgentCliModelCatalog,
@@ -25,6 +28,7 @@ interface ThinkingLevelDrafts {
 }
 
 interface BoardWebviewTestExports {
+  AGENT_CLI_PROVIDERS: { id: string; label: string }[];
   modelSuggestionsFor(
     suggestions: AgentCliModelSuggestions | null | undefined,
     providerId: string,
@@ -45,10 +49,10 @@ interface BoardWebviewTestExports {
 }
 
 // In Node, media/board.js returns its pure helpers before the browser bootstrap.
-const { modelSuggestionsFor, modelPickerContent, createPreferredModelDrafts, createThinkingLevelDrafts } =
+const { AGENT_CLI_PROVIDERS, modelSuggestionsFor, modelPickerContent, createPreferredModelDrafts, createThinkingLevelDrafts } =
   require('../../../media/board.js') as BoardWebviewTestExports;
 
-const PROVIDER_IDS = ['copilot', 'codex', 'claude-code', 'cursor'] as const;
+const PROVIDER_IDS = AGENT_CLI_PROVIDERS.map((provider) => provider.id);
 
 function emptyBoard(): BoardState {
   return { version: BOARD_STATE_VERSION, columns: [] };
@@ -217,4 +221,68 @@ suite('card model picker content', () => {
 
     assert.deepEqual(content, { models: [], offerDefault: false, note: 'unconfigured' });
   });
+});
+
+suite('Cursor Other card editor', () => {
+  test('offers every host provider in order with the host label', () => {
+    assert.deepEqual(AGENT_CLI_PROVIDERS, AGENT_CLI_PROVIDER_IDS.map((id) => ({
+      id, label: AGENT_CLI_LABELS[id],
+    })));
+  });
+
+  for (const typed of [false, true]) {
+    test(`saves and clears independent Cursor Other fields (${typed ? 'typed' : 'suggested'})`, () => {
+      let state = defaultBoard(['Backlog']);
+      const column = state.columns[0]!;
+      state = addCard(state, column.id, 'Independent Cursor values');
+      const cardId = state.columns[0]!.cards[0]!.id;
+      state = setPreferredModel(state, cardId, 'cursor', 'cursor-model');
+      state = setThinkingLevel(state, cardId, 'cursor', 'cursor-level');
+      state = setPreferredModel(state, cardId, 'codex', 'codex-model');
+      state = setThinkingLevel(state, cardId, 'codex', 'high');
+      const original = state.columns[0]!.cards[0]!;
+      const models = createPreferredModelDrafts(PROVIDER_IDS, original.preferredModels);
+      const levels = createThinkingLevelDrafts(PROVIDER_IDS, original.thinkingLevels);
+      const modelSuggestions = agentCliModelSuggestions(readAgentCliModelCatalog({
+        cursor: ['cursor-model'], 'cursor-other': ['other-model'],
+      }));
+      const thinkingSuggestions = readAgentCliThinkingLevelSuggestions({
+        cursor: ['cursor-level'], 'cursor-other': ['other-level'],
+      });
+      assert.deepEqual(modelSuggestionsFor(modelSuggestions, 'cursor-other'), ['other-model']);
+      assert.deepEqual(modelSuggestionsFor(thinkingSuggestions, 'cursor-other'), ['other-level']);
+      const model = typed ? 'custom-model' : modelSuggestionsFor(modelSuggestions, 'cursor-other')[0]!;
+      const level = typed ? 'custom-level' : modelSuggestionsFor(thinkingSuggestions, 'cursor-other')[0]!;
+      models.set('cursor-other', model);
+      levels.set('cursor-other', level);
+      assert.deepEqual(models.changes(original), [{ provider: 'cursor-other', model }]);
+      assert.deepEqual(levels.changes(original), [{ provider: 'cursor-other', level }]);
+      for (const change of models.changes(original)) {
+        assert.equal(change.provider, 'cursor-other');
+        state = setPreferredModel(state, cardId, 'cursor-other', change.model);
+      }
+      for (const change of levels.changes(original)) {
+        state = setThinkingLevel(state, cardId, 'cursor-other', change.level);
+      }
+      const saved = state.columns[0]!.cards[0]!;
+      const text = serializeCard({ columnId: column.id, position: 1000, card: saved });
+      assert.ok(text.includes(`preferredModel.cursor-other: ${model}`));
+      assert.ok(text.includes(`thinkingLevel.cursor-other: ${level}`));
+      assert.deepEqual(parseCard(text).card.preferredModels, { ...original.preferredModels, 'cursor-other': model });
+      assert.deepEqual(parseCard(text).card.thinkingLevels, { ...original.thinkingLevels, 'cursor-other': level });
+
+      const clearModels = createPreferredModelDrafts(PROVIDER_IDS, saved.preferredModels);
+      const clearLevels = createThinkingLevelDrafts(PROVIDER_IDS, saved.thinkingLevels);
+      clearModels.set('cursor-other', '');
+      clearLevels.set('cursor-other', '   ');
+      assert.deepEqual(clearModels.changes(saved), [{ provider: 'cursor-other', model: '' }]);
+      assert.deepEqual(clearLevels.changes(saved), [{ provider: 'cursor-other', level: '' }]);
+      state = setPreferredModel(state, cardId, 'cursor-other', clearModels.changes(saved)[0]!.model);
+      assert.deepEqual(state.columns[0]!.cards[0]!.thinkingLevels, saved.thinkingLevels);
+      state = setThinkingLevel(state, cardId, 'cursor-other', clearLevels.changes(saved)[0]!.level);
+      const cleared = parseCard(serializeCard({ columnId: column.id, position: 1000, card: state.columns[0]!.cards[0]! }));
+      assert.deepEqual(cleared.card.preferredModels, original.preferredModels);
+      assert.deepEqual(cleared.card.thinkingLevels, original.thinkingLevels);
+    });
+  }
 });

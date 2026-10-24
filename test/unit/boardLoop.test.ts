@@ -180,6 +180,101 @@ function assertHumanVerificationInstructions(activity: string): void {
 }
 
 suite('board loop planning', () => {
+  for (const scenario of [
+    'definition', 'triage', 'fresh-definition', 'record-triage', 'advance',
+    'dispatch', 'finished-dispatch', 'park', 'verify', 'complete',
+  ]) {
+    test(`withholds ${scenario} while dependencies are unfinished and resumes in the same session`, () => {
+      const columnIndex = ['park', 'verify', 'complete'].includes(scenario) ? 3
+        : ['dispatch', 'finished-dispatch'].includes(scenario) ? 2 : 0;
+      let { state, cardId } = boardWithCard(FULL_COLUMNS, columnIndex, 'Dependent', { kind: 'ai' });
+      const card = state.columns[columnIndex]!.cards[0]!;
+      if (scenario === 'definition' || scenario === 'triage') { delete card.assignee; }
+      if (scenario === 'definition') { delete card.description; }
+      state = addCard(state, state.columns[0]!.id, 'Prerequisite');
+      const prerequisite = state.columns[0]!.cards.at(-1)!;
+      state = setAssignee(state, prerequisite.id, { kind: 'human' });
+      state = setDependencies(state, cardId, [prerequisite.id]);
+      const session = createLoopSession();
+      if (scenario === 'fresh-definition') { session.definedThisRun.add(cardId); }
+      if (scenario === 'record-triage') {
+        session.triageRequests.set(cardId, { requestedAt: 0, activityBaseline: 0 });
+      }
+      if (scenario === 'finished-dispatch') {
+        session.dispatches.set(cardId, { columnId: state.columns[columnIndex]!.id, activityBaseline: 0, dispatchedAt: 0 });
+        state = appendActivity(state, cardId, 'STATUS: DONE');
+      }
+      if (scenario === 'complete') {
+        session.verifications.set(cardId, { columnId: state.columns[columnIndex]!.id, activityBaseline: 0, requestedAt: 0 });
+        state = appendActivity(state, cardId, 'VERIFY: PASS');
+      }
+      const options = { verifyWithAi: scenario === 'verify' || scenario === 'complete' };
+      assert.equal(planLoopAction(state, session, options), undefined);
+      assert.equal(session.skipped.has(cardId), false, 'dependency holds must not last for the entire run');
+      state = moveCard(state, prerequisite.id, state.columns[4]!.id, 0);
+      const action = planLoopAction(state, session, options);
+      const expected = scenario === 'definition' ? 'request-definition'
+        : scenario === 'fresh-definition' ? 'move-to-ready'
+        : scenario === 'finished-dispatch' ? 'advance' : scenario;
+      assert.equal(action?.kind, expected);
+      assert.equal(action?.card.id, cardId);
+    });
+  }
+
+  for (const pending of ['definition', 'triage', 'dispatch', 'verification']) {
+    test(`a dependency-blocked ${pending} wait does not stall other eligible cards`, async () => {
+      let { state, cardId } = boardWithCard(FULL_COLUMNS, 0, 'Blocked wait');
+      if (pending === 'definition') { delete state.columns[0]!.cards[0]!.description; }
+      state = addCard(state, state.columns[0]!.id, 'Prerequisite');
+      const prerequisite = state.columns[0]!.cards[1]!;
+      state = setAssignee(state, prerequisite.id, { kind: 'human' });
+      state = setDependencies(state, cardId, [prerequisite.id]);
+      state = addCard(state, state.columns[2]!.id, 'Eligible');
+      const eligible = state.columns[2]!.cards[0]!;
+      state = setDescription(state, eligible.id, 'Implement this');
+      state = setAcceptanceCriteria(state, eligible.id, '- [ ] Implemented');
+      state = setAssignee(state, eligible.id, { kind: 'ai' });
+      const session = createLoopSession();
+      const record = { columnId: state.columns[0]!.id, activityBaseline: 0, requestedAt: 0, dispatchedAt: 0 };
+      if (pending === 'definition') { session.definitionRequests.set(cardId, record); }
+      if (pending === 'triage') { session.triageRequests.set(cardId, record); }
+      if (pending === 'dispatch') { session.dispatches.set(cardId, record); }
+      if (pending === 'verification') { session.verifications.set(cardId, record); }
+      const board = fakeBoard(state);
+      const { gateways, log } = instantGateways(board);
+      const summary = await runBoardLoop(board.store, gateways, {
+        isCancelled: () => false,
+        delay: async () => assert.fail('must not poll a dependency-blocked wait'),
+      }, { session });
+      assert.deepEqual(log.dispatched, [eligible.id]);
+      assert.deepEqual(log.definitionsRequested, []);
+      assert.deepEqual(log.triaged, []);
+      assert.deepEqual(summary.skipped, []);
+      assert.deepEqual(board.findCard(cardId), state.columns[0]!.cards[0]);
+    });
+  }
+
+  test('blocked Backlog cards do not prevent admission, and blocked Ready cards do not satisfy reverse WIP', () => {
+    let { state, cardId } = boardWithCard(FULL_COLUMNS, 1, 'Eligible', { kind: 'ai' });
+    state = addCard(state, state.columns[0]!.id, 'Blocked backlog');
+    const backlogId = state.columns[0]!.cards[0]!.id;
+    state = addCard(state, state.columns[0]!.id, 'Human prerequisite');
+    const prerequisiteId = state.columns[0]!.cards[1]!.id;
+    state = setAssignee(state, prerequisiteId, { kind: 'human' });
+    state = setDependencies(state, backlogId, [prerequisiteId]);
+    state = setColumnConfig(state, state.columns[1]!.id, { reverseWip: 2 });
+    assert.equal(planLoopAction(state, createLoopSession())?.card.id, cardId);
+    state = addCard(state, state.columns[1]!.id, 'Blocked ready');
+    const blockedReadyId = state.columns[1]!.cards[1]!.id;
+    state = setDescription(state, blockedReadyId, 'Defined');
+    state = setAssignee(state, blockedReadyId, { kind: 'ai' });
+    state = setDependencies(state, blockedReadyId, [prerequisiteId]);
+    state = setDependencies(state, backlogId, []);
+    const action = planLoopAction(state, createLoopSession());
+    assert.equal(action?.kind, 'request-definition');
+    assert.equal(action?.card.id, backlogId);
+  });
+
   test('selects AI-assigned cards and never human-assigned ones', () => {
     let { state, cardId } = boardWithCard([...FULL_COLUMNS], 1, 'AI task', { kind: 'ai' });
     const humanColumnId = state.columns[1]!.id;
@@ -388,6 +483,51 @@ suite('board loop planning', () => {
     pruneLoopSession(state, session);
 
     assert.equal(session.verifications.size, 0);
+  });
+
+  test('pruning a dispatch after a BLOCKED move marks the card skipped', () => {
+    // Agents sometimes move a blocked card back to Backlog before the loop
+    // can abandon it. Clearing the dispatch without skipping would let the
+    // planner re-advance and re-dispatch the same card forever.
+    let { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Not ready yet', { kind: 'ai' });
+    const session = createLoopSession();
+    session.dispatches.set(cardId, {
+      columnId: state.columns[2]!.id,
+      activityBaseline: 0,
+      dispatchedAt: 0,
+    });
+    state = appendActivity(state, cardId, 'STATUS: BLOCKED: waiting on launch approval.');
+    state = moveCard(state, cardId, state.columns[0]!.id, 0);
+
+    pruneLoopSession(state, session);
+
+    assert.equal(session.dispatches.has(cardId), false);
+    assert.equal(session.skipped.has(cardId), true);
+    assert.equal(planLoopAction(state, session)?.kind, undefined);
+  });
+
+  test('does not re-dispatch a card that reported BLOCKED then moved to Backlog', async () => {
+    const { state, cardId } = boardWithCard([...FULL_COLUMNS], 2, 'Premature monthly record', { kind: 'ai' });
+    const board = fakeBoard(state);
+    const log: string[] = [];
+    const gateways: LoopGateways = {
+      dispatchCard: async (card) => {
+        log.push(card.id);
+        await board.store.appendActivity(card.id, 'STATUS: BLOCKED: product has not launched.');
+        board.mutate((current) => moveCard(current, card.id, current.columns[0]!.id, 0));
+        return true;
+      },
+      requestDefinition: async () => true,
+      requestTriage: async () => false,
+      decideDoability: async () => ({ decision: 'ai' as const }),
+    };
+
+    const summary = await runBoardLoop(board.store, gateways, neverCancelled(), { pollIntervalMs: 0 });
+
+    assert.deepEqual(log, [cardId]);
+    assert.equal(board.columnTitleOf(cardId), 'Backlog');
+    assert.equal(summary.skipped.length, 1);
+    assert.deepEqual(board.findCard(cardId).assignee, { kind: 'ai' });
   });
 
   test('never plans an advance into the done column', () => {

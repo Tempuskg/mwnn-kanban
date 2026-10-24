@@ -1,4 +1,3 @@
-import { manageAgentCliStage, type AgentCliStageMenuItem } from '../../src/agentCliSettingsQuickPick';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
@@ -23,8 +22,17 @@ function fixture(workspace = true) {
       settings[key] = { ...settings[key], [scope === 'workspace' ? 'workspaceValue' : 'globalValue']: value };
     },
     post: (state) => { posted = state; },
-    suggestions: [{ id: 'codex', label: 'Codex', suggestedModels: ['bundled'], suggestedThinkingLevels: ['high', 'low'], thinkingApplied: true },
-      { id: 'cursor', label: 'Cursor', suggestedModels: ['auto'], suggestedThinkingLevels: [], thinkingApplied: false }],
+    suggestions: [
+      { id: 'codex', label: 'Codex', suggestedModels: ['bundled'], suggestedThinkingLevels: ['high', 'low'], thinkingApplied: true },
+      { id: 'cursor', label: 'Cursor', suggestedModels: ['auto'], suggestedThinkingLevels: [], thinkingApplied: false },
+      {
+        id: 'cursor-other',
+        label: 'Cursor Agent CLI Other',
+        suggestedModels: ['claude-opus-5'],
+        suggestedThinkingLevels: [],
+        thinkingApplied: false,
+      },
+    ],
   });
   const state = (): AgentCliSettingsPanelState => {
     assert.ok(posted);
@@ -50,11 +58,18 @@ suite('Agent CLI settings panel host bridge', () => {
     await f.handle({ type: 'settingsReady' });
     assert.equal(f.state().scope, 'workspace');
     assert.equal(f.state().workspaceAvailable, true);
-    assert.equal(f.state().providers.length, 4);
+    assert.equal(f.state().providers.length, 5);
+    assert.deepEqual(
+      f.state().providers.map((p) => p.id),
+      ['copilot', 'codex', 'claude-code', 'cursor', 'cursor-other'],
+    );
     const codex = f.state().providers.find((p) => p.id === 'codex');
     assert.deepEqual(codex?.suggestedModels, ['bundled']);
     assert.deepEqual(codex?.suggestedThinkingLevels, ['high', 'low']);
     assert.equal(f.state().providers.find((p) => p.id === 'cursor')?.thinkingApplied, false);
+    const cursorOther = f.state().providers.find((p) => p.id === 'cursor-other');
+    assert.equal(cursorOther?.label, 'Cursor Agent CLI Other');
+    assert.equal(cursorOther?.thinkingApplied, false);
     assert.equal(f.writes.length, 0);
   });
 
@@ -214,23 +229,55 @@ suite('Agent CLI settings panel host bridge', () => {
     await f.handle(listEdit('clear', ''));
     assert.deepEqual(f.state().providers.find((p) => p.id === 'codex')?.inheritedModels, ['inherited']);
   });
-  test('all sixteen stage/CLI pairs edit independently and suggestions never cross CLIs', async () => {
+  test('all twenty stage/provider pairs edit independently and suggestions never cross CLIs', async () => {
     const f = fixture();
-    f.settings.agentCliModels = { globalValue: { codex: ['codex-default'], cursor: ['cursor-default'] } };
+    f.settings.agentCliModels = {
+      globalValue: {
+        codex: ['codex-default'],
+        cursor: ['auto', 'claude-opus-5'],
+      },
+    };
+    const stageProviders = ['copilot', 'codex', 'claude-code', 'cursor', 'cursor-other'];
     for (const stage of ['definition', 'triage', 'implementation', 'verification']) {
-      for (const provider of ['copilot', 'codex', 'claude-code', 'cursor']) {
+      for (const provider of stageProviders) {
         await f.handle({ ...stageEdit('set', stage + '-' + provider, 'workspace', 'models', stage), provider });
         await f.handle({ ...stageEdit('set', provider + '-effort', 'workspace', 'thinkingLevels', stage), provider });
       }
     }
-    assert.equal(f.state().stages.length, 16);
+    assert.equal(f.state().stages.length, 20);
     for (const entry of f.state().stages) {
       assert.equal(entry.model, entry.id + '-' + entry.provider);
       assert.equal(entry.thinkingLevel, entry.provider + '-effort');
-      assert.ok(entry.suggestedModels.every((name) => name.includes(entry.provider)));
-      assert.ok(entry.suggestedThinkingLevels.every((name) => name.startsWith(entry.provider)));
+      assert.ok(entry.label.length > 0);
+      if (entry.provider === 'cursor') {
+        assert.equal(entry.label, 'Cursor Agent CLI');
+        assert.ok(entry.suggestedModels.includes('auto'));
+        assert.ok(!entry.suggestedModels.includes('claude-opus-5'));
+      } else if (entry.provider === 'cursor-other') {
+        assert.equal(entry.label, 'Cursor Agent CLI Other');
+        assert.ok(entry.suggestedModels.includes('claude-opus-5'));
+        assert.ok(!entry.suggestedModels.includes('auto'));
+      } else {
+        assert.ok(entry.suggestedModels.every((name) => name.includes(entry.provider)));
+        assert.ok(entry.suggestedThinkingLevels.every((name) => name.startsWith(entry.provider)));
+      }
     }
-    assert.deepEqual(f.settings.agentCliModels.globalValue, { codex: ['codex-default'], cursor: ['cursor-default'] });
+    assert.deepEqual(f.settings.agentCliModels.globalValue, {
+      codex: ['codex-default'],
+      cursor: ['auto', 'claude-opus-5'],
+    });
+  });
+
+  test('Cursor Agent CLI Other stage overrides write the cursor-other key only', async () => {
+    const f = fixture();
+    await f.handle({
+      ...stageEdit('set', 'claude-sonnet-4', 'workspace', 'models', 'definition'),
+      provider: 'cursor-other',
+    });
+    assert.deepEqual(f.writes.at(-1)?.value, { definition: { 'cursor-other': 'claude-sonnet-4' } });
+    const row = f.state().stages.find((s) => s.id === 'definition' && s.provider === 'cursor-other');
+    assert.equal(row?.model, 'claude-sonnet-4');
+    assert.equal(row?.thinkingApplied, false);
   });
 
   test('editing a legacy scoped stage preserves unedited CLIs and clearing restores the lower scope', async () => {
@@ -241,7 +288,13 @@ suite('Agent CLI settings panel host bridge', () => {
     };
     await f.handle(stageEdit('set', 'custom: off-list name'));
     assert.deepEqual(f.writes.at(-1)?.value, {
-      implementation: { copilot: 'legacy', codex: 'custom: off-list name', 'claude-code': 'legacy', cursor: 'legacy' },
+      implementation: {
+        copilot: 'legacy',
+        codex: 'custom: off-list name',
+        'claude-code': 'legacy',
+        cursor: 'legacy',
+        'cursor-other': 'legacy',
+      },
       triage: { cursor: 'keep' },
     });
     await f.handle(stageEdit('remove', ''));
@@ -273,65 +326,6 @@ suite('Agent CLI settings panel host bridge', () => {
       assert.ok(f.state().error);
     }
     assert.equal(f.writes.length, 0);
-  });
-
-  test('the quick-pick stage flow sets and removes each axis through the panel controller in either scope', async () => {
-    for (const scope of ['user', 'workspace'] as const) {
-      const f = fixture();
-      f.settings.agentCliStageModels = { globalValue: { implementation: 'user-shared' } };
-      await f.handle({ type: 'settingsScope', scope });
-      const choices = [
-        { action: 'set', list: 'models' }, { action: 'set', list: 'thinkingLevels' },
-        { action: 'remove', list: 'models' }, { action: 'remove', list: 'thinkingLevels' },
-        { action: 'back', list: 'models' },
-      ] as const;
-      let index = 0;
-      const warnings: string[] = [];
-      const outcome = await manageAgentCliStage('implementation', 'codex', {
-        title: 'test', readState: () => f.state(), handle: f.handle,
-        pick: async (items: readonly AgentCliStageMenuItem[]) => {
-          const choice = choices[index++];
-          assert.ok(choice);
-          const item = items.find((candidate) => candidate.action === choice.action && candidate.list === choice.list);
-          assert.ok(item);
-          return item;
-        },
-        enterName: async (noun, suggestions) => {
-          assert.ok(!suggestions.includes('bundled'), 'stage suggestions are configured values only');
-          return noun === 'model name' ? 'off-list-model' : 'custom-effort';
-        },
-        warn: (message) => warnings.push(message),
-      });
-      assert.equal(outcome, true);
-      assert.equal(f.writes.length, 4);
-      assert.ok(f.writes.every((write) => write.scope === scope));
-      const codex = f.state().stages.find((s) => s.id === 'implementation' && s.provider === 'codex');
-      assert.equal(codex?.model, null);
-      assert.equal(codex?.thinkingLevel, null);
-      if (scope === 'workspace') {
-        assert.equal(codex?.inheritedModel, 'user-shared');
-        assert.equal(f.settings.agentCliStageModels.workspaceValue, undefined);
-        assert.deepEqual(f.settings.agentCliStageModels.globalValue, { implementation: 'user-shared' });
-      } else {
-        assert.deepEqual(f.settings.agentCliStageModels.globalValue, { implementation: { copilot: 'user-shared', 'claude-code': 'user-shared', cursor: 'user-shared' } });
-      }
-      assert.deepEqual(warnings, []);
-    }
-  });
-
-  test('quick-pick cancellation and invalid free-form names do not write settings', async () => {
-    const f = fixture();
-    await f.handle({ type: 'settingsReady' });
-    let asked = false;
-    const warnings: string[] = [];
-    assert.equal(await manageAgentCliStage('triage', 'codex', {
-      title: 'test', readState: f.state, handle: f.handle,
-      pick: async (items) => { if (asked) { return undefined; } asked = true; return items[0]; },
-      enterName: async () => 'bad\u0000name', warn: (message) => warnings.push(message),
-    }), false);
-    assert.equal(f.writes.length, 0);
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0] ?? '', /control characters/);
   });
 
 });

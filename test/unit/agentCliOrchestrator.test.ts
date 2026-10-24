@@ -17,7 +17,12 @@ import {
   type AgentCliOrchestratorDeps,
   type AgentCliUsageOrchestrator,
 } from '../../src/agentCliOrchestrator';
-import { unknownUsage, type AgentCliUsageSnapshot } from '../../src/agentCliUsage';
+import {
+  unknownUsage,
+  type AgentCliUsageSnapshot,
+  type CursorPoolReading,
+} from '../../src/agentCliUsage';
+import { AGENT_CLI_PROVIDER_IDS } from '../../src/agentCliProviders';
 import { runCardWithAgentCli, type RunCardWithAgentCliDeps } from '../../src/runWithAi';
 import {
   addCard,
@@ -86,7 +91,9 @@ function orchestratorWith(
       log.maxActive = Math.max(log.maxActive, log.active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       log.active -= 1;
-      const scripted = snapshots[probed.provider];
+      // cursor-other shares Cursor's dual-pool snapshot with cursor.
+      const scripted = snapshots[probed.provider]
+        ?? (probed.provider === 'cursor-other' ? snapshots.cursor : undefined);
       if (scripted === 'throw') {
         throw new Error('probe crashed');
       }
@@ -95,9 +102,27 @@ function orchestratorWith(
   });
 }
 
-async function chosenProvider(orchestrator: AgentCliUsageOrchestrator): Promise<string> {
-  const decision = await orchestrator.choose();
+async function chosenProvider(
+  orchestrator: AgentCliUsageOrchestrator,
+  context?: Parameters<AgentCliUsageOrchestrator['choose']>[0],
+): Promise<string> {
+  const decision = await orchestrator.choose(context);
   return decision.kind === 'chosen' ? decision.target.provider : 'none';
+}
+
+function cursorPools(
+  auto: CursorPoolReading,
+  otherModels: CursorPoolReading,
+): AgentCliUsageSnapshot {
+  return { kind: 'cursor-pools', provider: 'cursor', auto, otherModels };
+}
+
+function reportedPool(remainingPercent: number, resetsAt?: number): CursorPoolReading {
+  return {
+    status: 'reported',
+    remainingPercent,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  };
 }
 
 suite('Usage Orchestrator choice', () => {
@@ -158,7 +183,7 @@ suite('Usage Orchestrator choice', () => {
     assert.equal(decision.kind === 'chosen' ? decision.chosen.snapshot.kind : undefined, 'unknown');
     assert.deepEqual(
       decision.ranking.skipped.map((entry) => entry.provider),
-      ['copilot', 'claude-code', 'cursor'],
+      ['copilot', 'claude-code', 'cursor', 'cursor-other'],
     );
   });
 
@@ -195,6 +220,95 @@ suite('Usage Orchestrator choice', () => {
     assert.match(drained, /usage is unknown/);
     assert.match(drained, /drained until it stops accepting work/);
     assert.doesNotMatch(drained, /^STATUS:/m);
+  });
+
+  test('a full Auto pool does not block a Cursor Agent CLI Other dispatch', async () => {
+    const clock: Clock = { now: START };
+    const resetsAt = START + 5 * HOUR;
+    const orchestrator = orchestratorWith(
+      ['cursor', 'cursor-other'],
+      {
+        cursor: cursorPools(
+          reportedPool(0, resetsAt),
+          reportedPool(55, resetsAt),
+        ),
+      },
+      clock,
+    );
+
+    const decision = await orchestrator.choose();
+    assert.equal(decision.kind, 'chosen');
+    assert.equal(decision.kind === 'chosen' ? decision.target.provider : undefined, 'cursor-other');
+    assert.deepEqual(
+      decision.kind === 'chosen' ? decision.chosen.snapshot : undefined,
+      { kind: 'reported', provider: 'cursor-other', remainingPercent: 55, resetsAt },
+    );
+  });
+
+  test('a full Other Models pool does not block a Cursor Agent CLI dispatch', async () => {
+    const clock: Clock = { now: START };
+    const resetsAt = START + 5 * HOUR;
+    const orchestrator = orchestratorWith(
+      ['cursor', 'cursor-other'],
+      {
+        cursor: cursorPools(
+          reportedPool(40, resetsAt),
+          reportedPool(0, resetsAt),
+        ),
+      },
+      clock,
+    );
+
+    const decision = await orchestrator.choose();
+    assert.equal(decision.kind, 'chosen');
+    assert.equal(decision.kind === 'chosen' ? decision.target.provider : undefined, 'cursor');
+    assert.deepEqual(
+      decision.kind === 'chosen' ? decision.chosen.snapshot : undefined,
+      { kind: 'reported', provider: 'cursor', remainingPercent: 40, resetsAt },
+    );
+  });
+
+  test('Cursor Agent CLI Other is a selectable CLI id', () => {
+    assert.deepEqual(
+      [...AGENT_CLI_PROVIDER_IDS],
+      ['copilot', 'codex', 'claude-code', 'cursor', 'cursor-other'],
+    );
+    assert.ok(AGENT_CLI_PROVIDER_IDS.includes('cursor-other'));
+  });
+
+  test('marking Cursor Agent CLI exhausted leaves Cursor Agent CLI Other eligible', async () => {
+    const clock: Clock = { now: START };
+    const resetsAt = START + 5 * HOUR;
+    const orchestrator = orchestratorWith(
+      ['cursor', 'cursor-other'],
+      {
+        cursor: cursorPools(
+          reportedPool(0, resetsAt),
+          reportedPool(70, resetsAt),
+        ),
+      },
+      clock,
+    );
+
+    assert.equal(await chosenProvider(orchestrator), 'cursor-other');
+    orchestrator.markExhausted('cursor');
+    assert.equal(await chosenProvider(orchestrator), 'cursor-other');
+    orchestrator.markExhausted('cursor-other');
+    assert.equal(await chosenProvider(orchestrator), 'none');
+  });
+
+  test('excluding cursor-other does not exclude cursor', async () => {
+    const clock: Clock = { now: START };
+    const resetsAt = START + 5 * HOUR;
+    const orchestrator = createAgentCliUsageOrchestrator({
+      configuredPaths: {},
+      cwd: 'E:\\workspace',
+      now: () => clock.now,
+      excludedProviders: ['cursor-other'],
+      resolveTarget: resolverFor(['cursor', 'cursor-other']),
+      probe: async () => cursorPools(reportedPool(80, resetsAt), reportedPool(80, resetsAt)),
+    });
+    assert.equal(await chosenProvider(orchestrator), 'cursor');
   });
 
   test('never resolves, probes, or chooses a CLI excluded by setting', async () => {

@@ -16,7 +16,7 @@ const SUCCESS: AgentCliModelDiscoveryProcessEnd = {
 };
 
 function discovery(
-  provider: 'copilot' | 'codex' | 'claude-code' | 'cursor',
+  provider: 'copilot' | 'codex' | 'claude-code' | 'cursor' | 'cursor-other',
   overrides: Partial<Parameters<typeof createAgentCliModelDiscovery>[1]> = {},
 ): { readonly signal: AbortController; readonly seen: AgentCliActualModelEvidence[]; readonly session: ReturnType<typeof createAgentCliModelDiscovery> } {
   const signal = new AbortController();

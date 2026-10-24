@@ -721,7 +721,7 @@ body {
 .card-modal {
   width: min(720px, 100%);
   max-height: calc(100vh - 32px);
-  overflow: auto;
+  overflow: hidden;
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border, transparent));
   border-radius: 12px;
@@ -800,10 +800,13 @@ body {
 }
 
 .card-modal-header {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  /* Opaque so scrolled form content cannot show through the pinned header. */
+  background: var(--vscode-editorWidget-background);
 }
 
 .card-modal-title-block {
@@ -888,6 +891,9 @@ body {
 }
 
 .card-modal-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1056,9 +1062,13 @@ body {
 }
 
 .card-modal-footer {
+  flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  /* Opaque so scrolled form content cannot show through the pinned footer. */
+  background: var(--vscode-editorWidget-background);
 }
 
 .card-modal-spacer {

@@ -68,25 +68,98 @@ export async function resolveClipboardHandoffResult(
   }
   const confirmed = await confirmPrompt();
   if (confirmed === false) {
-    reportFailure('the complete prompt was reported missing from the new-chat composer; inspect the draft before retrying');
+    reportFailure('the complete prompt was reported missing from the new-chat composer; it is still on your clipboard to paste manually');
   }
   return confirmed === true;
 }
 
 export type ChatHandoffAttempt<T> = { readonly started: true; readonly value: T } | { readonly started: false };
 
-export interface ChatHandoffInFlight {
-  run<T>(key: string, action: () => Promise<T>): Promise<ChatHandoffAttempt<T>>;
+/** What kind of hand-off holds a card's lock; only interviews can be restarted. */
+export type ChatHandoffKind = 'interview' | 'other';
+
+/** Handed to a lock holder so it can tell when a restart has abandoned it. */
+export interface ChatHandoffLease {
+  /** Aborted when a restart supersedes this attempt; it must then stop writing and messaging. */
+  readonly signal: AbortSignal;
 }
 
-/** Different cards still share one focused chat view and one system clipboard. */
-export function createChatHandoffQueue(): { run<T>(action: () => Promise<T>): Promise<T> } {
-  let tail: Promise<unknown> = Promise.resolve();
+export interface ChatHandoffRunOptions {
+  /** Defaults to 'other'. */
+  readonly kind?: ChatHandoffKind;
+}
+
+export interface ChatHandoffInFlight {
+  run<T>(
+    key: string,
+    action: (lease: ChatHandoffLease) => Promise<T>,
+    options?: ChatHandoffRunOptions,
+  ): Promise<ChatHandoffAttempt<T>>;
+  /** Kind of the hand-off currently holding the key's lock, or undefined when it is free. */
+  holder(key: string): ChatHandoffKind | undefined;
+  /**
+   * Abandons the current holder, if any, and runs the action under a fresh
+   * lock generation. The abandoned attempt keeps running but its lease is
+   * aborted, and its late release leaves the new lock held.
+   */
+  restart<T>(
+    key: string,
+    action: (lease: ChatHandoffLease) => Promise<T>,
+    options?: ChatHandoffRunOptions,
+  ): Promise<ChatHandoffAttempt<T>>;
+}
+
+/** Thrown to a queued delivery whose attempt was abandoned before it started. */
+export class ChatHandoffAbandonedError extends Error {
+  constructor() {
+    super('The hand-off was abandoned by a restart.');
+    this.name = 'ChatHandoffAbandonedError';
+  }
+}
+
+interface QueueEntry {
+  /** Resolves when the entry finishes or is abandoned, so successors stop waiting for it. */
+  readonly done: Promise<void>;
+  readonly release: () => void;
+}
+
+/**
+ * Different cards still share one focused chat view and one system clipboard.
+ * A delivery given an aborted-able signal is dropped from the queue's order
+ * when that signal aborts, so a restart never waits behind a stuck delivery.
+ */
+export function createChatHandoffQueue(): {
+  run<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T>;
+} {
+  const entries = new Set<QueueEntry>();
   return {
-    run<T>(action: () => Promise<T>): Promise<T> {
-      const result = tail.then(action);
-      tail = result.catch(() => undefined);
-      return result;
+    async run<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+      let release!: () => void;
+      const done = new Promise<void>((resolve) => { release = resolve; });
+      const entry: QueueEntry = { done, release };
+      const waitFor = [...entries].map((earlier) => earlier.done);
+      entries.add(entry);
+      const aborted = new Promise<void>((resolve) => {
+        const onAbort = (): void => {
+          release();
+          resolve();
+        };
+        if (signal?.aborted) {
+          onAbort();
+        } else {
+          signal?.addEventListener('abort', onAbort, { once: true });
+        }
+      });
+      try {
+        await Promise.race([Promise.all(waitFor), aborted]);
+        if (signal?.aborted) {
+          throw new ChatHandoffAbandonedError();
+        }
+        return await action();
+      } finally {
+        entries.delete(entry);
+        release();
+      }
     },
   };
 }
@@ -103,20 +176,52 @@ export const CHAT_PROVIDER_LABELS: Record<ChatProviderId, string> = {
  * or two activity entries.
  */
 export function createChatHandoffInFlight(): ChatHandoffInFlight {
-  const pending = new Set<string>();
+  interface Holder {
+    readonly kind: ChatHandoffKind;
+    readonly controller: AbortController;
+  }
+  const pending = new Map<string, Holder>();
+
+  const execute = async <T>(
+    key: string,
+    action: (lease: ChatHandoffLease) => Promise<T>,
+    options: ChatHandoffRunOptions | undefined,
+  ): Promise<ChatHandoffAttempt<T>> => {
+    const holder: Holder = { kind: options?.kind ?? 'other', controller: new AbortController() };
+    pending.set(key, holder);
+    try {
+      return { started: true, value: await action({ signal: holder.controller.signal }) };
+    } finally {
+      // A restarted key belongs to a newer holder; only free our own claim.
+      if (pending.get(key) === holder) {
+        pending.delete(key);
+      }
+    }
+  };
 
   return {
-    async run<T>(key: string, action: () => Promise<T>): Promise<ChatHandoffAttempt<T>> {
+    async run<T>(
+      key: string,
+      action: (lease: ChatHandoffLease) => Promise<T>,
+      options?: ChatHandoffRunOptions,
+    ): Promise<ChatHandoffAttempt<T>> {
       if (pending.has(key)) {
         return { started: false };
       }
+      return execute(key, action, options);
+    },
 
-      pending.add(key);
-      try {
-        return { started: true, value: await action() };
-      } finally {
-        pending.delete(key);
-      }
+    holder(key: string): ChatHandoffKind | undefined {
+      return pending.get(key)?.kind;
+    },
+
+    async restart<T>(
+      key: string,
+      action: (lease: ChatHandoffLease) => Promise<T>,
+      options?: ChatHandoffRunOptions,
+    ): Promise<ChatHandoffAttempt<T>> {
+      pending.get(key)?.controller.abort();
+      return execute(key, action, options);
     },
   };
 }
@@ -284,24 +389,59 @@ export async function deliverClipboardHandoff(
       // startup to finish before sending that request, rather than after it.
       await executor.wait(options.providerReadyDelayMs ?? 6_000);
     }
-    await executor.executeCommand(target.commandId);
-    await executor.wait(options.composerReadyDelayMs ?? (target.prepareCommandId ? 300 : 6_000));
-    try {
-      for (const chunk of chunks) {
-        await executor.writeClipboard(chunk);
-        await executor.executeCommand('editor.action.clipboardPasteAction');
-        // executeCommand acknowledges dispatch, not the renderer's clipboard
-        // read. Keep this chunk available before advancing or verifying it.
-        await executor.wait(options.pasteSettleDelayMs ?? 150);
-      }
-      return await verifyPastedPrompt(prompt, executor, options);
-    } finally {
-      // Verification uses Copy, so restore the full request for recovery too.
-      await executor.writeClipboard(prompt);
-    }
+    return await openComposerAndPaste(target, prompt, chunks, executor, options);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return { delivered: false, error: message || 'the Codex composer did not become ready' };
+  }
+}
+
+/**
+ * Recovery after the user reports the prompt missing from the new chat. Their
+ * report makes a replay safe: the provider is already revealed, so request one
+ * more fresh chat, paste once, and verify it the same way as the first attempt.
+ */
+export async function repasteClipboardHandoff(
+  target: ChatHandoffTarget,
+  prompt: string,
+  executor: ClipboardHandoffExecutor,
+  options: ClipboardHandoffOptions = {},
+): Promise<ClipboardHandoffResult> {
+  if (prompt.trim().length === 0) {
+    return { delivered: false, error: 'the generated prompt was empty' };
+  }
+  try {
+    return await openComposerAndPaste(target, prompt, clipboardPromptChunks(prompt, target), executor, {
+      ...options,
+      composerReadyDelayMs: options.composerReadyDelayMs ?? 1_000,
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { delivered: false, error: message || 'the Codex composer did not become ready' };
+  }
+}
+
+async function openComposerAndPaste(
+  target: ChatHandoffTarget,
+  prompt: string,
+  chunks: readonly string[],
+  executor: ClipboardHandoffExecutor,
+  options: ClipboardHandoffOptions,
+): Promise<ClipboardHandoffResult> {
+  await executor.executeCommand(target.commandId);
+  await executor.wait(options.composerReadyDelayMs ?? (target.prepareCommandId ? 300 : 6_000));
+  try {
+    for (const chunk of chunks) {
+      await executor.writeClipboard(chunk);
+      await executor.executeCommand('editor.action.clipboardPasteAction');
+      // executeCommand acknowledges dispatch, not the renderer's clipboard
+      // read. Keep this chunk available before advancing or verifying it.
+      await executor.wait(options.pasteSettleDelayMs ?? 150);
+    }
+    return await verifyPastedPrompt(prompt, executor, options);
+  } finally {
+    // Verification uses Copy, so restore the full request for recovery too.
+    await executor.writeClipboard(prompt);
   }
 }
 

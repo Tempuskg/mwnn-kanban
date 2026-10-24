@@ -1,6 +1,3 @@
-import { createAgentCliSettingsPanelController } from './agentCliSettingsPanelController';
-import type { AgentCliSettingsPanelState } from './types';
-import { manageAgentCliStage, stagePreferenceDescription } from './agentCliSettingsQuickPick';
 import { randomUUID } from 'node:crypto';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
@@ -25,6 +22,8 @@ import {
   formatCliRunExit,
   formatCliRunStart,
 } from './agentCliFeedback';
+import { createCursorStreamJsonRenderer } from './cursorStreamJson';
+import { isCursorAgentCliProvider } from './agentCliProviders';
 import {
   agentCliModelSuggestions,
   readAgentCliModelCatalog,
@@ -74,6 +73,7 @@ import {
   readAiLoopMaxDispatches,
   type AiLoopRunOutcome,
 } from './aiLoopBudget';
+import { readAiLoopUsageResetMaxWaitHours } from './aiLoopUsageWait';
 import {
   isAgentCliPreference,
   USAGE_ORCHESTRATOR_DETAIL,
@@ -98,9 +98,11 @@ import { cardPreferredModelFor, describeBlockedCardRelocation } from './utils';
 import {
   CHAT_PROVIDER_LABELS,
   activateChatHandoffProvider,
+  ChatHandoffAbandonedError,
   createChatHandoffInFlight,
   createChatHandoffQueue,
   deliverClipboardHandoff,
+  repasteClipboardHandoff,
   resolveClipboardHandoffResult,
   describeChatHandoffTarget,
   positionalHandoffArgs,
@@ -117,11 +119,17 @@ import {
   type RunCardWithAgentCliDeps,
   type RunWithAiProviderChoice,
 } from './runWithAi';
+import {
+  createModelRecoveryUiDeps,
+  promptAndApplyModelRecovery,
+} from './agentCliModelRecoveryUi';
 import { startCardInterview, type InterviewProviderPick } from './cardInterview';
 import {
   activateProFeatures,
   createBoardCapability,
   createBoardChangeEvent,
+  createCopilotUsageCapability,
+  COPILOT_USAGE_AUTH_SCOPES,
   hasProLicense,
   initializeProLicenseCommands,
   isProLicenseActive,
@@ -142,41 +150,24 @@ import {
 import { BoardPanel } from './boardPanel';
 import { CardCliRunRegistry } from './cardCliRuns';
 import {
-  BUNDLED_AGENT_CLI_MODELS,
-  BUNDLED_AGENT_CLI_THINKING_LEVELS,
   describeAgentCliDiscovery,
   discoverAgentCliVocabularies,
   planAgentCliPopulate,
   type AgentCliPopulateMode,
 } from './agentCliDiscovery';
-import {
-  addAgentCliSettingsEntry,
-  agentCliSettingsEntries,
-  agentCliSettingsEntryProblem,
-  clearAgentCliSettingsProvider,
-  makeAgentCliSettingsDefault,
-  removeAgentCliSettingsEntry,
-  summarizeAgentCliProvider,
-  type AgentCliSettingsEdit,
-  type AgentCliSettingsList,
-} from './agentCliSettingsEditor';
 import { BoardSidebarViewProvider } from './sidebarView';
 import { openProPortfolio } from './portfolioButton';
-import { createBoardStore, readBoardStateIfPresent, type FileSystemLike } from './boardStore';
+import { createBoardStore, readBoardStateIfPresent } from './boardStore';
 import {
   DEFAULT_SKILLS_INSTALL_LOCATION,
   parseSkillDocument,
-  planSkillInstallation,
-  planUserSkillInstallation,
-  referencePathsForEnv,
   resolveSkillsInstallLocation,
-  userCodexAgentsPath,
-  userReferencePathsForEnv,
   type AiEnvironment,
   type SkillsInstallLocation,
   type SkillSource,
   type UserSkillFolders,
 } from './skills';
+import { importPlanSkillReferencePaths, tryInstallImportPlanSkills, type UserFileIo } from './skillsInstall';
 import type { BoardState } from './types';
 import { createWorkspaceFileSystem } from './workspaceFileSystem';
 
@@ -276,6 +267,16 @@ function readAiLoopMaxDispatchesSetting(): number | undefined {
   );
 }
 
+/**
+ * The per-wait cap for waiting out a spent usage allowance, validated in
+ * `aiLoopUsageWait`. `0` keeps the stop-on-exhaustion behavior.
+ */
+function readAiLoopUsageResetMaxWaitHoursSetting(): number {
+  return readAiLoopUsageResetMaxWaitHours(
+    vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('aiLoopUsageResetMaxWaitHours', 6),
+  );
+}
+
 function readAiLoopCliFallback(): AgentCliFallbackSettings {
   const config = vscode.workspace.getConfiguration('mwnn-kanban');
   return {
@@ -312,6 +313,12 @@ function readUsageOrchestratorExcludedClis(): AgentCliProviderId[] {
     .getConfiguration('mwnn-kanban')
     .get<unknown>('usageOrchestratorExcludedClis', []);
   return Array.isArray(value) ? value.filter(isAgentCliProviderId) : [];
+}
+
+function readUsageOrchestratorBehindPaceOnly(): boolean {
+  return vscode.workspace
+    .getConfiguration('mwnn-kanban')
+    .get<boolean>('usageOrchestratorBehindPaceOnly', true) === true;
 }
 
 /**
@@ -533,6 +540,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     providerLabel: string,
     reportProgress: (message: string) => void,
     stoppable = false,
+    provider?: AgentCliProviderId,
   ): AgentCliProcessObserver => {
     let processRunning = false;
     // One observer serves one CLI process attempt, so each gets its own
@@ -544,6 +552,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       stoppable,
       post: (status) => BoardPanel.postCliRunStatusIfOpen(status),
     });
+    // Cursor stream-json → readable lines; other providers keep raw stdout.
     const feed = createCliOutputFeed({
       onLine: (line, stream) =>
         cliOutputChannel.info(stream === 'stderr' ? `[stderr] ${line}` : line),
@@ -554,6 +563,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         reportProgress(line);
         tracker.statusLine(line);
       },
+      ...(provider !== undefined && isCursorAgentCliProvider(provider)
+        ? { stdoutRenderer: createCursorStreamJsonRenderer() }
+        : {}),
     });
     return {
       onModel: (status) => tracker.setModel(status),
@@ -610,7 +622,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     runWithProgress: runAgentCliWithStatusBarProgress,
     createProcessObserver: (runContext, reportProgress) =>
       // Single-card runs register in `activeCardCliRuns`, so the board can offer a per-card Stop.
-      createCliRunObserver(runContext.card, runContext.kind, runContext.providerLabel, reportProgress, true),
+      createCliRunObserver(
+        runContext.card,
+        runContext.kind,
+        runContext.providerLabel,
+        reportProgress,
+        true,
+        runContext.provider,
+      ),
     showInformation: showCliInformation,
     showWarning: showCliWarning,
     refreshBoard: () => BoardPanel.postStateIfOpen(),
@@ -625,6 +644,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         cliOutputChannel.info(line);
       }
     },
+    // Model-not-found on Define/Run with AI: pick a working model/thinking
+    // level, save at workspace or user scope, then re-dispatch the same run.
+    recoverFromModelRejection: (recoveryRequest) =>
+      promptAndApplyModelRecovery(recoveryRequest, createModelRecoveryUiDeps()),
+    refreshModelSettings: () => ({
+      modelCatalog: readAgentCliModels(),
+      stageModels: readAgentCliStageModelRules(),
+      thinkingLevels: readAgentCliThinkingLevelDefaults(),
+      stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
+    }),
   });
 
   const runCardWithAISelection = async (cardId?: string): Promise<void> => {
@@ -694,7 +723,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     await startCardInterview(cardId, {
       reloadState: () => store.reload(),
-      runExclusive: (key, action) => inFlightCardHandoffs.run(key, action),
+      runExclusive: (key, action) => inFlightCardHandoffs.run(key, action, { kind: 'interview' }),
+      restartExclusive: (key, action) => inFlightCardHandoffs.restart(key, action, { kind: 'interview' }),
+      isInterviewInFlight: (key) => inFlightCardHandoffs.holder(key) === 'interview',
+      confirmRestart: async () => {
+        const restart = 'Restart interview';
+        const answer = await vscode.window.showWarningMessage(
+          'An interview for this card is already starting, and it may be stuck. Restart it to abandon the earlier attempt and begin again, or wait for it to finish.',
+          restart,
+          'Wait',
+        );
+        return answer === restart;
+      },
       pickProvider: pickInterviewChatProvider,
       handOff: handOffPromptToChat,
       appendActivity: (id, entry) => store.appendActivity(id, entry),
@@ -894,26 +934,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const providerEnv = PROVIDER_ENVIRONMENTS[target.provider];
     const installLocation = readSkillsInstallLocation();
     const userFolders = userSkillFolders();
-    const skillPaths =
-      installLocation === 'user'
-        ? userReferencePathsForEnv(providerEnv, SKILL_SLUGS, userFolders)
-        : referencePathsForEnv(providerEnv, SKILL_SLUGS);
-    try {
-      if (installLocation === 'user') {
-        const skippedEnvs = await ensureUserSkillsInstalled(context.extensionUri, workspaceFs, providerEnv, userFolders);
-        if (skippedEnvs.includes('cursor')) {
-          void vscode.window.showInformationMessage(
-            'Cursor has no file-based user rules, so the MWNN skills were not installed for Cursor.',
-          );
-        }
-      } else {
-        await ensureSkillsInstalled(context.extensionUri, workspaceFs, providerEnv);
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const where = installLocation === 'user' ? 'your user folder' : 'this workspace';
-      void vscode.window.showWarningMessage(
-        `Could not install the MWNN skills into ${where}: ${message}. Continuing — the prompt is self-contained.`,
+    const skillPaths = importPlanSkillReferencePaths(installLocation, providerEnv, SKILL_SLUGS, userFolders);
+    const install = await tryInstallImportPlanSkills({
+      location: installLocation,
+      loadSkills: () => loadBundledSkills(context.extensionUri),
+      workspaceFs,
+      providerEnv,
+      userFolders,
+      userFs: userSkillFileIo,
+      slugs: SKILL_SLUGS,
+    });
+    if (install.warning !== undefined) {
+      void vscode.window.showWarningMessage(install.warning);
+    }
+    if (install.skippedEnvs.includes('cursor')) {
+      void vscode.window.showInformationMessage(
+        'Cursor has no file-based user rules, so the MWNN skills were not installed for Cursor.',
       );
     }
 
@@ -1124,6 +1160,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               orchestrator: createAgentCliUsageOrchestrator({
                 configuredPaths: readAgentCliPaths(),
                 excludedProviders: readUsageOrchestratorExcludedClis(),
+                // AI loop only — Run Card with AI leaves this off.
+                behindPaceOnly: readUsageOrchestratorBehindPaceOnly(),
                 cwd: workspaceRoot.fsPath,
                 signal: loop.abortController.signal,
               }),
@@ -1142,6 +1180,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         thinkingLevels: readAgentCliThinkingLevelDefaults(),
         stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
         escalation: readAiLoopModelEscalation(),
+        usageResetWait: { maxWaitHours: readAiLoopUsageResetMaxWaitHoursSetting() },
         cwd: workspaceRoot.fsPath,
         store,
         signal: loop.abortController.signal,
@@ -1192,6 +1231,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             request.kind,
             target.label,
             (message) => reportLoopProgress(message),
+            false,
+            target.provider,
           );
           return {
             ...observer,
@@ -1349,11 +1390,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         modelCatalog: readAgentCliModels(), stageModels: readAgentCliStageModelRules(),
         thinkingLevels: readAgentCliThinkingLevelDefaults(), stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
         escalation: readAiLoopModelEscalation(),
-        ...(pick.orchestrated ? { orchestrator: createAgentCliUsageOrchestrator({ configuredPaths: readAgentCliPaths(), excludedProviders: readUsageOrchestratorExcludedClis(), cwd: workspaceRoot.fsPath }), onRanking: (lines: readonly string[]) => { for (const line of lines) { cliOutputChannel.info(line); } } } : {}),
+        usageResetWait: { maxWaitHours: readAiLoopUsageResetMaxWaitHoursSetting() },
+        ...(pick.orchestrated ? {
+          orchestrator: createAgentCliUsageOrchestrator({
+            configuredPaths: readAgentCliPaths(),
+            excludedProviders: readUsageOrchestratorExcludedClis(),
+            behindPaceOnly: readUsageOrchestratorBehindPaceOnly(),
+            cwd: workspaceRoot.fsPath,
+          }),
+          onRanking: (lines: readonly string[]) => {
+            for (const line of lines) {
+              cliOutputChannel.info(line);
+            }
+          },
+        } : {}),
         onProgress: (message: string) => cliOutputChannel.info(message),
         onSwitch: (record) => showCliInformation(record.from.label + ' ran out of credits. Continuing with ' + record.to.label + '.'),
         onEscalate: (record) => showCliInformation('Retrying ' + record.kind + ' on model ' + record.to + '.'),
-        createObserver: (target, request) => createCliRunObserver(request.card, request.kind, target.label, () => undefined),
+        createObserver: (target, request) =>
+          createCliRunObserver(
+            request.card,
+            request.kind,
+            target.label,
+            () => undefined,
+            false,
+            target.provider,
+          ),
       };
     },
     openStore: async (project) => {
@@ -1590,9 +1652,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('mwnn-kanban.populateAgentCliModels', async () => {
       await populateAgentCliModels();
     }),
-    vscode.commands.registerCommand('mwnn-kanban.manageAgentCliModels', async () => {
-      await manageAgentCliModels();
-    }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', async () => {
       const choice = await vscode.window.showWarningMessage(
         'Reset the board? All cards will be removed.',
@@ -1613,7 +1672,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showUpgradePrompt,
     log: (message) => cliOutputChannel.appendLine(`[pro] ${message}`),
     registerDisposable: (disposable) => context.subscriptions.push(disposable),
-    capabilities: { board: boardCapability, portfolioAiLoop },
+    capabilities: {
+      board: boardCapability,
+      portfolioAiLoop,
+      copilotUsage: createCopilotUsageCapability({
+        getSession: async () => vscode.authentication.getSession(
+          'github',
+          COPILOT_USAGE_AUTH_SCOPES,
+          { createIfNone: true },
+        ),
+        request: (url, init) => globalThis.fetch(url, init),
+      }),
+    },
   });
 }
 
@@ -1633,103 +1703,17 @@ async function loadBundledSkills(extensionUri: vscode.Uri): Promise<SkillSource[
   return skills;
 }
 
-/** Detect which AI tools a workspace uses, from their marker files/folders. */
-async function detectAiEnvironments(fs: FileSystemLike): Promise<Set<AiEnvironment>> {
-  const found = new Set<AiEnvironment>();
-  if (await fs.exists('.github')) {
-    found.add('copilot');
-  }
-  if ((await fs.exists('AGENTS.md')) || (await fs.exists('.codex'))) {
-    found.add('codex');
-  }
-  if ((await fs.exists('.claude')) || (await fs.exists('CLAUDE.md'))) {
-    found.add('claude-code');
-  }
-  if ((await fs.exists('.cursor')) || (await fs.exists('.cursorrules'))) {
-    found.add('cursor');
-  }
-  return found;
-}
-
-/**
- * Install the bundled skills into each detected AI environment, plus the
- * detected provider we are about to hand off to. Skips files whose content is
- * unchanged so re-imports don't churn. Returns the paths written this run.
- */
-async function ensureSkillsInstalled(
-  extensionUri: vscode.Uri,
-  fs: FileSystemLike,
-  providerEnv: AiEnvironment,
-): Promise<string[]> {
-  const skills = await loadBundledSkills(extensionUri);
-
-  const environments = await detectAiEnvironments(fs);
-  environments.add(providerEnv);
-
-  const existingAgentsMd = environments.has('codex') && (await fs.exists('AGENTS.md'))
-    ? await fs.readFile('AGENTS.md')
-    : undefined;
-
-  const plan = planSkillInstallation(skills, [...environments], existingAgentsMd);
-  const written: string[] = [];
-  for (const write of plan.writes) {
-    const separator = write.path.lastIndexOf('/');
-    if (separator !== -1) {
-      await fs.createDirectory(write.path.slice(0, separator));
-    }
-
-    if (await fs.exists(write.path)) {
-      const current = await fs.readFile(write.path);
-      if (current === write.content) {
-        continue;
-      }
-    }
-
-    await fs.writeFile(write.path, write.content);
-    written.push(write.path);
-  }
-  return written;
-}
-
 /** The user-level folders the skills install into in `user` mode. */
 function userSkillFolders(): UserSkillFolders {
   const codexHome = process.env['CODEX_HOME']?.trim();
   return codexHome ? { home: os.homedir(), codexHome } : { home: os.homedir() };
 }
 
-/**
- * Install the bundled skills into each environment's user-level folder instead
- * of the workspace. Environments are chosen as for the workspace install, but
- * nothing under the workspace is created, changed, or removed. Skips files
- * whose content is unchanged. Returns the environments that have no user-level
- * location and were therefore skipped.
- */
-async function ensureUserSkillsInstalled(
-  extensionUri: vscode.Uri,
-  fs: FileSystemLike,
-  providerEnv: AiEnvironment,
-  folders: UserSkillFolders,
-): Promise<readonly AiEnvironment[]> {
-  const skills = await loadBundledSkills(extensionUri);
-
-  const environments = await detectAiEnvironments(fs);
-  environments.add(providerEnv);
-
-  const existingCodexAgentsMd = environments.has('codex')
-    ? await readUserFileIfPresent(vscode.Uri.file(userCodexAgentsPath(folders)))
-    : undefined;
-
-  const plan = planUserSkillInstallation(skills, [...environments], folders, existingCodexAgentsMd);
-  const encoder = new TextEncoder();
-  for (const write of plan.writes) {
-    const uri = vscode.Uri.file(write.path);
-    if ((await readUserFileIfPresent(uri)) === write.content) {
-      continue;
-    }
-    await writeUserFileAtomically(write.path, encoder.encode(write.content));
-  }
-  return plan.skippedEnvs;
-}
+/** Backs user-level skill installation with `vscode.workspace.fs`. */
+const userSkillFileIo: UserFileIo = {
+  read: (filePath) => readUserFileIfPresent(vscode.Uri.file(filePath)),
+  write: (filePath, content) => writeUserFileAtomically(filePath, new TextEncoder().encode(content)),
+};
 
 /**
  * Replace a user-owned file without ever leaving it truncated: write a sibling
@@ -1826,9 +1810,6 @@ function registerUnavailableCommands(context: vscode.ExtensionContext): void {
     // and simply offers only the user scope.
     vscode.commands.registerCommand('mwnn-kanban.populateAgentCliModels', async () => {
       await populateAgentCliModels();
-    }),
-    vscode.commands.registerCommand('mwnn-kanban.manageAgentCliModels', async () => {
-      await manageAgentCliModels();
     }),
     vscode.commands.registerCommand('mwnn-kanban.resetBoard', showWorkspaceMessage),
   );
@@ -2322,25 +2303,50 @@ function stopCardCliRun(cardId: string): void {
  */
 const chatPromptDeliveries = createChatHandoffQueue();
 
-function handOffPromptToChat(
+async function handOffPromptToChat(
   target: ChatHandoffTarget,
   prompt: string,
   subject: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
-  return chatPromptDeliveries.run(() => deliverPromptToChat(target, prompt, subject));
+  try {
+    return await chatPromptDeliveries.run(() => deliverPromptToChat(target, prompt, subject, signal), signal);
+  } catch (error: unknown) {
+    // A restart abandoned this delivery before it started: say nothing.
+    if (error instanceof ChatHandoffAbandonedError) {
+      return false;
+    }
+    throw error;
+  }
 }
 
+/**
+ * `signal` aborts when a restart abandons this delivery. It may still be stuck
+ * on a notification or a provider command, so every message and every
+ * follow-up command after such a step is skipped once the signal has aborted.
+ */
 async function deliverPromptToChat(
   target: ChatHandoffTarget,
   prompt: string,
   subject: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
+  const showInformationMessage = (message: string): void => {
+    if (!signal?.aborted) {
+      void vscode.window.showInformationMessage(message);
+    }
+  };
+  const showWarningMessage = (message: string): void => {
+    if (!signal?.aborted) {
+      void vscode.window.showWarningMessage(message);
+    }
+  };
   try {
     if (target.promptDelivery === 'query') {
       // Copilot: the prompt rides in as a { query } argument.
       await vscode.commands.executeCommand(target.commandId, { query: prompt });
-      void vscode.window.showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
+      showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
       return true;
     }
 
@@ -2348,32 +2354,51 @@ async function deliverPromptToChat(
       // Claude Code: no session id, so a fresh conversation opens pre-filled
       // with the prompt; editor.open also honors the preferred (sidebar) location.
       await vscode.commands.executeCommand(target.commandId, ...positionalHandoffArgs(target, prompt));
-      void vscode.window.showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
+      showInformationMessage(`Handed ${subject} to ${providerLabel}.`);
       return true;
     }
 
     if (shouldAutoPasteChatHandoff(target)) {
-      const result = await deliverClipboardHandoff(target, prompt, {
-        writeClipboard: (value) => vscode.env.clipboard.writeText(value),
+      const executor = {
+        writeClipboard: (value: string) => vscode.env.clipboard.writeText(value),
         readClipboard: () => vscode.env.clipboard.readText(),
         activateProvider: () => activateChatProvider(target),
-        executeCommand: (commandId) => vscode.commands.executeCommand(commandId),
+        executeCommand: (commandId: string) => vscode.commands.executeCommand(commandId),
         wait: waitForMilliseconds,
-      });
+      };
+      const result = await deliverClipboardHandoff(target, prompt, executor);
       const delivered = await resolveClipboardHandoffResult(result, async () => {
         const answer = await vscode.window.showInformationMessage(
           `Check the new ${providerLabel} chat for ${subject}. Automatic verification was unavailable. Confirm only if the complete prompt is present; no handoff has been recorded yet.`,
           'Prompt is present',
           'Prompt is missing',
         );
-        return answer === 'Prompt is present' ? true : answer === 'Prompt is missing' ? false : undefined;
+        if (signal?.aborted) {
+          return undefined;
+        }
+        if (answer !== 'Prompt is missing') {
+          return answer === 'Prompt is present' ? true : undefined;
+        }
+        // The user saw an empty composer, so pasting again cannot duplicate it.
+        const retry = await repasteClipboardHandoff(target, prompt, executor);
+        if (retry.delivered) {
+          return !signal?.aborted;
+        }
+        if (signal?.aborted) {
+          return false;
+        }
+        const manual = await vscode.window.showWarningMessage(
+          `The prompt for ${subject} is on your clipboard. Click into the ${providerLabel} message box, paste it (Ctrl+V / Cmd+V), then confirm to record the handoff.`,
+          'Prompt is pasted',
+        );
+        return manual === 'Prompt is pasted' && !signal?.aborted;
       }, (reason) => {
-        void vscode.window.showWarningMessage(formatChatHandoffFailure(providerLabel, subject, reason));
+        showWarningMessage(formatChatHandoffFailure(providerLabel, subject, reason));
       });
       if (!delivered) {
         return false;
       }
-      void vscode.window.showInformationMessage(
+      showInformationMessage(
         `Opened a new ${providerLabel} thread for ${subject}. The complete prompt was pasted automatically and is still on your clipboard.`,
       );
       return true;
@@ -2383,13 +2408,13 @@ async function deliverPromptToChat(
     await vscode.env.clipboard.writeText(prompt);
     await activateChatProvider(target);
     await vscode.commands.executeCommand(target.commandId);
-    void vscode.window.showInformationMessage(
+    showInformationMessage(
       `Opened ${providerLabel} for ${subject}. The prompt is on your clipboard — paste it to start.`,
     );
     return true;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showWarningMessage(formatChatHandoffFailure(providerLabel, subject, message));
+    showWarningMessage(formatChatHandoffFailure(providerLabel, subject, message));
     return false;
   }
 }
@@ -2541,352 +2566,4 @@ async function populateAgentCliModels(): Promise<void> {
   void vscode.window.showInformationMessage(
     `MWNN Kanban: updated agent CLI models and thinking levels in ${scope.label.toLowerCase()} settings (${fromCli} of ${discoveries.length} CLIs listed their own).`,
   );
-}
-
-const MANAGE_AGENT_CLI_TITLE = 'Manage Agent CLI Models and Thinking Levels';
-
-type ManageOverviewItem = vscode.QuickPickItem & {
-  readonly action?: { readonly kind: 'provider'; readonly provider: AgentCliProviderId }
-    | { readonly kind: 'stage'; readonly stage: AgentCliHandoffKind; readonly provider: AgentCliProviderId }
-    | { readonly kind: 'settings' };
-};
-
-type ManageProviderItem = vscode.QuickPickItem & {
-  readonly action?:
-    | 'addModel'
-    | 'defaultModel'
-    | 'removeModel'
-    | 'setLevel'
-    | 'addLevel'
-    | 'removeLevel'
-    | 'clearLevel'
-    | 'back';
-};
-
-/**
- * List and edit `agentCliModels` and `agentCliThinkingLevels` for one settings
- * scope with quick picks, so nobody has to hand-edit settings.json. The editing
- * rules live in `agentCliSettingsEditor`; this only asks and writes. Each edit
- * is written at once, and only to the chosen scope's own value (read through
- * `inspect()`), so a value from the other scope is never copied in. The
- * configuration listener re-pushes an open board's state after each write, so
- * its model and effort pickers update. Escape at any step writes nothing more.
- */
-async function manageAgentCliModels(): Promise<void> {
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  const scopes: (vscode.QuickPickItem & { target: vscode.ConfigurationTarget })[] = [
-    ...(workspaceFolder
-      ? [{
-          label: 'Workspace',
-          description: 'Only this workspace',
-          target: vscode.ConfigurationTarget.Workspace,
-        }]
-      : []),
-    { label: 'User', description: 'Every workspace', target: vscode.ConfigurationTarget.Global },
-  ];
-  const scope = await vscode.window.showQuickPick(scopes, {
-    title: MANAGE_AGENT_CLI_TITLE,
-    placeHolder: 'Which settings do you want to list and edit?',
-  });
-  if (!scope) {
-    return;
-  }
-  const scopeName = scope.label.toLowerCase();
-  const settingKey = (list: AgentCliSettingsList): string =>
-    list === 'models' ? 'agentCliModels' : 'agentCliThinkingLevels';
-  const readScoped = (list: AgentCliSettingsList): unknown => {
-    const inspected = vscode.workspace.getConfiguration('mwnn-kanban').inspect<unknown>(settingKey(list));
-    return scope.target === vscode.ConfigurationTarget.Workspace
-      ? inspected?.workspaceValue
-      : inspected?.globalValue;
-  };
-  const apply = async (list: AgentCliSettingsList, edit: AgentCliSettingsEdit): Promise<void> => {
-    if (!edit.ok) {
-      void vscode.window.showWarningMessage(`MWNN Kanban: ${edit.reason}`);
-      return;
-    }
-    try {
-      await vscode.workspace
-        .getConfiguration('mwnn-kanban')
-        .update(settingKey(list), edit.value, scope.target);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      void vscode.window.showErrorMessage(`MWNN Kanban: could not write the settings: ${message}`);
-      return;
-    }
-    vscode.window.setStatusBarMessage(`MWNN Kanban: updated ${scopeName} settings`, 3000);
-  };
-
-  let stageState: AgentCliSettingsPanelState | undefined;
-  const stageController = createAgentCliSettingsPanelController({
-    workspaceAvailable: () => (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
-    inspect: (key) => vscode.workspace.getConfiguration('mwnn-kanban', workspaceFolder?.uri).inspect<unknown>(key),
-    update: async (key, value, selectedScope) => {
-      await vscode.workspace.getConfiguration('mwnn-kanban', workspaceFolder?.uri).update(
-        key, value, selectedScope === 'workspace' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global,
-      );
-      vscode.window.setStatusBarMessage('MWNN Kanban: updated ' + selectedScope + ' settings', 3000);
-    },
-    post: (state) => { stageState = state; },
-    suggestions: AGENT_CLI_PROVIDER_IDS.map((id) => ({
-      id, label: AGENT_CLI_LABELS[id], suggestedModels: [], suggestedThinkingLevels: [], thinkingApplied: id !== 'cursor',
-    })),
-  });
-  await stageController.handle({ type: 'settingsScope', scope: scopeName });
-  const readStageState = (): AgentCliSettingsPanelState => {
-    stageController.refresh();
-    if (!stageState) {
-      throw new Error('Agent CLI settings state is unavailable.');
-    }
-    return stageState;
-  };
-
-  for (;;) {
-    const choice = await pickManageOverview(scopeName, readScoped, readStageState());
-    if (!choice) {
-      return;
-    }
-    if (choice.kind === 'settings') {
-      await vscode.commands.executeCommand('workbench.action.openSettings', 'mwnn-kanban.agentCli');
-      return;
-    }
-    const keepGoing = choice.kind === 'stage'
-      ? await manageAgentCliStage(choice.stage, choice.provider, {
-          title: MANAGE_AGENT_CLI_TITLE + ': ' + choice.stage + ' · ' + AGENT_CLI_LABELS[choice.provider],
-          readState: readStageState, handle: stageController.handle,
-          pick: (items, options) => vscode.window.showQuickPick(items, options),
-          enterName: (noun, suggestions) => pickOrEnterAgentCliName(MANAGE_AGENT_CLI_TITLE, noun, [], suggestions, false),
-          warn: (message) => { void vscode.window.showWarningMessage('MWNN Kanban: ' + message); },
-        })
-      : await manageAgentCliProvider(choice.provider, scopeName, readScoped, apply);
-    if (!keepGoing) {
-      return;
-    }
-  }
-}
-
-/**
- * The overview: each provider's default model, other-model count, and level
- * from the chosen scope, then editable stage/CLI overrides with inheritance.
- */
-async function pickManageOverview(
-  scopeName: string,
-  readScoped: (list: AgentCliSettingsList) => unknown,
-  state: AgentCliSettingsPanelState,
-): Promise<NonNullable<ManageOverviewItem['action']> | undefined> {
-  for (;;) {
-    const models = readScoped('models');
-    const levels = readScoped('thinkingLevels');
-    const effectiveModels = readAgentCliModels();
-    const effectiveLevels = readAgentCliThinkingLevelDefaults();
-    const items: ManageOverviewItem[] = [
-      { label: `Agent CLIs (${scopeName} settings)`, kind: vscode.QuickPickItemKind.Separator },
-      ...AGENT_CLI_PROVIDER_IDS.map((provider): ManageOverviewItem => {
-        const summary = summarizeAgentCliProvider(models, levels, provider);
-        const inherited = [
-          summary.models.length === 0 && effectiveModels[provider]?.[0] !== undefined
-            ? `model ${effectiveModels[provider]?.[0] ?? ''}`
-            : undefined,
-          summary.thinkingLevels.length === 0 && effectiveLevels[provider] !== undefined
-            ? `thinking ${effectiveLevels[provider] ?? ''}`
-            : undefined,
-        ].filter((part): part is string => part !== undefined);
-        return {
-          label: AGENT_CLI_LABELS[provider],
-          description: summary.description,
-          detail:
-            inherited.length > 0
-              ? `${summary.detail} · Set in another scope: ${inherited.join(', ')}`
-              : summary.detail,
-          action: { kind: 'provider', provider },
-        };
-      }),
-    ];
-
-    items.push({ label: 'Stage overrides (' + scopeName + ' settings)', kind: vscode.QuickPickItemKind.Separator });
-    for (const entry of state.stages) {
-      items.push({
-        label: entry.id + ' · ' + AGENT_CLI_LABELS[entry.provider],
-        description: stagePreferenceDescription(entry, state.inheritedScope),
-        detail: 'Edit model and thinking level independently for this stage and CLI.',
-        action: { kind: 'stage', stage: entry.id, provider: entry.provider },
-      });
-    }
-    items.push(
-      { label: '', kind: vscode.QuickPickItemKind.Separator },
-      { label: '$(gear) Open in Settings', action: { kind: 'settings' } },
-    );
-
-    const picked = await vscode.window.showQuickPick(items, {
-      title: MANAGE_AGENT_CLI_TITLE,
-      placeHolder: `Pick an agent CLI to edit its models and thinking level (${scopeName} settings)`,
-      matchOnDescription: true,
-      matchOnDetail: true,
-    });
-    if (!picked) {
-      return undefined;
-    }
-    if (picked.action) {
-      return picked.action;
-    }
-  }
-}
-
-/**
- * One provider's edit menu. Returns false when the user pressed Escape (end
- * the command) and true for Back (return to the overview).
- */
-async function manageAgentCliProvider(
-  provider: AgentCliProviderId,
-  scopeName: string,
-  readScoped: (list: AgentCliSettingsList) => unknown,
-  apply: (list: AgentCliSettingsList, edit: AgentCliSettingsEdit) => Promise<void>,
-): Promise<boolean> {
-  const label = AGENT_CLI_LABELS[provider];
-  const title = `${MANAGE_AGENT_CLI_TITLE}: ${label}`;
-  const levelNotApplied = provider === 'cursor' ? ' (not applied by this CLI)' : '';
-  for (;;) {
-    const modelsValue = readScoped('models');
-    const levelsValue = readScoped('thinkingLevels');
-    const models = agentCliSettingsEntries(modelsValue, provider);
-    const levels = agentCliSettingsEntries(levelsValue, provider);
-    const summary = summarizeAgentCliProvider(modelsValue, levelsValue, provider);
-    const items: ManageProviderItem[] = [
-      { label: 'Models', kind: vscode.QuickPickItemKind.Separator },
-      { label: '$(add) Add a model…', action: 'addModel' },
-      ...(models.length > 1
-        ? [{ label: '$(star) Make a model the default…', description: `now ${models[0] ?? ''}`, action: 'defaultModel' as const }]
-        : []),
-      ...(models.length > 0 ? [{ label: '$(trash) Remove a model…', action: 'removeModel' as const }] : []),
-      { label: `Thinking level${levelNotApplied}`, kind: vscode.QuickPickItemKind.Separator },
-      {
-        label: '$(pulse) Set the thinking level used…',
-        description: `now ${levels[0] ?? 'CLI default'}`,
-        action: 'setLevel',
-      },
-      { label: '$(add) Add a suggested thinking level…', action: 'addLevel' },
-      ...(levels.length > 0
-        ? [
-            { label: '$(trash) Remove a thinking level…', action: 'removeLevel' as const },
-            { label: '$(clear-all) Clear the thinking level', description: 'use the CLI default', action: 'clearLevel' as const },
-          ]
-        : []),
-      { label: '', kind: vscode.QuickPickItemKind.Separator },
-      { label: '$(arrow-left) Back to all agent CLIs', action: 'back' },
-    ];
-    const picked = await vscode.window.showQuickPick(items, {
-      title,
-      placeHolder: `${summary.description} (${scopeName} settings)`,
-    });
-    if (!picked?.action) {
-      return false;
-    }
-
-    switch (picked.action) {
-      case 'back':
-        return true;
-      case 'addModel': {
-        const name = await pickOrEnterAgentCliName(title, 'model name', models, BUNDLED_AGENT_CLI_MODELS[provider], true);
-        if (name !== undefined) {
-          await apply('models', addAgentCliSettingsEntry(modelsValue, 'models', provider, name));
-        }
-        break;
-      }
-      case 'defaultModel': {
-        const name = await pickAgentCliName(title, 'Which model should be the default?', models.slice(1));
-        if (name !== undefined) {
-          await apply('models', makeAgentCliSettingsDefault(modelsValue, 'models', provider, name));
-        }
-        break;
-      }
-      case 'removeModel': {
-        const name = await pickAgentCliName(title, 'Which model should be removed?', models);
-        if (name !== undefined) {
-          await apply('models', removeAgentCliSettingsEntry(modelsValue, 'models', provider, name));
-        }
-        break;
-      }
-      case 'setLevel': {
-        const candidates = [...new Set([...levels.slice(1), ...BUNDLED_AGENT_CLI_THINKING_LEVELS[provider]])].filter(
-          (level) => level !== levels[0],
-        );
-        const name = await pickOrEnterAgentCliName(title, 'thinking level', levels, candidates, false);
-        if (name !== undefined) {
-          await apply('thinkingLevels', makeAgentCliSettingsDefault(levelsValue, 'thinkingLevels', provider, name));
-        }
-        break;
-      }
-      case 'addLevel': {
-        const name = await pickOrEnterAgentCliName(
-          title,
-          'thinking level',
-          levels,
-          BUNDLED_AGENT_CLI_THINKING_LEVELS[provider],
-          true,
-        );
-        if (name !== undefined) {
-          await apply('thinkingLevels', addAgentCliSettingsEntry(levelsValue, 'thinkingLevels', provider, name));
-        }
-        break;
-      }
-      case 'removeLevel': {
-        const name = await pickAgentCliName(title, 'Which thinking level should be removed?', levels);
-        if (name !== undefined) {
-          await apply('thinkingLevels', removeAgentCliSettingsEntry(levelsValue, 'thinkingLevels', provider, name));
-        }
-        break;
-      }
-      case 'clearLevel':
-        await apply('thinkingLevels', clearAgentCliSettingsProvider(levelsValue, 'thinkingLevels', provider));
-        break;
-    }
-  }
-}
-
-/** Pick one of `names`; undefined when cancelled. */
-async function pickAgentCliName(
-  title: string,
-  placeHolder: string,
-  names: readonly string[],
-): Promise<string | undefined> {
-  const picked = await vscode.window.showQuickPick(
-    names.map((name) => ({ label: name })),
-    { title, placeHolder },
-  );
-  return picked?.label;
-}
-
-/**
- * Offer the bundled names not already listed, plus a free-form entry. With
- * `rejectExisting`, a name already in `existing` is refused, which is the
- * add rule; without it only blanks are refused, which is the "set the one
- * used" rule. Undefined when cancelled.
- */
-async function pickOrEnterAgentCliName(
-  title: string,
-  noun: string,
-  existing: readonly string[],
-  suggestions: readonly string[],
-  rejectExisting: boolean,
-): Promise<string | undefined> {
-  const enterLabel = `$(edit) Enter a ${noun}…`;
-  const offered = rejectExisting ? suggestions.filter((name) => !existing.includes(name)) : suggestions;
-  if (offered.length > 0) {
-    const picked = await vscode.window.showQuickPick(
-      [...offered.map((name) => ({ label: name })), { label: enterLabel }],
-      { title, placeHolder: `Pick a ${noun}, or enter one as the CLI spells it` },
-    );
-    if (!picked) {
-      return undefined;
-    }
-    if (picked.label !== enterLabel) {
-      return picked.label;
-    }
-  }
-  return vscode.window.showInputBox({
-    title,
-    prompt: `Enter a ${noun}, spelled exactly as the CLI accepts it.`,
-    validateInput: (value) =>
-      agentCliSettingsEntryProblem(rejectExisting ? existing : [], value, noun) ?? null,
-  });
 }

@@ -387,10 +387,20 @@ export function formatReadyAutoStartHeldEntry(columnTitle: string, reason: strin
  * a definition request whose card vanished, got assigned, or is now defined
  * (the wait's success case, recorded in `definedThisRun`), and a triage request
  * whose card vanished.
+ *
+ * When a dispatch is cleared because the card left its column, preserve a
+ * `STATUS: BLOCKED` report from that hand-off by adding the card to `skipped`.
+ * Otherwise an agent that moves the card back to Backlog (or any other column)
+ * while reporting blocked loses the dispatch record before `planLoopAction` can
+ * abandon it, and the loop immediately re-advances and re-dispatches the same
+ * card forever.
+ *
+ * @returns Card ids newly added to `session.skipped` during this prune.
  */
-export function pruneLoopSession(state: BoardState, session: LoopSession): void {
+export function pruneLoopSession(state: BoardState, session: LoopSession): string[] {
   const columnByCardId = new Map<string, Column>();
   const cardById = new Map<string, Card>();
+  const newlySkipped: string[] = [];
   for (const column of state.columns) {
     for (const card of column.cards) {
       columnByCardId.set(card.id, column);
@@ -400,6 +410,11 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
 
   for (const [cardId, record] of [...session.dispatches]) {
     if (columnByCardId.get(cardId)?.id !== record.columnId) {
+      const card = cardById.get(cardId);
+      if (card && readDispatchOutcome(card, record) === 'blocked' && !session.skipped.has(cardId)) {
+        session.skipped.add(cardId);
+        newlySkipped.push(cardId);
+      }
       session.dispatches.delete(cardId);
     }
   }
@@ -424,6 +439,7 @@ export function pruneLoopSession(state: BoardState, session: LoopSession): void 
       session.triageRequests.delete(cardId);
     }
   }
+  return newlySkipped;
 }
 
 export interface PlanLoopOptions {
@@ -464,6 +480,11 @@ export function planLoopAction(
       if (session.skipped.has(card.id) || (options.cardId !== undefined && card.id !== options.cardId)) {
         continue;
       }
+      if (isCardBlocked(state, card.id)) {
+        // Withhold every action, without permanently skipping the card: it
+        // becomes eligible on the next pass after its dependencies complete.
+        continue;
+      }
 
       if (session.definedThisRun.has(card.id) && column.role === 'backlog') {
         // The loop just filled this card's definition in: place it at the end
@@ -485,8 +506,7 @@ export function planLoopAction(
       }
 
       if (card.assignee === undefined) {
-        // Triage happens anywhere before Verify; blocked cards may still be
-        // triaged (assignment is not advancement).
+        // Triage happens anywhere before Verify for eligible cards.
         if (isVerifyColumn(column)) {
           continue;
         }
@@ -541,10 +561,6 @@ export function planLoopAction(
 
         firstVerification ??= { kind: 'verify', card, column };
         continue;
-      }
-
-      if (isCardBlocked(state, card.id)) {
-        continue; // unfinished dependsOn — leave until dependencies complete
       }
 
       const record = session.dispatches.get(card.id);
@@ -624,7 +640,9 @@ function listPendingWaits(state: BoardState, session: LoopSession): PendingWait[
   const cards = new Map<string, Card>();
   for (const column of state.columns) {
     for (const card of column.cards) {
-      cards.set(card.id, card);
+      if (!isCardBlocked(state, card.id)) {
+        cards.set(card.id, card);
+      }
     }
   }
 
@@ -635,14 +653,14 @@ function listPendingWaits(state: BoardState, session: LoopSession): PendingWait[
     }
   }
   for (const [cardId, record] of session.definitionRequests) {
-    if (!session.skipped.has(cardId)) {
+    if (cards.has(cardId) && !session.skipped.has(cardId)) {
       waits.push({ cardId, startedAt: record.requestedAt, kind: 'definition' });
     }
   }
   for (const [cardId, record] of session.triageRequests) {
     // Resolved once the agent records an assignee; until then it is an open
     // hand-off the loop is waiting on.
-    if (!session.skipped.has(cardId) && cards.get(cardId)?.assignee === undefined) {
+    if (cards.has(cardId) && !session.skipped.has(cardId) && cards.get(cardId)?.assignee === undefined) {
       waits.push({ cardId, startedAt: record.requestedAt, kind: 'triage' });
     }
   }
@@ -719,7 +737,12 @@ export async function runBoardLoop(
       }
     }
     const state = await store.reload();
-    pruneLoopSession(state, session);
+    for (const cardId of pruneLoopSession(state, session)) {
+      const skippedCard = findCard(state, cardId);
+      if (skippedCard) {
+        summary.skipped.push(skippedCard.title);
+      }
+    }
 
     const action = planLoopAction(state, session, planOptions);
     if (action) {

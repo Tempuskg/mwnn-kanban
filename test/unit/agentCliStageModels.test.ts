@@ -1,4 +1,4 @@
-import { AGENT_CLI_PROVIDER_IDS } from '../../src/agentCliProviders';
+import { AGENT_CLI_PROVIDER_IDS, AGENT_CLI_STAGE_PROVIDER_IDS } from '../../src/agentCliProviders';
 import { createAgentCliUsageOrchestrator } from '../../src/agentCliOrchestrator';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -242,7 +242,13 @@ suite('AI loop stage model rules: resolution order', () => {
     const selection = resolveAgentCliModelSelection('codex', undefined, {
       stage: 'triage',
       stageModels,
-      flags: { copilot: undefined, codex: undefined, 'claude-code': undefined, cursor: undefined },
+      flags: {
+        copilot: undefined,
+        codex: undefined,
+        'claude-code': undefined,
+        cursor: undefined,
+        'cursor-other': undefined,
+      },
     });
 
     assert.ok(selection);
@@ -559,7 +565,8 @@ suite('AI loop stage model rules: the loop dispatch path', () => {
       '-p',
       '--force',
       '--output-format',
-      'text',
+      'stream-json',
+      '--stream-partial-output',
       '--model',
       STAGE_MODELS.triage,
     ]);
@@ -660,13 +667,55 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
         assert.ok(schema);
         assert.deepEqual(schema.type, ['object', 'string']);
         assert.equal(schema.required, undefined);
-        assert.deepEqual(Object.keys(schema.properties).sort(), [...AGENT_CLI_PROVIDER_IDS].sort());
-        for (const provider of AGENT_CLI_PROVIDER_IDS) {
+        assert.deepEqual(Object.keys(schema.properties).sort(), [...AGENT_CLI_STAGE_PROVIDER_IDS].sort());
+        for (const provider of AGENT_CLI_STAGE_PROVIDER_IDS) {
           assert.equal(schema.properties[provider]?.type, 'string');
           assert.equal(schema.properties[provider]?.enum, undefined, 'names must remain free-form');
         }
       }
     }
+  });
+
+  test('cursor and cursor-other stage models resolve independently', () => {
+    const stageModels = readAgentCliStageModels({
+      implementation: { 'cursor-other': 'claude-opus-5' },
+    });
+    assert.equal(
+      resolveAgentCliModel('cursor', undefined, {}, { stage: 'implementation', stageModels }),
+      undefined,
+    );
+    assert.deepEqual(
+      resolveAgentCliModel('cursor-other', undefined, {}, { stage: 'implementation', stageModels }),
+      { model: 'claude-opus-5', source: 'stage-rule' },
+    );
+    assert.deepEqual(
+      resolveAgentCliModel(
+        'cursor',
+        undefined,
+        {},
+        {
+          stage: 'implementation',
+          stageModels: readAgentCliStageModels({
+            implementation: { cursor: 'auto', 'cursor-other': 'claude-opus-5' },
+          }),
+        },
+      ),
+      { model: 'auto', source: 'stage-rule' },
+    );
+    assert.deepEqual(
+      resolveAgentCliModel(
+        'cursor-other',
+        undefined,
+        {},
+        {
+          stage: 'implementation',
+          stageModels: readAgentCliStageModels({
+            implementation: { cursor: 'auto', 'cursor-other': 'claude-opus-5' },
+          }),
+        },
+      ),
+      { model: 'claude-opus-5', source: 'stage-rule' },
+    );
   });
 
   test('malformed stage/provider values are safely ignored on both axes', () => {
@@ -681,7 +730,16 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
     const user = { implementation: 'legacy', definition: { copilot: 'user' } };
     const workspace = { implementation: { codex: 'local' }, definition: { cursor: 'local-cursor' } };
     const effective = mergeAgentCliStagePreferences({}, user, workspace, { implementation: { copilot: 'folder' } });
-    assert.deepEqual(effective, { implementation: { copilot: 'folder', codex: 'local', 'claude-code': 'legacy', cursor: 'legacy' }, definition: { copilot: 'user', cursor: 'local-cursor' } });
+    assert.deepEqual(effective, {
+      implementation: {
+        copilot: 'folder',
+        codex: 'local',
+        'claude-code': 'legacy',
+        cursor: 'legacy',
+        'cursor-other': 'legacy',
+      },
+      definition: { copilot: 'user', cursor: 'local-cursor' },
+    });
     assert.deepEqual(user, { implementation: 'legacy', definition: { copilot: 'user' } });
     assert.deepEqual(workspace, { implementation: { codex: 'local' }, definition: { cursor: 'local-cursor' } });
     assert.equal(stageAgentCliModel(mergeAgentCliStagePreferences(user, { implementation: 'new-legacy' }), 'implementation', 'codex'), 'new-legacy');
@@ -703,7 +761,7 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
         assert.equal(result.thinkingSelection?.requested, effort);
         assert.equal(result.thinkingSelection?.source, 'stage-rule');
         assert.ok(args.includes(model));
-        if (provider === 'cursor') {
+        if (provider === 'cursor' || provider === 'cursor-other') {
           assert.equal(result.thinkingSelection?.applied, false);
           assert.ok(!args.some((arg) => arg.includes(effort)));
           assert.match(board.activity(cardId), /not applied/i);
@@ -732,7 +790,7 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
         assert.equal(args.includes('--model'), axis === 'model');
         assert.equal(result.modelSelection !== undefined, axis === 'model');
         assert.equal(result.thinkingSelection !== undefined, axis === 'effort');
-        if (axis !== 'effort' || provider === 'cursor') {
+        if (axis !== 'effort' || provider === 'cursor' || provider === 'cursor-other') {
           assert.ok(!args.some((arg) => /--effort|model_reasoning_effort/.test(arg)));
         }
       }

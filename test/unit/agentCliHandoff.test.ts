@@ -6,6 +6,7 @@ import { suite, test } from 'node:test';
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
+  agentCliExecutableProvider,
   buildAgentCliInvocation,
   parseTerminalCardStatus,
   prepareAgentCliInvocation,
@@ -118,7 +119,8 @@ suite('agent CLI provider registry and discovery', () => {
       copilot: ['--allow-all-tools', '--no-ask-user', '--silent'],
       codex: ['exec', '--sandbox', 'workspace-write', '-'],
       'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
-      cursor: ['-p', '--force', '--output-format', 'text'],
+      cursor: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
+      'cursor-other': ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
     };
 
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
@@ -146,7 +148,8 @@ suite('agent CLI provider registry and discovery', () => {
       copilot: ['--allow-all-tools', '--no-ask-user'],
       codex: ['exec', '--json', '--sandbox', 'workspace-write', '-'],
       'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'stream-json', '--verbose'],
-      cursor: ['-p', '--force', '--output-format', 'stream-json'],
+      cursor: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
+      'cursor-other': ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
     };
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
       const invocation = buildAgentCliInvocation(
@@ -380,7 +383,9 @@ suite('agent CLI provider registry and discovery', () => {
       if (!resolution.available) {
         assert.match(resolution.reason, new RegExp(AGENT_CLI_LABELS[provider]));
         assert.match(resolution.reason, provider === 'copilot' ? /standalone Copilot CLI/ : /Install the CLI/);
-        assert.ok(resolution.reason.includes(`agentCliPaths["${provider}"]`));
+        assert.ok(
+          resolution.reason.includes(`agentCliPaths["${agentCliExecutableProvider(provider)}"]`),
+        );
         assert.match(resolution.reason, /paths containing spaces are supported/);
       }
     });
@@ -431,7 +436,14 @@ suite('Cursor Agent CLI prompt delivery', () => {
         { platform: 'win32' },
       );
       assert.equal(prepared.invocation.command, latest.node);
-      assert.deepEqual(prepared.invocation.args, [latest.script, '-p', '--force', '--output-format', 'text']);
+      assert.deepEqual(prepared.invocation.args, [
+        latest.script,
+        '-p',
+        '--force',
+        '--output-format',
+        'stream-json',
+        '--stream-partial-output',
+      ]);
       assert.equal(prepared.invocation.stdin, prompt);
       assert.equal(prepared.cleanup, undefined);
       assert.ok(prepared.invocation.args.every((arg) => !/[\r\n]/.test(arg)));
@@ -456,7 +468,13 @@ suite('Cursor Agent CLI prompt delivery', () => {
       const file = /Read the UTF-8 file at (.+) first and carry out/.exec(pointer)?.[1];
       assert.ok(file, `pointer argument was ${pointer}`);
       assert.equal(await fs.readFile(file, 'utf8'), prompt);
-      assert.deepEqual(prepared.invocation.args.slice(0, 4), ['-p', '--force', '--output-format', 'text']);
+      assert.deepEqual(prepared.invocation.args.slice(0, 5), [
+        '-p',
+        '--force',
+        '--output-format',
+        'stream-json',
+        '--stream-partial-output',
+      ]);
       assert.equal(prepared.invocation.stdin, prompt);
       assert.ok(prepared.invocation.args.every((arg) => !/[\r\n]/.test(arg)));
       await prepared.cleanup?.();
@@ -489,7 +507,14 @@ suite('Cursor Agent CLI prompt delivery', () => {
         {
           ...handoffOptions(async (invocation) => {
             assert.equal(invocation.command, latest.node);
-            assert.deepEqual(invocation.args, [latest.script, '-p', '--force', '--output-format', 'text']);
+            assert.deepEqual(invocation.args, [
+              latest.script,
+              '-p',
+              '--force',
+              '--output-format',
+              'stream-json',
+              '--stream-partial-output',
+            ]);
             assert.equal(invocation.stdin, prompt);
             board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
             return successfulProcess();

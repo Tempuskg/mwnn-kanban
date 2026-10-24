@@ -19,6 +19,12 @@ const DEFAULT_STATUS_INTERVAL_MS = 300;
 
 export type CliOutputStream = 'stdout' | 'stderr';
 
+/** Optional stdout transform used for Cursor stream-json → readable lines. */
+export interface CliStdoutRenderer {
+  write(chunk: string): readonly string[];
+  flush(): readonly string[];
+}
+
 export interface CliOutputFeedDeps {
   /** Receives every complete output line with its terminator stripped. */
   readonly onLine?: (line: string, stream: CliOutputStream) => void;
@@ -29,6 +35,11 @@ export interface CliOutputFeedDeps {
   readonly onStatus?: (line: string) => void;
   readonly statusIntervalMs?: number;
   readonly now?: () => number;
+  /**
+   * When set, stdout chunks are rendered through this before line emit (e.g.
+   * Cursor stream-json → readable lines). stderr always uses the raw splitter.
+   */
+  readonly stdoutRenderer?: CliStdoutRenderer;
 }
 
 export interface CliOutputFeed {
@@ -64,20 +75,38 @@ export function createCliOutputFeed(deps: CliOutputFeedDeps = {}): CliOutputFeed
     deps.onStatus?.(status);
   };
 
+  const emitLine = (line: string, stream: CliOutputStream): void => {
+    deps.onLine?.(line, stream);
+    noteStatus(line);
+  };
+
   return {
     write(chunk, stream) {
+      if (stream === 'stdout' && deps.stdoutRenderer) {
+        for (const line of deps.stdoutRenderer.write(chunk)) {
+          emitLine(line, 'stdout');
+        }
+        return;
+      }
       const segments = `${partial[stream]}${chunk}`.split(/\r\n|\r|\n/);
       partial[stream] = segments.pop() ?? '';
       for (const line of segments) {
-        deps.onLine?.(line, stream);
-        noteStatus(line);
+        emitLine(line, stream);
       }
       // A CLI can sit on an unterminated line (e.g. a spinner); let the
       // ticker advance from the partial without emitting it as a full line.
       noteStatus(partial[stream]);
     },
     flush() {
+      if (deps.stdoutRenderer) {
+        for (const line of deps.stdoutRenderer.flush()) {
+          emitLine(line, 'stdout');
+        }
+      }
       for (const stream of ['stdout', 'stderr'] as const) {
+        if (stream === 'stdout' && deps.stdoutRenderer) {
+          continue;
+        }
         const rest = partial[stream];
         partial[stream] = '';
         if (rest) {
