@@ -5,6 +5,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-24
+
 ### Added
 - **Cursor Agent CLI Other** (`cursor-other`) is a first-class agent CLI identity alongside Cursor Agent CLI: Run Card with AI / AI loop pickers, `mwnn-kanban.aiLoopProvider`, usage-orchestrator exclusions, card `preferredModel.cursor-other` / `thinkingLevel.cursor-other`, Agent CLI Models (top-level and stage), and related settings. It launches the same Cursor Agent CLI executable and path override as `cursor`, and ranks against Cursor’s Other Models usage pool while `cursor` remains the Auto / Cursor-models identity.
 - Pro's AI Provider Usage report can retrieve GitHub Copilot Free premium-request usage on demand through the signed-in GitHub session. This calls an internal, undocumented GitHub endpoint; no workspace or board data is included.
@@ -178,7 +180,12 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
 
-[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.10...HEAD
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/Tempuskg/mwnn-kanban/compare/v0.0.15...v1.0.0
 [0.0.10]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.10
 [0.0.9]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.9
 [0.0.8]: https://github.com/Tempuskg/mwnn-kanban/releases/tag/v0.0.8
