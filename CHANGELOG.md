@@ -5,6 +5,16 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-24
+
+### Fixed
+- Usage Orchestrator and credit fallback no longer burn through Cursor Auto / Other Models credits in self-retry loops: both Cursor identities park on cross-pool exhaustion, same-CLI switches are refused, and Cursor Auto resolves only to Auto-pool models (floor at `auto`).
+
+### Added
+- Pro: Portfolio **AI Loop eligibility** enrolls projects for unattended CLI execution (disposition, owner, instruction probes, baseline, archive exclusion). The Portfolio AI Loop only runs enrolled `unattended` projects. Requires `@tempuskg/mwnn-kanban-pro` 1.0.3.
+- Pro: the AI Provider Usage report treats **Cursor Agent CLI Other** as its own usage pool alongside Cursor Auto / Cursor-models. Optional `mwnn-kanban-pro.aiUsage.refreshCursorCacheOnOpen` refreshes the Cursor usage-v1 cache when opening the report. Requires `@tempuskg/mwnn-kanban-pro` 1.0.3.
+- Pro: Portfolio dashboard sections can be collapsed; the preference stays local. Requires `@tempuskg/mwnn-kanban-pro` 1.0.3.
+
 ## [1.0.4] - 2026-10-24
 
 ### Added
@@ -180,7 +190,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
 
-[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.1...v1.0.2
