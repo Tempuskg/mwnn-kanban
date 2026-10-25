@@ -197,15 +197,14 @@ suite('AI loop stage model rules: resolution order', () => {
       }),
       { model: WORKSPACE_DEFAULT, source: 'workspace-default' },
     );
-    // No card model, no rule for this stage, no workspace list for this
-    // provider: nothing is resolved, so the argv is what it was before any of
-    // these settings existed.
-    assert.equal(
+    // No card model, no rule for this stage, no workspace list for Cursor:
+    // Auto floors at `auto` so the CLI cannot default into Other Models.
+    assert.deepEqual(
       resolveAgentCliModel('cursor', undefined, catalog, {
         stage: 'verification',
         stageModels: onlyTriage,
       }),
-      undefined,
+      { model: 'auto', source: 'workspace-default' },
     );
     assert.equal(
       resolveAgentCliModel('codex', undefined, undefined, {
@@ -532,7 +531,11 @@ suite('AI loop stage model rules: the loop dispatch path', () => {
       initialTarget: target('codex'),
       settings: { enabled: true, providers: ['cursor'] },
       configuredPaths: {},
-      stageModels: readAgentCliStageModels(STAGE_MODELS),
+      // Per-provider names: Cursor Auto cannot inherit an Other Models stage
+      // string (gpt-5-nano), so give it an Auto-pool rule for the same stage.
+      stageModels: readAgentCliStageModels({
+        triage: { codex: STAGE_MODELS.triage, cursor: 'auto' },
+      }),
       cwd: CWD,
       store: board.store,
       signal: new AbortController().signal,
@@ -559,8 +562,7 @@ suite('AI loop stage model rules: the loop dispatch path', () => {
       buildPrompt: () => 'prompt',
     });
 
-    // The stage rule is not provider-specific, so it carries over to the
-    // replacement, which spells `--model` its own way.
+    // The interrupted stage's Cursor-aligned rule reaches the replacement.
     assert.deepEqual(invocations[1]?.args, [
       '-p',
       '--force',
@@ -568,12 +570,12 @@ suite('AI loop stage model rules: the loop dispatch path', () => {
       'stream-json',
       '--stream-partial-output',
       '--model',
-      STAGE_MODELS.triage,
+      'auto',
     ]);
     assert.ok(
       board
         .activity(cardId)
-        .includes(`${AGENT_CLI_LABELS.cursor} model: "${STAGE_MODELS.triage}", from the AI loop stage model rule.`),
+        .includes(`${AGENT_CLI_LABELS.cursor} model: "auto", from the AI loop stage model rule.`),
     );
   });
 });
@@ -623,8 +625,11 @@ suite('AI loop stage model rules: Run Card with AI', () => {
 });
 
 suite('Per-stage per-CLI model and thinking preferences', () => {
+  /** Cursor Auto stage names must stay on the Auto pool (`auto` / composer / …). */
+  const stageModelName = (stage: string, provider: AgentCliProviderId): string =>
+    provider === 'cursor' ? 'auto' : `${stage}-${provider}-model`;
   const rawModels = Object.fromEntries(AGENT_CLI_HANDOFF_KINDS.map((stage) => [stage,
-    Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, stage + '-' + provider + '-model']))]));
+    Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, stageModelName(stage, provider)]))]));
   const rawLevels = Object.fromEntries(AGENT_CLI_HANDOFF_KINDS.map((stage) => [stage,
     Object.fromEntries(AGENT_CLI_PROVIDER_IDS.map((provider) => [provider, stage + '-' + provider + '-effort']))]));
   const models = readAgentCliStageModels(rawModels);
@@ -633,22 +638,37 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
   test('all sixteen pairs resolve card, stage, provider and CLI defaults independently', () => {
     for (const stage of AGENT_CLI_HANDOFF_KINDS) {
       for (const provider of AGENT_CLI_PROVIDER_IDS) {
-        const catalog = readAgentCliModelCatalog({ [provider]: ['provider-model'] });
+        // Cursor identities only accept pool-aligned names; use Auto / Other
+        // Models spellings so this matrix still exercises every layer.
+        const cardModel = provider === 'cursor'
+          ? 'auto'
+          : provider === 'cursor-other'
+            ? 'card-opus'
+            : 'card-model';
+        const stageModel = stageModelName(stage, provider);
+        const workspaceModel = provider === 'cursor' ? 'auto' : 'provider-model';
+        const escalationModel = provider === 'cursor' ? 'composer' : 'escalation-opus';
+        const catalog = readAgentCliModelCatalog({ [provider]: [workspaceModel] });
+        const stageModels = models;
         const defaults = readAgentCliThinkingLevels({ [provider]: 'provider-effort' });
-        const modelContext = { stage, stageModels: models };
+        const modelContext = { stage, stageModels };
         const levelContext = { stage, stageThinkingLevels: levels };
-        assert.deepEqual(resolveAgentCliModel(provider, 'card-model', catalog, modelContext), { model: 'card-model', source: 'card' });
+        assert.deepEqual(resolveAgentCliModel(provider, cardModel, catalog, modelContext), { model: cardModel, source: 'card' });
         assert.deepEqual(resolveAgentCliThinkingLevel(provider, 'card-effort', defaults, levelContext), { level: 'card-effort', source: 'card' });
-        assert.deepEqual(resolveAgentCliModel(provider, undefined, catalog, modelContext), { model: stage + '-' + provider + '-model', source: 'stage-rule' });
+        assert.deepEqual(resolveAgentCliModel(provider, undefined, catalog, modelContext), { model: stageModel, source: 'stage-rule' });
         assert.deepEqual(resolveAgentCliThinkingLevel(provider, undefined, defaults, levelContext), { level: stage + '-' + provider + '-effort', source: 'stage-rule' });
         const other = provider === 'codex' ? 'copilot' : 'codex';
-        assert.deepEqual(resolveAgentCliModel(provider, undefined, catalog, { stage, stageModels: readAgentCliStageModels({ [stage]: { [other]: 'other-cli' } }) }), { model: 'provider-model', source: 'workspace-default' });
+        assert.deepEqual(resolveAgentCliModel(provider, undefined, catalog, { stage, stageModels: readAgentCliStageModels({ [stage]: { [other]: 'other-cli' } }) }), { model: workspaceModel, source: 'workspace-default' });
         assert.deepEqual(resolveAgentCliThinkingLevel(provider, undefined, defaults, { stage, stageThinkingLevels: {} }), { level: 'provider-effort', source: 'workspace-default' });
-        assert.equal(resolveAgentCliModel(provider, undefined, {}, { stage, stageModels: {} }), undefined);
+        if (provider === 'cursor') {
+          assert.deepEqual(resolveAgentCliModel(provider, undefined, {}, { stage, stageModels: {} }), { model: 'auto', source: 'workspace-default' });
+        } else {
+          assert.equal(resolveAgentCliModel(provider, undefined, {}, { stage, stageModels: {} }), undefined);
+        }
         assert.equal(resolveAgentCliThinkingLevel(provider, undefined, {}, { stage, stageThinkingLevels: {} }), undefined);
         // A model never requires effort, and effort never requires a model.
         assert.equal(resolveAgentCliThinkingLevel(provider, undefined, {}, { stage, stageThinkingLevels: {} }), undefined);
-        assert.equal(resolveAgentCliModel(provider, undefined, {}, modelContext, 'escalation')?.source, 'escalation');
+        assert.equal(resolveAgentCliModel(provider, undefined, {}, modelContext, escalationModel)?.source, 'escalation');
       }
     }
   });
@@ -680,9 +700,9 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
     const stageModels = readAgentCliStageModels({
       implementation: { 'cursor-other': 'claude-opus-5' },
     });
-    assert.equal(
+    assert.deepEqual(
       resolveAgentCliModel('cursor', undefined, {}, { stage: 'implementation', stageModels }),
-      undefined,
+      { model: 'auto', source: 'workspace-default' },
     );
     assert.deepEqual(
       resolveAgentCliModel('cursor-other', undefined, {}, { stage: 'implementation', stageModels }),
@@ -754,7 +774,7 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
         const result = await runAgentCliCardHandoff({ kind, target: target(provider), cardId, prompt: 'prompt', cwd: CWD,
           store: board.store, signal: new AbortController().signal, stageModels: models, stageThinkingLevels: levels },
         { now: () => NOW, runProcess: async (invocation) => { args = invocation.args; return cleanExit(); } });
-        const model = kind + '-' + provider + '-model';
+        const model = stageModelName(kind, provider);
         const effort = kind + '-' + provider + '-effort';
         assert.equal(result.modelSelection?.requested, model);
         assert.equal(result.modelSelection?.source, 'stage-rule');
@@ -787,8 +807,11 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
         const result = await runAgentCliCardHandoff({ kind: 'implementation', target: target(provider), cardId, prompt: 'prompt', cwd: CWD,
           store: board.store, signal: new AbortController().signal, stageModels: axis === 'model' ? models : {}, stageThinkingLevels: axis === 'effort' ? levels : {} },
         { now: () => NOW, runProcess: async (invocation) => { args = invocation.args; return cleanExit(); } });
-        assert.equal(args.includes('--model'), axis === 'model');
-        assert.equal(result.modelSelection !== undefined, axis === 'model');
+        // Cursor Auto always resolves a model (`auto` floor); other CLIs only
+        // when the model axis is configured.
+        const expectModel = axis === 'model' || provider === 'cursor';
+        assert.equal(args.includes('--model'), expectModel);
+        assert.equal(result.modelSelection !== undefined, expectModel);
         assert.equal(result.thinkingSelection !== undefined, axis === 'effort');
         if (axis !== 'effort' || provider === 'cursor' || provider === 'cursor-other') {
           assert.ok(!args.some((arg) => /--effort|model_reasoning_effort/.test(arg)));
@@ -830,7 +853,11 @@ suite('Per-stage per-CLI model and thinking preferences', () => {
           },
         });
         await runner.run({ kind, card: board.card(cardId), buildPrompt: () => 'prompt' });
-        assert.deepEqual(selections, [first, replacement].map((provider) => ({ provider, model: kind + '-' + provider + '-model', effort: kind + '-' + provider + '-effort' })));
+        assert.deepEqual(selections, ([first, replacement] as const).map((provider) => ({
+          provider,
+          model: stageModelName(kind, provider),
+          effort: kind + '-' + provider + '-effort',
+        })));
       });
     }
   }

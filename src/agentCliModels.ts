@@ -21,7 +21,18 @@
  *    list (`mwnn-kanban.agentCliModels`), the workspace default;
  * 4. otherwise nothing — no model argument is added and the CLI runs whatever
  *    model it defaults to, byte-identically to how it ran before these settings
- *    existed.
+ *    existed — except for **Cursor Agent CLI** (`cursor`): when no Auto-pool
+ *    model remains after the layers above, resolution floors at `auto` so the
+ *    CLI cannot silently default to an Other Models name (e.g. Opus) and burn
+ *    the wrong usage pool while ranking against Auto.
+ *
+ * Cursor pool alignment (both selectable identities share one executable):
+ * - `cursor` (**Cursor Agent CLI**) only accepts Auto-pool model names; any
+ *   Other Models name at a layer is skipped so a lower Auto-aligned layer (or
+ *   the `auto` floor) wins.
+ * - `cursor-other` (**Cursor Agent CLI Other**) only accepts Other Models
+ *   names; Auto-pool names are skipped the same way. With nothing left, the
+ *   selection stays absent and that identity uses the CLI default.
  *
  * The card beats the stage rule because a card-level choice is the more
  * specific intent: the user picked a model for *this* work, not for a class of
@@ -52,9 +63,17 @@ import {
   type AgentCliProviderId,
   type AgentCliStageProviderId,
 } from './agentCliProviders';
+import {
+  classifyCursorModelPool,
+  cursorUsagePoolForProvider,
+  type CursorUsagePoolId,
+} from './cursorModelPool';
 import type { AgentCliModelSuggestions } from './types';
 import { AGENT_CLI_HANDOFF_KINDS, type AgentCliHandoffKind } from './agentCliStages';
 import { normalizePreferredModel, normalizeThinkingLevel } from './utils';
+
+/** Floor model for Cursor Auto when no Auto-pool name is configured. */
+export const CURSOR_AUTO_POOL_DEFAULT_MODEL = 'auto';
 
 /** The user-facing id of the setting this module validates. */
 export const AGENT_CLI_MODELS_SETTING = 'mwnn-kanban.agentCliModels';
@@ -323,6 +342,38 @@ export interface ResolvedAgentCliModel {
 }
 
 /**
+ * True when `model` may run on this provider's Cursor usage pool. Non-Cursor
+ * providers accept every name.
+ */
+export function modelMatchesCursorProviderPool(
+  provider: AgentCliProviderId,
+  model: string,
+): boolean {
+  const pool = cursorUsagePoolForProvider(provider);
+  if (pool === undefined) {
+    return true;
+  }
+  return classifyCursorModelPool({ model }).pool === pool;
+}
+
+/**
+ * First catalog entry that matches this provider's Cursor pool (or the first
+ * usable entry for a non-Cursor CLI).
+ */
+function firstPoolAlignedCatalogModel(
+  catalog: AgentCliModelCatalog,
+  provider: AgentCliProviderId,
+): string | undefined {
+  for (const entry of agentCliModelsFor(catalog, provider)) {
+    const model = normalizePreferredModel(entry);
+    if (model !== undefined && modelMatchesCursorProviderPool(provider, model)) {
+      return model;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Resolve the model for one dispatch of one card on one provider, at one stage.
  * This is the single resolution site: every dispatch path - the per-card run,
  * each of the loop's four stages, and the credit fallback's replacement CLI -
@@ -330,8 +381,10 @@ export interface ResolvedAgentCliModel {
  *
  * Returns undefined when no layer names a model, which is what keeps an
  * unconfigured workspace producing exactly the arguments it produced before
- * these settings existed. `stage` is optional so a caller with no stage in hand
- * simply skips that layer.
+ * these settings existed — except Cursor Agent CLI (`cursor`), which floors at
+ * {@link CURSOR_AUTO_POOL_DEFAULT_MODEL} so Auto dispatches never inherit an
+ * Other Models CLI default. `stage` is optional so a caller with no stage in
+ * hand simply skips that layer.
  *
  * Resolving never writes anything back to the card or the settings: both
  * workspace layers stay defaults, so changing either changes every dispatch
@@ -344,28 +397,33 @@ export function resolveAgentCliModel(
   stage?: AgentCliStageContext,
   escalatedModel?: string,
 ): ResolvedAgentCliModel | undefined {
+  const accepts = (model: string): boolean => modelMatchesCursorProviderPool(provider, model);
   // Above the card: an escalation model is a per-retry decision the loop only
   // makes after an attempt on a lower layer already failed, so re-resolving the
   // same layers would simply repeat that failure. It is never persisted - the
   // card and the settings are untouched, so the next dispatch starts over at
   // the card layer.
   const fromEscalation = normalizePreferredModel(escalatedModel);
-  if (fromEscalation !== undefined) {
+  if (fromEscalation !== undefined && accepts(fromEscalation)) {
     return { model: fromEscalation, source: 'escalation' };
   }
   const fromCard = normalizePreferredModel(cardModel);
-  if (fromCard !== undefined) {
+  if (fromCard !== undefined && accepts(fromCard)) {
     return { model: fromCard, source: 'card' };
   }
   const fromStage = stage
     ? stageAgentCliModelForProvider(stage.stageModels, stage.stage, provider)
     : undefined;
-  if (fromStage !== undefined) {
+  if (fromStage !== undefined && accepts(fromStage)) {
     return { model: fromStage, source: 'stage-rule' };
   }
-  const fromWorkspace = defaultAgentCliModel(catalog, provider);
+  const fromWorkspace = firstPoolAlignedCatalogModel(catalog, provider);
   if (fromWorkspace !== undefined) {
     return { model: fromWorkspace, source: 'workspace-default' };
+  }
+  const pool: CursorUsagePoolId | undefined = cursorUsagePoolForProvider(provider);
+  if (pool === 'auto') {
+    return { model: CURSOR_AUTO_POOL_DEFAULT_MODEL, source: 'workspace-default' };
   }
   return undefined;
 }

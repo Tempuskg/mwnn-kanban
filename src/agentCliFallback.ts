@@ -993,11 +993,15 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         exhaustedTargets.set(target.provider, target);
         const exhaustedModel = modelForUsageWaitPool(result);
         exhaustedModels.set(target.provider, exhaustedModel);
+        // Both Cursor identities share one executable; pass the burned pool so
+        // markExhausted can park the pool identity and, on a cross-pool miss,
+        // the dispatch identity too (avoids Auto→Opus→retry-Auto loops).
+        const burnedCursorPool = target.provider === 'cursor' || target.provider === 'cursor-other'
+          ? cursorPoolForModel(exhaustedModel)
+          : undefined;
         deps.orchestrator?.markExhausted(
           target.provider,
-          target.provider === 'cursor'
-            ? { cursorPool: cursorPoolForModel(exhaustedModel) }
-            : undefined,
+          burnedCursorPool !== undefined ? { cursorPool: burnedCursorPool } : undefined,
         );
         const waitEnabled = maxWaitHours > 0;
         // Stopped during a wait: no failure is reported, so the run ends as
@@ -1043,6 +1047,22 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         if (deps.orchestrator) {
           orchestrated = await orchestrate(deps.orchestrator, request.kind, card);
           replacement = orchestrated.kind === 'chosen' ? orchestrated.target : undefined;
+          // Same-provider "switch" cannot recover a spent allowance and would
+          // spin (seen when Cursor Auto dispatched Opus and only Other Models
+          // was marked exhausted). Treat it as no eligible replacement.
+          if (
+            replacement
+            && (replacement.provider === target.provider || exhausted.has(replacement.provider))
+          ) {
+            replacement = undefined;
+            if (orchestrated.kind === 'chosen') {
+              orchestrated = {
+                kind: 'none',
+                ranking: orchestrated.ranking,
+                reason: formatNoEligibleCliReason(orchestrated.ranking),
+              };
+            }
+          }
         } else {
           replacement = await selectReplacement();
         }

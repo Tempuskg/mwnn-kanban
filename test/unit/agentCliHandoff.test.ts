@@ -514,6 +514,8 @@ suite('Cursor Agent CLI prompt delivery', () => {
               '--output-format',
               'stream-json',
               '--stream-partial-output',
+              '--model',
+              'auto',
             ]);
             assert.equal(invocation.stdin, prompt);
             board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
@@ -1368,12 +1370,12 @@ suite('agent CLI live model status for the running pill', () => {
   test('keeps only the requested model when the CLI metadata is missing or malformed', async () => {
     const statuses = await modelStatuses({
       provider: 'cursor',
-      requested: 'Gemini 3.8 Flash',
+      requested: 'auto',
       orchestrated: true,
       output: '{"type":"system","subtype":"init","model":null}\n',
     });
 
-    assert.deepEqual(statuses, [{ requested: 'Gemini 3.8 Flash' }]);
+    assert.deepEqual(statuses, [{ requested: 'auto' }]);
   });
 
   test('a direct run has no model discovery, so its pill never claims an actual model', async () => {
@@ -1405,12 +1407,12 @@ suite('agent CLI live model status for the running pill', () => {
   test('omits a thinking level the CLI cannot accept', async () => {
     const statuses = await modelStatuses({
       provider: 'cursor',
-      requested: 'Gemini 3.8 Flash',
+      requested: 'auto',
       thinkingLevel: 'high',
       orchestrated: false,
     });
 
-    assert.deepEqual(statuses, [{ requested: 'Gemini 3.8 Flash' }]);
+    assert.deepEqual(statuses, [{ requested: 'auto' }]);
   });
 
   test('each dispatch reports the model requested for the provider that actually runs', async () => {

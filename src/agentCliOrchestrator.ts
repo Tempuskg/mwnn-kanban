@@ -128,9 +128,12 @@ export interface AgentCliUsageOrchestrator {
    * its reported reset time, or for the rest of the run when it has none
    * (which is always the case for an unknown-usage CLI).
    *
-   * `cursor` and `cursor-other` are independent. Legacy
-   * `markExhausted('cursor', { cursorPool: 'other-models' })` maps onto
-   * `cursor-other`.
+   * `cursor` and `cursor-other` are independent when the burned pool matches
+   * the dispatch identity. When `cursorPool` remaps the failure onto the
+   * other Cursor identity (cross-pool dispatch — e.g. Auto selected but Opus
+   * from Other Models hit its limit), both identities are excluded: parking
+   * only the pool leaves the dispatch identity eligible and the next choose
+   * retries the same CLI with the same default model in a tight loop.
    */
   markExhausted(provider: AgentCliProviderId, options?: { readonly cursorPool?: CursorUsagePoolId }): void;
   /**
@@ -281,11 +284,7 @@ export function createAgentCliUsageOrchestrator(
     return { kind: 'chosen', target, chosen, ranking };
   };
 
-  const markExhausted = (
-    provider: AgentCliProviderId,
-    options?: { readonly cursorPool?: CursorUsagePoolId },
-  ): void => {
-    const identity = exhaustionProviderId(provider, options?.cursorPool);
+  const excludeIdentity = (identity: AgentCliProviderId): void => {
     const snapshot = cache.get(agentCliExecutableProvider(identity))?.snapshot;
     const rankable = rankableFromCache(snapshot, identity);
     const until = rankable?.kind === 'reported'
@@ -294,8 +293,21 @@ export function createAgentCliUsageOrchestrator(
       ? rankable.resetsAt
       : undefined;
     exclusions.set(identity, until !== undefined ? { until } : {});
+  };
+
+  const markExhausted = (
+    provider: AgentCliProviderId,
+    options?: { readonly cursorPool?: CursorUsagePoolId },
+  ): void => {
+    const poolIdentity = exhaustionProviderId(provider, options?.cursorPool);
+    excludeIdentity(poolIdentity);
+    // Cross-pool Cursor failure: also park the dispatch identity so ranking
+    // cannot re-select the same CLI and repeat the same model default.
+    if (poolIdentity !== provider) {
+      excludeIdentity(provider);
+    }
     // Shared Cursor probe: drop the executable-provider cache entry.
-    cache.delete(agentCliExecutableProvider(identity));
+    cache.delete(agentCliExecutableProvider(provider));
   };
 
   const clearExhausted = (provider: AgentCliProviderId): void => {

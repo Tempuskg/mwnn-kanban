@@ -12,7 +12,7 @@ thinkingLevel.copilot: medium
 thinkingLevel.codex: medium
 thinkingLevel.claude-code: medium
 createdAt: 1792340912242
-updatedAt: 1792873604407
+updatedAt: 1792887527748
 ---
 
 ## Description
@@ -96,3 +96,114 @@ Actual model: "Auto" (source: Cursor Agent stream-json system.init.model; attemp
 Confirmed and tightened the pinned-footer layout in `media/board.css`: `.card-modal` is a non-scrolling flex column (`overflow: hidden`); `.card-modal-form` is the only scroll region (`flex: 1 1 auto; min-height: 0; overflow-y: auto`); header and footer are `flex-shrink: 0` with opaque `var(--vscode-editorWidget-background)`; footer uses `flex-wrap: wrap` for ≤720px. DOM order in `renderCardDetails` / `renderColumnDetails` is already header → form → footer (no JS change). `npm run compile`, `npm test` (983 pass), and `npm run lint` all pass. Layout criteria checked from CSS/DOM evidence; the compound smoke criterion stays open.
 Smoke steps: F5 Development Host → open a long-Activity card and confirm header/footer stay put while fields scroll → open a short card (no scrollbar, same look) → narrow the webview ≤720px → open column details (Delete/Save pinned) → close a dirty card to confirm Save/Discard/Cancel. Offer: I can package and install a working-tree VSIX for that smoke if you want.
 STATUS: BLOCKED: Development Host smoke test needs a human (long/short card, narrow webview, column dialog)
+
+### 2026-10-25T00:18:23.161Z - Usage Orchestrator chose Cursor Agent CLI
+Stage: implementation. Cursor Agent CLI reports 83.7% remaining, resetting 2026-11-06T23:33:31.000Z - the soonest reset among the CLIs with usage left, so it is spent before it is lost. Pace variance -41.4 pts (57.7% elapsed).
+
+### 2026-10-25T00:18:24.454Z - Usage Orchestrator dispatch dispatch-mvn2xg7a-t started
+Card: card-mve1i2ya-1 ("Have the buttons at the bottom of the opened mwnn Kanban card always visible"). CLI: Cursor Agent CLI. Stage: implementation.
+Requested model: none (source: CLI default; no model argument was supplied).
+Actual model: awaiting authoritative CLI/session metadata.
+Started Cursor Agent CLI in the active workspace and waiting for card-file completion evidence.
+
+### 2026-10-25T00:18:27.335Z - Usage Orchestrator dispatch dispatch-mvn2xg7a-t model observed
+Card: card-mve1i2ya-1. CLI: Cursor Agent CLI. Stage: implementation.
+Actual model: "Claude Opus 5.5 300K Extra High" (source: Cursor Agent stream-json system.init.model; attempt: dispatch-mvn2xg7a-t).
+
+### 2026-10-25T00:18:27.909Z - Cursor Agent CLI implementation handoff failed
+Cursor Agent CLI ran out of credits or hit its usage limit: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.. The card was not advanced; restore the CLI's allowance or configure an AI loop CLI fallback, then rerun the loop.
+
+### 2026-10-25T00:18:28.270Z - Switched from Cursor Agent CLI to Cursor Agent CLI
+Interrupted stage: implementation. Previous CLI: Cursor Agent CLI. Replacement CLI: Cursor Agent CLI. Exhaustion reason: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.
+Cursor Agent CLI runs on its own default model.
+The switch did not advance the card; Cursor Agent CLI is retrying the same implementation stage against the current card and workspace state.
+
+### 2026-10-25T00:18:28.485Z - Usage Orchestrator chose Cursor Agent CLI
+Stage: implementation. Cursor Agent CLI reports 83.7% remaining, resetting 2026-11-06T23:33:31.000Z - the soonest reset among the CLIs with usage left, so it is spent before it is lost. Pace variance -41.4 pts (57.7% elapsed).
+
+### 2026-10-25T00:18:29.476Z - Usage Orchestrator dispatch dispatch-mvn2xk2s-u started
+Card: card-mve1i2ya-1 ("Have the buttons at the bottom of the opened mwnn Kanban card always visible"). CLI: Cursor Agent CLI. Stage: implementation.
+Requested model: none (source: CLI default; no model argument was supplied).
+Actual model: awaiting authoritative CLI/session metadata.
+Started Cursor Agent CLI in the active workspace and waiting for card-file completion evidence.
+
+### 2026-10-25T00:18:31.661Z - Usage Orchestrator dispatch dispatch-mvn2xk2s-u model observed
+Card: card-mve1i2ya-1. CLI: Cursor Agent CLI. Stage: implementation.
+Actual model: "Claude Opus 5.5 300K Extra High" (source: Cursor Agent stream-json system.init.model; attempt: dispatch-mvn2xk2s-u).
+
+### 2026-10-25T00:18:32.448Z - Cursor Agent CLI implementation handoff failed
+Cursor Agent CLI ran out of credits or hit its usage limit: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.. The card was not advanced; restore the CLI's allowance or configure an AI loop CLI fallback, then rerun the loop.
+
+### 2026-10-25T00:18:32.782Z - Switched from Cursor Agent CLI to Cursor Agent CLI
+Interrupted stage: implementation. Previous CLI: Cursor Agent CLI. Replacement CLI: Cursor Agent CLI. Exhaustion reason: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.
+Cursor Agent CLI runs on its own default model.
+The switch did not advance the card; Cursor Agent CLI is retrying the same implementation stage against the current card and workspace state.
+
+### 2026-10-25T00:18:32.988Z - Usage Orchestrator chose Cursor Agent CLI
+Stage: implementation. Cursor Agent CLI reports 83.7% remaining, resetting 2026-11-06T23:33:31.000Z - the soonest reset among the CLIs with usage left, so it is spent before it is lost. Pace variance -41.4 pts (57.7% elapsed).
+
+### 2026-10-25T00:18:33.950Z - Usage Orchestrator dispatch dispatch-mvn2xnj2-v started
+Card: card-mve1i2ya-1 ("Have the buttons at the bottom of the opened mwnn Kanban card always visible"). CLI: Cursor Agent CLI. Stage: implementation.
+Requested model: none (source: CLI default; no model argument was supplied).
+Actual model: awaiting authoritative CLI/session metadata.
+Started Cursor Agent CLI in the active workspace and waiting for card-file completion evidence.
+
+### 2026-10-25T00:18:36.372Z - Usage Orchestrator dispatch dispatch-mvn2xnj2-v model observed
+Card: card-mve1i2ya-1. CLI: Cursor Agent CLI. Stage: implementation.
+Actual model: "Claude Opus 5.5 300K Extra High" (source: Cursor Agent stream-json system.init.model; attempt: dispatch-mvn2xnj2-v).
+
+### 2026-10-25T00:18:37.007Z - Cursor Agent CLI implementation handoff failed
+Cursor Agent CLI ran out of credits or hit its usage limit: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.. The card was not advanced; restore the CLI's allowance or configure an AI loop CLI fallback, then rerun the loop.
+
+### 2026-10-25T00:18:37.342Z - Switched from Cursor Agent CLI to Cursor Agent CLI
+Interrupted stage: implementation. Previous CLI: Cursor Agent CLI. Replacement CLI: Cursor Agent CLI. Exhaustion reason: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.
+Cursor Agent CLI runs on its own default model.
+The switch did not advance the card; Cursor Agent CLI is retrying the same implementation stage against the current card and workspace state.
+
+### 2026-10-25T00:18:37.546Z - Usage Orchestrator chose Cursor Agent CLI
+Stage: implementation. Cursor Agent CLI reports 83.7% remaining, resetting 2026-11-06T23:33:31.000Z - the soonest reset among the CLIs with usage left, so it is spent before it is lost. Pace variance -41.4 pts (57.7% elapsed).
+
+### 2026-10-25T00:18:38.518Z - Usage Orchestrator dispatch dispatch-mvn2xr1y-w started
+Card: card-mve1i2ya-1 ("Have the buttons at the bottom of the opened mwnn Kanban card always visible"). CLI: Cursor Agent CLI. Stage: implementation.
+Requested model: none (source: CLI default; no model argument was supplied).
+Actual model: awaiting authoritative CLI/session metadata.
+Started Cursor Agent CLI in the active workspace and waiting for card-file completion evidence.
+
+### 2026-10-25T00:18:40.887Z - Usage Orchestrator dispatch dispatch-mvn2xr1y-w model observed
+Card: card-mve1i2ya-1. CLI: Cursor Agent CLI. Stage: implementation.
+Actual model: "Claude Opus 5.5 300K Extra High" (source: Cursor Agent stream-json system.init.model; attempt: dispatch-mvn2xr1y-w).
+
+### 2026-10-25T00:18:41.700Z - Cursor Agent CLI implementation handoff failed
+Cursor Agent CLI ran out of credits or hit its usage limit: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.. The card was not advanced; restore the CLI's allowance or configure an AI loop CLI fallback, then rerun the loop.
+
+### 2026-10-25T00:18:42.091Z - Switched from Cursor Agent CLI to Cursor Agent CLI
+Interrupted stage: implementation. Previous CLI: Cursor Agent CLI. Replacement CLI: Cursor Agent CLI. Exhaustion reason: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.
+Cursor Agent CLI runs on its own default model.
+The switch did not advance the card; Cursor Agent CLI is retrying the same implementation stage against the current card and workspace state.
+
+### 2026-10-25T00:18:42.336Z - Usage Orchestrator chose Cursor Agent CLI
+Stage: implementation. Cursor Agent CLI reports 83.7% remaining, resetting 2026-11-06T23:33:31.000Z - the soonest reset among the CLIs with usage left, so it is spent before it is lost. Pace variance -41.4 pts (57.7% elapsed).
+
+### 2026-10-25T00:18:43.408Z - Usage Orchestrator dispatch dispatch-mvn2xuts-x started
+Card: card-mve1i2ya-1 ("Have the buttons at the bottom of the opened mwnn Kanban card always visible"). CLI: Cursor Agent CLI. Stage: implementation.
+Requested model: none (source: CLI default; no model argument was supplied).
+Actual model: awaiting authoritative CLI/session metadata.
+Started Cursor Agent CLI in the active workspace and waiting for card-file completion evidence.
+
+### 2026-10-25T00:18:45.627Z - Usage Orchestrator dispatch dispatch-mvn2xuts-x model observed
+Card: card-mve1i2ya-1. CLI: Cursor Agent CLI. Stage: implementation.
+Actual model: "Claude Opus 5.5 300K Extra High" (source: Cursor Agent stream-json system.init.model; attempt: dispatch-mvn2xuts-x).
+
+### 2026-10-25T00:18:46.435Z - Cursor Agent CLI implementation handoff failed
+Cursor Agent CLI ran out of credits or hit its usage limit: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.. The card was not advanced; restore the CLI's allowance or configure an AI loop CLI fallback, then rerun the loop.
+
+### 2026-10-25T00:18:46.788Z - Switched from Cursor Agent CLI to Cursor Agent CLI
+Interrupted stage: implementation. Previous CLI: Cursor Agent CLI. Replacement CLI: Cursor Agent CLI. Exhaustion reason: ActionRequiredError: You've hit your usage limit for Opus You've saved $87 on API model usage this month with Pro. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.
+Cursor Agent CLI runs on its own default model.
+The switch did not advance the card; Cursor Agent CLI is retrying the same implementation stage against the current card and workspace state.
+
+### 2026-10-25T00:18:46.996Z - Usage Orchestrator chose Cursor Agent CLI
+Stage: implementation. Cursor Agent CLI reports 83.7% remaining, resetting 2026-11-06T23:33:31.000Z - the soonest reset among the CLIs with usage left, so it is spent before it is lost. Pace variance -41.4 pts (57.7% elapsed).
+
+### 2026-10-25T00:18:47.659Z - Portfolio AI Loop handoff failed
+Every configured AI loop CLI fallback and model escalation was tried for this stage without completing it.

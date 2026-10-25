@@ -49,6 +49,8 @@ import {
 
 const NOW = new Date('2026-09-19T09:30:00.000Z');
 const MODEL = 'claude-opus-5';
+/** Auto-pool model for Cursor Agent CLI argv tests (Opus is Other Models). */
+const CURSOR_AUTO_MODEL = 'auto';
 /** One distinct name per provider, so a leak between CLIs is visible. */
 const PER_PROVIDER: Record<AgentCliProviderId, string> = {
   copilot: 'gpt-5-copilot',
@@ -437,7 +439,7 @@ suite('card preferred model: provider argument mapping', () => {
         'stream-json',
         '--stream-partial-output',
         '--model',
-        MODEL,
+        CURSOR_AUTO_MODEL,
       ],
       'cursor-other': [
         '-p',
@@ -454,6 +456,12 @@ suite('card preferred model: provider argument mapping', () => {
       const selection = resolveAgentCliModelSelection(provider, MODEL);
       assert.ok(selection, `${provider} should resolve a selection`);
       assert.equal(selection.applied, true);
+      // Opus is Other Models: Cursor Auto skips it and floors at `auto`.
+      assert.equal(
+        selection.requested,
+        provider === 'cursor' ? CURSOR_AUTO_MODEL : MODEL,
+        `${provider} resolved model`,
+      );
       const invocation = buildAgentCliInvocation(target(provider), 'prompt body', 'E:\\workspace', selection);
       assert.deepEqual(invocation.args, expected[provider], `${provider} model argv`);
       // The prompt still travels over stdin, never on argv.
@@ -467,20 +475,44 @@ suite('card preferred model: provider argument mapping', () => {
       copilot: ['--allow-all-tools', '--no-ask-user', '--silent'],
       codex: ['exec', '--sandbox', 'workspace-write', '-'],
       'claude-code': ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
-      cursor: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
+      // Cursor Auto floors at `auto` even with no card/workspace model.
+      cursor: [
+        '-p',
+        '--force',
+        '--output-format',
+        'stream-json',
+        '--stream-partial-output',
+        '--model',
+        CURSOR_AUTO_MODEL,
+      ],
       'cursor-other': ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
     };
 
     for (const provider of AGENT_CLI_PROVIDER_IDS) {
       for (const value of [undefined, '', '   ']) {
+        if (provider === 'cursor') {
+          const selection = resolveAgentCliModelSelection(provider, value);
+          assert.ok(selection);
+          assert.equal(selection.requested, CURSOR_AUTO_MODEL);
+          assert.deepEqual(
+            buildAgentCliInvocation(target(provider), 'prompt', 'E:\\workspace', selection).args,
+            unset[provider],
+          );
+          continue;
+        }
         assert.equal(
           resolveAgentCliModelSelection(provider, value),
           undefined,
           `${provider} should resolve nothing for ${JSON.stringify(value)}`,
         );
       }
+      // Raw argv builder without a resolved selection still omits --model;
+      // Cursor Auto's `auto` floor is applied only through resolveAgentCliModel.
       const invocation = buildAgentCliInvocation(target(provider), 'prompt', 'E:\\workspace');
-      assert.deepEqual(invocation.args, unset[provider], `${provider} unset argv`);
+      const bareArgs = provider === 'cursor'
+        ? ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output']
+        : unset[provider];
+      assert.deepEqual(invocation.args, bareArgs, `${provider} unset argv`);
       assert.equal(invocation.modelSelection, undefined);
     }
   });
@@ -505,9 +537,17 @@ suite('card preferred model: provider argument mapping', () => {
       );
       const invocation = buildAgentCliInvocation(target(provider), 'prompt', 'E:\\workspace', selection);
 
-      if (provider === 'cursor' || provider === 'cursor-other') {
+      if (provider === 'cursor-other') {
         assert.equal(selection, undefined, `${provider} names no model on this card`);
         assert.ok(!invocation.args.includes('--model'));
+        continue;
+      }
+      if (provider === 'cursor') {
+        // No card/workspace Auto model: floor at `auto` so Other Models is never the CLI default.
+        assert.ok(selection);
+        assert.equal(selection.requested, 'auto');
+        assert.ok(invocation.args.includes('--model'));
+        assert.equal(invocation.args[invocation.args.indexOf('--model') + 1], 'auto');
         continue;
       }
 
@@ -547,7 +587,7 @@ suite('card preferred model: provider argument mapping', () => {
       MODEL,
     ]);
 
-    const cursorSelection = resolveAgentCliModelSelection('cursor', MODEL);
+    const cursorSelection = resolveAgentCliModelSelection('cursor', CURSOR_AUTO_MODEL);
     assert.ok(cursorSelection);
     const prepared = await prepareAgentCliInvocation(
       { ...target('cursor'), executable: 'C:\\npm\\cursor-agent.cmd' },
@@ -566,7 +606,7 @@ suite('card preferred model: provider argument mapping', () => {
         'stream-json',
         '--stream-partial-output',
         '--model',
-        MODEL,
+        CURSOR_AUTO_MODEL,
       ]);
       assert.equal(args.length, 8);
       assert.ok(args[7]?.includes('Read the UTF-8 file at'));
@@ -576,16 +616,16 @@ suite('card preferred model: provider argument mapping', () => {
   });
 
   test('runs on the provider default, with a stated reason, when the provider takes no model selection', () => {
-    const selection = resolveAgentCliModelSelection('cursor', MODEL, {
+    const selection = resolveAgentCliModelSelection('cursor', CURSOR_AUTO_MODEL, {
       flags: { ...AGENT_CLI_MODEL_FLAGS, cursor: undefined },
     });
 
     assert.ok(selection);
     assert.equal(selection.applied, false);
     assert.deepEqual(selection.args, []);
-    assert.equal(selection.requested, MODEL);
+    assert.equal(selection.requested, CURSOR_AUTO_MODEL);
     assert.ok(selection.reason?.includes(AGENT_CLI_LABELS.cursor));
-    assert.ok(selection.reason?.includes(MODEL));
+    assert.ok(selection.reason?.includes(CURSOR_AUTO_MODEL));
 
     // Nothing is added to argv, so the run still uses the CLI's own default.
     assert.deepEqual(
@@ -922,15 +962,20 @@ suite('card preferred model: credit fallback interaction', () => {
       'workspace-write',
       '-',
     ]);
-    // Cursor runs on its own default: no model argument, and nothing inherited.
+    // Cursor Auto floors at `auto`; Codex's preferred model is not inherited.
     assert.deepEqual(invocations[1]?.args, [
       '-p',
       '--force',
       '--output-format',
       'stream-json',
       '--stream-partial-output',
+      '--model',
+      CURSOR_AUTO_MODEL,
     ]);
-    assert.equal(switches[0]?.toModel, undefined);
+    assert.deepEqual(switches[0]?.toModel, {
+      model: CURSOR_AUTO_MODEL,
+      source: 'workspace-default',
+    });
   });
 
   test('a card with no model leaves both the original and replacement argv untouched', async () => {
@@ -975,6 +1020,8 @@ suite('card preferred model: credit fallback interaction', () => {
       '--output-format',
       'stream-json',
       '--stream-partial-output',
+      '--model',
+      CURSOR_AUTO_MODEL,
     ]);
     assert.ok(!board.activity(cardId).includes('Card preferred model'));
   });

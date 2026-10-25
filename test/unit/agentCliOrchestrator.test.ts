@@ -297,6 +297,28 @@ suite('Usage Orchestrator choice', () => {
     assert.equal(await chosenProvider(orchestrator), 'none');
   });
 
+  test('cross-pool Cursor exhaustion parks both Auto and Other Models identities', async () => {
+    const clock: Clock = { now: START };
+    const resetsAt = START + 5 * HOUR;
+    const orchestrator = orchestratorWith(
+      ['cursor', 'cursor-other'],
+      {
+        cursor: cursorPools(
+          reportedPool(83.7, resetsAt),
+          reportedPool(10, resetsAt),
+        ),
+      },
+      clock,
+    );
+
+    // Auto still has room, so Cursor Agent CLI wins before any exhaustion.
+    assert.equal(await chosenProvider(orchestrator), 'cursor');
+    // Dispatch ran Opus (Other Models) while selected as Auto: remapped pool
+    // identity is cursor-other, but retrying cursor would default to Opus again.
+    orchestrator.markExhausted('cursor', { cursorPool: 'other-models' });
+    assert.equal(await chosenProvider(orchestrator), 'none');
+  });
+
   test('excluding cursor-other does not exclude cursor', async () => {
     const clock: Clock = { now: START };
     const resetsAt = START + 5 * HOUR;
@@ -640,6 +662,83 @@ suite('Usage Orchestrator in the AI loop runner', () => {
     assert.equal(await columnOf(), columnBefore);
     assert.match(board.card(cardId).activity ?? '', /AI loop paused: no AI CLI with usage left/);
     assert.equal((await runner.run({ kind: 'implementation', card: board.card(cardId), buildPrompt: () => 'Work' })).kind, 'paused');
+  });
+
+  test('does not retry Cursor Auto when its default Opus hits Other Models limits', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const clock: Clock = { now: START };
+    const resetsAt = START + 5 * HOUR;
+    const progress: string[] = [];
+    const providers: AgentCliProviderId[] = [];
+    const observedArgs: string[][] = [];
+    const opusLimit =
+      "ActionRequiredError: You've hit your usage limit for Opus. Switch to a different model or set a Spend Limit to continue with Opus. Your usage limits will reset when your monthly cycle ends on 11/6/2026.";
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('cursor'),
+      settings: { enabled: false, providers: [] },
+      configuredPaths: {},
+      cwd: 'E:\\workspace',
+      store: board.store,
+      signal: new AbortController().signal,
+      now: () => new Date(START),
+      // Only Cursor Auto is installed: proves Auto passes `--model auto` and
+      // does not self-retry after exhaustion (Other Models is not available).
+      orchestrator: orchestratorWith(
+        ['cursor'],
+        {
+          cursor: cursorPools(
+            reportedPool(83.7, resetsAt),
+            reportedPool(10, resetsAt),
+          ),
+        },
+        clock,
+      ),
+      onProgress: (line) => progress.push(line),
+      runHandoff: (handoff, options) => runAgentCliCardHandoff(handoff, {
+        ...options,
+        now: () => new Date(START),
+        runProcess: async (invocation, _signal, observer) => {
+          providers.push(invocation.provider);
+          observedArgs.push([...invocation.args]);
+          observer?.onOutput?.(
+            '{"type":"system","subtype":"init","model":"auto"}\n',
+            'stdout',
+          );
+          return {
+            started: true,
+            cancelled: false,
+            exitCode: 1,
+            signal: null,
+            stdout: '',
+            stderr: opusLimit,
+          };
+        },
+      }),
+    });
+
+    const outcome = await runner.run({
+      kind: 'implementation',
+      card: board.card(cardId),
+      buildPrompt: () => 'Investigate the failure.',
+    });
+    assert.equal(outcome.kind, 'ran');
+    assert.equal(outcome.kind === 'ran' ? outcome.exhaustedWithoutFallback : undefined, true);
+    assert.deepEqual(providers, ['cursor']);
+    assert.equal(
+      outcome.kind === 'ran' ? outcome.result.modelSelection?.requested : undefined,
+      'auto',
+      'Cursor Auto must pass --model auto so the CLI cannot default to Opus',
+    );
+    assert.ok(
+      observedArgs.every((args) => {
+        const flag = args.indexOf('--model');
+        return flag >= 0 && args[flag + 1] === 'auto';
+      }),
+      `expected --model auto on every dispatch, got ${JSON.stringify(observedArgs)}`,
+    );
+    assert.ok(!progress.some((line) => /continuing the implementation stage with Cursor Agent CLI/.test(line)));
+    assert.match(board.card(cardId).activity ?? '', /ran out of credits or hit its usage limit/);
   });
 
   test('without an orchestrator no usage is probed and the fixed CLI runs', async () => {

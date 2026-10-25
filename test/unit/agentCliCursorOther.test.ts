@@ -132,10 +132,13 @@ suite('Cursor Agent CLI Other provider', () => {
         true,
       );
       assert.deepEqual(discovery.args, expected, `${provider} orchestrator argv`);
+      // Opus is Other Models: Auto floors at `auto`; Other keeps Opus.
       const withModel = resolveAgentCliModelSelection(provider, 'claude-opus-5');
       assert.ok(withModel?.applied);
+      const expectedModel = provider === 'cursor' ? 'auto' : 'claude-opus-5';
+      assert.equal(withModel.requested, expectedModel);
       const spliced = buildAgentCliInvocation(target, 'prompt', 'E:\\workspace', withModel);
-      assert.deepEqual(spliced.args, [...expected, '--model', 'claude-opus-5']);
+      assert.deepEqual(spliced.args, [...expected, '--model', expectedModel]);
     }
   });
 

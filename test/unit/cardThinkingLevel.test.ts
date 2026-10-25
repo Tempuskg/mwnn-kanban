@@ -68,7 +68,11 @@ const UNSUPPORTED = AGENT_CLI_PROVIDER_IDS.filter(
   (provider) => AGENT_CLI_THINKING_FLAGS[provider] === undefined,
 );
 
-/** Every provider's fixed argv, as it must stay when nothing is configured. */
+/**
+ * Bare provider argv from {@link buildAgentCliInvocation} with no model
+ * selection. Cursor Auto's `--model auto` floor is applied only when resolving
+ * a model for a handoff, not by the raw argv builder.
+ */
 const BASELINE_ARGS: Record<AgentCliProviderId, readonly string[]> = {
   copilot: ['--allow-all-tools', '--no-ask-user', '--silent'],
   codex: ['exec', '--sandbox', 'workspace-write', '-'],
@@ -76,6 +80,13 @@ const BASELINE_ARGS: Record<AgentCliProviderId, readonly string[]> = {
   cursor: ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
   'cursor-other': ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output'],
 };
+
+/** Handoff argv for Cursor Auto when no card/workspace Auto model is set. */
+const CURSOR_HANDOFF_ARGS: readonly string[] = [
+  ...BASELINE_ARGS.cursor,
+  '--model',
+  'auto',
+];
 
 function cardDocument(card: Card): CardDocument {
   return { columnId: 'col-ready', position: 1000, card };
@@ -649,11 +660,14 @@ suite('card thinking level: dispatch', () => {
       },
     );
 
-    // The run is unaffected: it happened, it completed, and argv is untouched.
+    // The run is unaffected: it happened, it completed, and thinking was skipped.
     assert.equal(result.completed, true);
     assert.equal(result.failure, undefined);
     assert.equal(result.thinkingSelection?.applied, false);
-    assert.deepEqual(invocations[0]?.args, BASELINE_ARGS[provider]);
+    assert.deepEqual(
+      invocations[0]?.args,
+      provider === 'cursor' ? CURSOR_HANDOFF_ARGS : BASELINE_ARGS[provider],
+    );
     assert.ok(board.activity(cardId).includes('was not applied'));
     assert.ok(board.activity(cardId).includes(AGENT_CLI_LABELS[provider]));
   });

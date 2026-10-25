@@ -16,6 +16,8 @@ import {
   agentCliModelsFor,
   defaultAgentCliModel,
   readAgentCliModelCatalog,
+  CURSOR_AUTO_POOL_DEFAULT_MODEL,
+  modelMatchesCursorProviderPool,
   resolveAgentCliModel,
 } from '../../src/agentCliModels';
 import {
@@ -155,11 +157,48 @@ suite('agent CLI model catalog: resolution order', () => {
     assert.equal(resolveAgentCliModel('codex', '  ', EMPTY_AGENT_CLI_MODEL_CATALOG), undefined);
   });
 
+  test('Cursor Auto skips Other Models names and floors at auto', () => {
+    assert.ok(modelMatchesCursorProviderPool('cursor', 'auto'));
+    assert.ok(modelMatchesCursorProviderPool('cursor', 'composer-2.5'));
+    assert.ok(!modelMatchesCursorProviderPool('cursor', 'claude-opus-5'));
+    assert.ok(modelMatchesCursorProviderPool('cursor-other', 'claude-opus-5'));
+    assert.ok(!modelMatchesCursorProviderPool('cursor-other', 'auto'));
+
+    assert.deepEqual(resolveAgentCliModel('cursor', 'claude-opus-5'), {
+      model: CURSOR_AUTO_POOL_DEFAULT_MODEL,
+      source: 'workspace-default',
+    });
+    assert.deepEqual(
+      resolveAgentCliModel(
+        'cursor',
+        'claude-opus-5',
+        readAgentCliModelCatalog({ cursor: ['claude-opus-5', 'auto', 'composer'] }),
+      ),
+      { model: 'auto', source: 'workspace-default' },
+    );
+    assert.deepEqual(resolveAgentCliModel('cursor', 'auto'), {
+      model: 'auto',
+      source: 'card',
+    });
+    assert.deepEqual(resolveAgentCliModel('cursor-other', 'auto'), undefined);
+    assert.deepEqual(
+      resolveAgentCliModel(
+        'cursor-other',
+        'auto',
+        readAgentCliModelCatalog({ 'cursor-other': ['auto', 'claude-opus-5'] }),
+      ),
+      { model: 'claude-opus-5', source: 'workspace-default' },
+    );
+  });
+
   test('a default configured for other providers only is ignored for the active provider', () => {
-    // copilot and cursor are unconfigured here: each falls through to its own
-    // default model rather than borrowing another provider entry.
+    // copilot stays unconfigured (CLI default). Cursor Auto floors at `auto`
+    // so it cannot inherit another provider's entry or an Other Models default.
     assert.equal(resolveAgentCliModel('copilot', undefined, catalog), undefined);
-    assert.equal(resolveAgentCliModel('cursor', undefined, catalog), undefined);
+    assert.deepEqual(resolveAgentCliModel('cursor', undefined, catalog), {
+      model: 'auto',
+      source: 'workspace-default',
+    });
     // And each configured provider still resolves to its own entry.
     assert.equal(resolveAgentCliModel('codex', undefined, catalog)?.model, CODEX_DEFAULT);
     assert.equal(resolveAgentCliModel('claude-code', undefined, catalog)?.model, CLAUDE_DEFAULT);
@@ -438,17 +477,25 @@ suite('workspace default model: dispatch', () => {
       buildPrompt: () => 'prompt',
     });
 
-    // The exhausted provider default is not carried over to the replacement.
+    // Cursor Auto floors at `auto` so the replacement never inherits Codex's
+    // default and never leaves the model to an Other Models CLI default.
     assert.deepEqual(invocations[1]?.args, [
       '-p',
       '--force',
       '--output-format',
       'stream-json',
       '--stream-partial-output',
+      '--model',
+      'auto',
     ]);
-    assert.equal(switches[0]?.toModel, undefined);
+    assert.deepEqual(switches[0]?.toModel, {
+      model: 'auto',
+      source: 'workspace-default',
+    });
     assert.ok(
-      board.activity(cardId).includes(`${AGENT_CLI_LABELS.cursor} runs on its own default model.`),
+      board.activity(cardId).includes(
+        `${AGENT_CLI_LABELS.cursor} model: "auto", from the workspace default model.`,
+      ),
     );
   });
 });
