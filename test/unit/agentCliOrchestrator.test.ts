@@ -1,9 +1,10 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import { createAgentCliFallbackRunner } from '../../src/agentCliFallback';
 import {
   AGENT_CLI_LABELS,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliCardHandoff,
   type AgentCliCardHandoffOptions,
   type AgentCliProcessResult,
@@ -835,3 +836,6 @@ suite('Usage Orchestrator in Run Card with AI', () => {
     assert.doesNotMatch(board.card(cardId).activity ?? '', /Usage Orchestrator/);
   });
 });
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

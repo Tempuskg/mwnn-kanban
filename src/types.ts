@@ -7,9 +7,11 @@
  */
 
 import {
+  isAgentCliExecutableProviderId,
   AGENT_CLI_PROVIDER_IDS,
   isAgentCliProviderId,
   isAgentCliStageProviderId,
+  type AgentCliExecutableProviderId,
   type AgentCliProviderId,
   type AgentCliStageProviderId,
 } from './agentCliProviders';
@@ -21,6 +23,14 @@ export type AgentCliPanelList = 'models' | 'thinkingLevels';
 export type AgentCliSettingsPanelMessage =
   | { readonly type: 'settingsReady' }
   | { readonly type: 'settingsScope'; readonly scope: AgentCliSettingsScope }
+  | {
+      readonly type: 'cliAccessEdit';
+      readonly scope: AgentCliSettingsScope;
+      readonly provider: AgentCliExecutableProviderId;
+      readonly allowed: boolean;
+    }
+  /** User-scope only, so it carries no panel scope. */
+  | { readonly type: 'noExtraChargesEdit'; readonly acknowledged: boolean }
   | {
       readonly type: 'settingsListEdit';
       readonly scope: AgentCliSettingsScope;
@@ -51,6 +61,14 @@ export interface AgentCliSettingsPanelProvider {
   readonly thinkingApplied: boolean;
 }
 
+export interface AgentCliSettingsPanelCli {
+  readonly id: AgentCliExecutableProviderId;
+  readonly label: string;
+  readonly allowed: boolean;
+  /** The effective lower-scope value when this scope has no explicit choice. */
+  readonly inheritedAllowed: boolean | null;
+}
+
 export interface AgentCliSettingsPanelStage {
   readonly provider: AgentCliStageProviderId;
   readonly label: string;
@@ -69,6 +87,9 @@ export interface AgentCliSettingsPanelState {
   readonly scope: AgentCliSettingsScope;
   readonly workspaceAvailable: boolean;
   readonly inheritedScope: 'User' | 'Extension default';
+  readonly clis: readonly AgentCliSettingsPanelCli[];
+  /** The User-scope acknowledgement that no enabled CLI can incur an extra usage charge. */
+  readonly noExtraChargesAcknowledged: boolean;
   readonly providers: readonly AgentCliSettingsPanelProvider[];
   readonly stages: readonly AgentCliSettingsPanelStage[];
   readonly error: string | null;
@@ -83,11 +104,17 @@ export function isAgentCliSettingsPanelMessage(value: unknown): value is AgentCl
   if (message['type'] === 'settingsReady') {
     return true;
   }
+  if (message['type'] === 'noExtraChargesEdit') {
+    return typeof message['acknowledged'] === 'boolean';
+  }
   if (message['scope'] !== 'workspace' && message['scope'] !== 'user') {
     return false;
   }
   if (message['type'] === 'settingsScope') {
     return true;
+  }
+  if (message['type'] === 'cliAccessEdit') {
+    return isAgentCliExecutableProviderId(message['provider']) && typeof message['allowed'] === 'boolean';
   }
   if ((message['list'] !== 'models' && message['list'] !== 'thinkingLevels') || typeof message['name'] !== 'string') {
     return false;
@@ -125,6 +152,12 @@ export interface Card {
   assignee?: Assignee;
   /** Ids of other cards this card depends on; it is blocked until they are done. */
   dependsOn?: string[];
+  /**
+   * Local wall-clock datetime when this card becomes eligible to leave Ready /
+   * enter work columns. Stored as `YYYY-MM-DDTHH:mm` with no timezone suffix;
+   * omitted rather than blank when the card has no schedule.
+   */
+  scheduledFor?: string;
   /**
    * AI model this card should be run with, **per agent CLI provider**.
    *
@@ -217,6 +250,8 @@ export type WebviewToHostMessage =
   | { readonly type: 'setActivity'; readonly cardId: string; readonly activity: string }
   | { readonly type: 'setAssignee'; readonly cardId: string; readonly assignee?: Assignee }
   | { readonly type: 'setDependencies'; readonly cardId: string; readonly dependsOn: readonly string[] }
+  /** Set or clear a card's local schedule; omit `scheduledFor` to clear. */
+  | { readonly type: 'setScheduledFor'; readonly cardId: string; readonly scheduledFor?: string }
   | {
       readonly type: 'setPreferredModel';
       readonly cardId: string;
@@ -444,6 +479,11 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         Array.isArray(value['dependsOn']) &&
         value['dependsOn'].every((id) => typeof id === 'string')
       );
+    case 'setScheduledFor':
+      return (
+        typeof value['cardId'] === 'string' &&
+        (value['scheduledFor'] === undefined || typeof value['scheduledFor'] === 'string')
+      );
     case 'setPreferredModel':
       return (
         typeof value['cardId'] === 'string' &&
@@ -529,6 +569,7 @@ function isCard(value: unknown): value is Card {
     (candidate['assignee'] === undefined || isAssignee(candidate['assignee'])) &&
     (candidate['dependsOn'] === undefined ||
       (Array.isArray(candidate['dependsOn']) && candidate['dependsOn'].every((id) => typeof id === 'string'))) &&
+    (candidate['scheduledFor'] === undefined || typeof candidate['scheduledFor'] === 'string') &&
     (candidate['interview'] === undefined || candidate['interview'] === true) &&
     (candidate['preferredModels'] === undefined || isCardPreferredModels(candidate['preferredModels'])) &&
     (candidate['thinkingLevels'] === undefined || isCardThinkingLevels(candidate['thinkingLevels']))

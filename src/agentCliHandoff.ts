@@ -39,6 +39,17 @@ import {
   type AgentCliExecutableProviderId,
   type AgentCliProviderId,
 } from './agentCliProviders';
+import { isAgentCliProviderAllowed } from './agentCliAccess';
+import {
+  AGENT_CLI_DEFAULT_MODEL,
+  AGENT_CLI_LAUNCH_AUTHORITY,
+  createAgentCliLaunchScope,
+  reserveAgentCliLaunch,
+  settleAgentCliLaunch,
+  type AgentCliLaunchGate,
+  type AgentCliLaunchScope,
+} from './agentCliLaunchGate';
+import { defaultOutcomeEvidenceFactory, type OutcomeEvidenceFactory, type EvidenceCommand } from './outcomeEvidence';
 import type { AgentCliHandoffKind } from './agentCliStages';
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
@@ -511,6 +522,8 @@ export interface ExecutableDiscoveryOptions {
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly platform?: NodeJS.Platform;
+  /** If supplied, providers absent from this allowlist are not discovered. */
+  readonly allowedProviders?: readonly AgentCliExecutableProviderId[];
   readonly canExecute?: (candidate: string, platform: NodeJS.Platform) => Promise<boolean>;
   readonly probeGhCopilot?: (executable: string, cwd: string) => Promise<GhCopilotProbeResult>;
 }
@@ -530,6 +543,17 @@ export async function resolveAgentCliTarget(
   configuredPaths: AgentCliPathOverrides = {},
   options: ExecutableDiscoveryOptions = {},
 ): Promise<AgentCliResolution> {
+  if (
+    options.allowedProviders !== undefined
+    && !isAgentCliProviderAllowed(provider, options.allowedProviders)
+  ) {
+    return {
+      available: false,
+      provider,
+      attemptedCommand: AGENT_CLI_LABELS[provider],
+      reason: `${AGENT_CLI_LABELS[provider]} is disabled for AI dispatch. In the Agent CLI Models settings panel, enable it and confirm that no extra charges are possible to use it.`,
+    };
+  }
   // Cursor Agent CLI Other shares the Cursor Agent CLI executable and path key.
   const executableProvider = agentCliExecutableProvider(provider);
   const configured = normalizeConfiguredPath(configuredPaths[executableProvider]);
@@ -844,6 +868,8 @@ async function defaultCanExecute(candidate: string, platform: NodeJS.Platform): 
 }
 
 export interface AgentCliInvocation {
+  /** Optional host-owned environment for independent check subprocesses. */
+  readonly env?: NodeJS.ProcessEnv;
   readonly provider: AgentCliProviderId;
   readonly label: string;
   readonly command: string;
@@ -1142,6 +1168,7 @@ export async function runAgentCliProcess(
           };
       child = spawn(launch.command, launch.args, {
         cwd: invocation.cwd,
+        ...(invocation.env !== undefined ? { env: invocation.env } : {}),
         windowsHide: true,
         detached: process.platform !== 'win32',
         shell: false,
@@ -1318,6 +1345,11 @@ export interface AgentCliCardHandoff {
   readonly store: AgentCliHandoffStore;
   readonly signal: AbortSignal;
   /**
+   * The run this launch belongs to. Omitted means an unscoped single launch:
+   * it still counts toward project and global limits, but has its own stage count.
+   */
+  readonly launchScope?: AgentCliLaunchScope;
+  /**
    * Workspace model lists, already validated. Omitted means "nothing
    * configured", so the card's own model is the only one that can apply.
    */
@@ -1373,12 +1405,18 @@ export interface AgentCliCardHandoff {
  */
 export type AgentCliHandoffFailure =
   | 'card-missing'
+  | 'provider-disabled'
+  /** The registered launch gate refused a budget/attempt reservation; nothing was started. */
+  | 'launch-refused'
+  | 'outcome-unverified'
   | 'model-rejected'
   | 'credit-exhausted'
   | 'process-failed'
   | 'missing-evidence';
 
 export interface AgentCliCardHandoffResult {
+  /** Live host proof, never reconstructed from card text or persisted receipts. */
+  readonly revalidateOutcome?: () => Promise<boolean>;
   readonly completed: boolean;
   readonly cancelled: boolean;
   /** Activity length after the loop's start entry and before the agent ran. */
@@ -1414,8 +1452,15 @@ export interface AgentCliCardHandoffResult {
 }
 
 export interface AgentCliCardHandoffOptions {
+  readonly boardFolder?: string;
+  /** Host-owned independent checker; injection is for adapters/tests, never agent text. */
+  readonly outcomeEvidenceFactory?: OutcomeEvidenceFactory;
   readonly runProcess?: AgentCliProcessRunner;
   readonly now?: () => Date;
+  /** If supplied, prevents a disabled executable from being launched. */
+  readonly allowedProviders?: readonly AgentCliExecutableProviderId[];
+  /** If supplied, every process launch must first hold a durable reservation from it. */
+  readonly launchGate?: AgentCliLaunchGate;
   /** True only when the Usage Orchestrator selected this attempt's CLI. */
   readonly orchestrated?: boolean;
   /** Ignore the card's preferred model and resolve from stage/workspace settings. */
@@ -1434,6 +1479,18 @@ export async function runAgentCliCardHandoff(
   handoff: AgentCliCardHandoff,
   options: AgentCliCardHandoffOptions = {},
 ): Promise<AgentCliCardHandoffResult> {
+  if (
+    options.allowedProviders !== undefined
+    && !isAgentCliProviderAllowed(handoff.target.provider, options.allowedProviders)
+  ) {
+    return {
+      completed: false,
+      cancelled: false,
+      activityBaseline: 0,
+      failure: 'provider-disabled',
+      reason: `${handoff.target.label} is disabled for AI dispatch. In the Agent CLI Models settings panel, enable it and confirm that no extra charges are possible to use it.`,
+    };
+  }
   const runProcess = options.runProcess ?? runAgentCliProcess;
   const now = options.now ?? (() => new Date());
   const before = findCard(await handoff.store.reload(), handoff.cardId);
@@ -1450,6 +1507,14 @@ export async function runAgentCliCardHandoff(
     return { completed: false, cancelled: true, activityBaseline: (before.activity ?? '').length };
   }
 
+  const outcomeSession = handoff.kind === 'implementation' || handoff.kind === 'verification'
+    ? await (options.outcomeEvidenceFactory ?? defaultOutcomeEvidenceFactory(runIndependentEvidenceCommand))({
+        cwd: handoff.cwd, card: before, prompt: handoff.prompt, stage: handoff.kind,
+        ...(options.boardFolder !== undefined ? { boardFolder: options.boardFolder } : {}),
+        signal: handoff.signal,
+        reloadCard: async () => findCard(await handoff.store.reload(), handoff.cardId),
+      })
+    : undefined;
   // Resolved per dispatch from the card as it is on disk right now, against the
   // provider running *this* attempt, and for *this* handoff's stage. A model
   // edited mid-run is picked up by the next stage, each stage of one loop run
@@ -1490,6 +1555,47 @@ export async function runAgentCliCardHandoff(
     ...(modelSelection ? { modelSelection } : {}),
     ...(thinkingSelection ? { thinkingSelection } : {}),
   });
+
+  // Reserved after the model is resolved, so the journal records the exact
+  // provider/model, and before anything is written or spawned, so a refusal
+  // costs nothing and leaves no process to wind down.
+  const launchGate = options.launchGate;
+  let reservationId: string | undefined;
+  if (launchGate) {
+    const scope = handoff.launchScope ?? createAgentCliLaunchScope(handoff.cardId);
+    const admission = await reserveAgentCliLaunch(launchGate, {
+      root: path.resolve(handoff.cwd),
+      cardId: handoff.cardId,
+      stage: handoff.kind,
+      provider: handoff.target.provider,
+      model: (modelSelection?.applied ? nonBlank(modelSelection.requested) : undefined) ?? AGENT_CLI_DEFAULT_MODEL,
+      runId: scope.runId,
+      cardRunId: scope.cardRunId,
+      authority: AGENT_CLI_LAUNCH_AUTHORITY,
+    });
+    if (!admission.allowed) {
+      await appendIfCardExists(
+        handoff.store,
+        handoff.cardId,
+        formatAgentCliLaunchRefusedEntry(handoff.target.label, handoff.kind, admission.reason, now()),
+      );
+      return withModel({
+        completed: false,
+        cancelled: false,
+        activityBaseline: (before.activity ?? '').length,
+        failure: 'launch-refused',
+        reason: admission.reason,
+      });
+    }
+    reservationId = admission.reservationId;
+  }
+  const settleLaunch = async (outcome: 'ended' | 'not-started'): Promise<void> => {
+    if (launchGate && reservationId !== undefined) {
+      const id = reservationId;
+      reservationId = undefined;
+      await settleAgentCliLaunch(launchGate, id, outcome);
+    }
+  };
 
   const startedAt = now();
   const attemptId = options.orchestrated
@@ -1594,6 +1700,7 @@ export async function runAgentCliCardHandoff(
       ...(thinkingSelection !== undefined ? { thinkingSelection } : {}),
     });
   } catch (error) {
+    await settleLaunch('not-started');
     await finishDiscovery({
       started: false,
       cancelled: handoff.signal.aborted,
@@ -1630,6 +1737,8 @@ export async function runAgentCliCardHandoff(
     await prepared.cleanup?.();
   }
   if (processRunnerThrew) {
+    // Whether the process started is unknown, so the launch stays counted.
+    await settleLaunch('ended');
     await finishDiscovery({
       ...(sawProcessOutput ? { started: true } : {}),
       cancelled: handoff.signal.aborted,
@@ -1639,8 +1748,10 @@ export async function runAgentCliCardHandoff(
     throw processRunnerError;
   }
   if (processResult === undefined) {
+    await settleLaunch('ended');
     throw new Error('The agent CLI process runner returned no result.');
   }
+  await settleLaunch(processResult.started ? 'ended' : 'not-started');
 
   let modelOutcome: AgentCliModelDiscoveryOutcome | undefined;
   if (discovery) {
@@ -1744,7 +1855,49 @@ export async function runAgentCliCardHandoff(
     }));
   }
 
-  const baseResult = { completed: true, cancelled: false, activityBaseline } as const;
+  let revalidateOutcome: (() => Promise<boolean>) | undefined;
+  const requestsAcceptance = evidence.terminalStatus?.kind === 'done'
+    || (handoff.kind === 'verification'
+      && parseVerificationVerdict(after.activity ?? '', activityBaseline)?.kind === 'pass');
+  if (requestsAcceptance) {
+    await handoff.store.appendActivity(handoff.cardId,
+      `### ${now().toISOString()} - MWNN independent verification started`);
+    const outcome = await outcomeSession?.verify();
+    if (!outcome?.valid) {
+      const reason = outcome?.reason ?? 'Independent outcome evidence is unavailable.';
+      await handoff.store.appendActivity(handoff.cardId,
+        formatAgentCliFailureEntry(handoff.target.label, handoff.kind, reason, now()));
+      return withDiscovery(withModel({ completed: false, cancelled: handoff.signal.aborted,
+        activityBaseline, failure: 'outcome-unverified', reason }));
+    }
+    const current = findCard(await handoff.store.reload(), handoff.cardId);
+    const currentEvidence = current && validateCompletionEvidence(handoff.kind, current, activityBaseline);
+    if (!currentEvidence?.valid
+      || (handoff.kind === 'implementation' && currentEvidence.terminalStatus?.kind !== 'done')
+      || (handoff.kind === 'verification'
+        && parseVerificationVerdict(current?.activity ?? '', activityBaseline)?.kind !== 'pass')) {
+      const reason = 'Card completion marker changed during independent verification; completion was not accepted.';
+      return withDiscovery(withModel({ completed: false, cancelled: false,
+        activityBaseline, failure: 'outcome-unverified', reason }));
+    }    revalidateOutcome = async () => {
+      if (!await outcomeSession?.revalidate?.()) { return false; }
+      const latest = findCard(await handoff.store.reload(), handoff.cardId);
+      if (!latest) { return false; }
+      if (handoff.kind === 'verification') {
+        return parseVerificationVerdict(latest.activity ?? '', activityBaseline)?.kind === 'pass';
+      }
+      const terminal = parseTerminalCardStatus(latest.activity ?? '', activityBaseline);
+      return terminal.valid && terminal.status.kind === 'done';
+    };    await handoff.store.appendActivity(handoff.cardId, [
+      `### ${now().toISOString()} - MWNN independent verification receipt`,
+      `Checker: ${outcome.receipt.checker}; attempt: ${outcome.receipt.attemptId}`,
+      `Input digest: ${outcome.receipt.inputDigest}`,
+      `Checked revision: ${outcome.receipt.checkedRevision.digest}`,
+      `Receipt: ${outcome.receiptPath}`,
+    ].join('\n'));
+  }
+  const baseResult = { completed: true, cancelled: false, activityBaseline,
+    ...(revalidateOutcome ? { revalidateOutcome } : {}) } as const;
   return withDiscovery(withModel(
     evidence.terminalStatus ? { ...baseResult, terminalStatus: evidence.terminalStatus } : baseResult,
   ));
@@ -1956,7 +2109,10 @@ export function parseTerminalCardStatus(
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => /^STATUS:/i.test(line));
-  const statusLine = statusLines.at(-1);
+  // An unresolved blocker in this dispatch outranks later DONE text. Resolving
+  // it requires rewording the earlier marker into a plain Activity note.
+  const blockedLine = [...statusLines].reverse().find((line) => /^STATUS:\s*BLOCKED\b/i.test(line));
+  const statusLine = blockedLine ?? statusLines.at(-1);
   if (!statusLine) {
     return { valid: false, reason: 'no terminal `STATUS: DONE` or `STATUS: BLOCKED: <reason>` line was appended to the card Activity.' };
   }
@@ -2121,6 +2277,18 @@ export function formatAgentCliFailureEntry(
   ].join('\n');
 }
 
+export function formatAgentCliLaunchRefusedEntry(
+  providerLabel: string,
+  kind: AgentCliHandoffKind,
+  reason: string,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - ${providerLabel} ${kind} launch refused`,
+    `${reason} No CLI was started and the card was not advanced; a person must review before this stage runs again.`,
+  ].join('\n');
+}
+
 export function formatAgentCliCancellationEntry(
   providerLabel: string,
   kind: AgentCliHandoffKind,
@@ -2130,4 +2298,12 @@ export function formatAgentCliCancellationEntry(
     `### ${timestamp.toISOString()} - ${providerLabel} ${kind} handoff cancelled`,
     'The active CLI process was stopped. The card was not advanced and remains assigned for a recoverable retry.',
   ].join('\n');
+}
+
+/** Independent checks are ordinary subprocesses, even when invoked by node:test. */
+export function runIndependentEvidenceCommand(command: EvidenceCommand, signal: AbortSignal): Promise<AgentCliProcessResult> {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  return runAgentCliProcess({ provider: 'codex', label: `MWNN check: ${command.id}`,
+    command: command.command, args: command.args, cwd: command.cwd, stdin: '', env }, signal);
 }

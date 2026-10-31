@@ -5,6 +5,17 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A card whose Run with AI or Fill in with AI attempt never settled (for example, a chat confirmation toast that hid unanswered) no longer stays locked until the window is reloaded. Starting the action again offers to restart the stuck attempt; the abandoned attempt then writes, records and notifies nothing and leaves the shared chat delivery queue. A running agent CLI process is never restartable: the message points to the card's Stop action. Dismissing a model-recovery prompt writes nothing.
+- CLI fallback awaits asynchronous dispatch admission and usage settlement before continuing. Cancellation during admission prevents launch; accounting failures stop retries without exposing raw callback errors.
+- An unresolved `STATUS: BLOCKED` in the current dispatch takes precedence over a later `STATUS: DONE`, including during interrupted-worker recovery. Reword resolved blocker markers into plain Activity notes before reporting completion.
+
+### Added
+- Card scheduling with optional `scheduledFor` local datetime (`YYYY-MM-DDTHH:mm`, minute precision; date-only values normalize to local midnight). Future schedules block moves past Ready, exclude cards from Ready reverse-WIP, and make the AI Loop skip them until the scheduled time. The card editor supports setting and clearing the schedule and shows schedule-aware Blocked tooltips.
+- Independent outcome verification for local CLI DONE/PASS: pre-dispatch project profiles map acceptance criteria to host-run npm checks; receipts bind exact inputs and dirty/untracked code to command results. Board and portfolio loops revalidate receipts before advancement; missing/stale evidence and interrupted completion require human review. Chat-extension terminal text alone no longer advances completed work. See [setup and recovery](docs/independent-verification.md).
+- Durable worker adapter for the Portfolio AI loop: stable project/card/run/stage ids, persisted checkpoints under `%APPDATA%\mwnn-kanban\mwnn-worker` (or the macOS/Linux equivalent), exclusive repo and card leases so duplicate triggers cannot mutate the same work, bounded stage retries / elapsed time / stall detection (`mwnn-kanban.aiLoopMaxStageAttempts`, `aiLoopMaxElapsedMinutes`, `aiLoopStallTimeoutMinutes`), and reconcile-before-retry when a stage was interrupted.
+- Agent CLI Models settings can allow or disable each local CLI for card and loop dispatch in User or Workspace scope. All supported CLIs remain allowed by default; disabled CLIs are excluded from direct/orchestrated selection and skipped during fallback. Allowing a CLI leaves its current permissions unchanged.
+
 ## [1.0.5] - 2026-10-24
 
 ### Fixed

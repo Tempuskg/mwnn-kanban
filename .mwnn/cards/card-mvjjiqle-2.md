@@ -1,8 +1,8 @@
 ---
 id: card-mvjjiqle-2
 title: When running a card with AI or defining a card with AI and you select a CLI and it gets an error it can't find the model specified have a gui show up and let the user select the model that will work and the thinking level that will work and let them specify workspace or user level
-column: col-mqxta6ho-4
-position: 1000
+column: col-mqwk2njn-4
+position: -93000
 assignee: { kind: human }
 preferredModel.copilot: claude-sonnet-5.5
 preferredModel.codex: gpt-6.1-sol
@@ -12,7 +12,7 @@ thinkingLevel.copilot: high
 thinkingLevel.codex: high
 thinkingLevel.claude-code: high
 createdAt: 1792673506850
-updatedAt: 1792674608781
+updatedAt: 1793324378888
 ---
 
 ## Description

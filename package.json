@@ -181,6 +181,11 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "mwnn-kanban-pro.recoverLaunchBudgetLock",
+        "title": "Recover Launch Budget Lock",
+        "category": "MWNN Kanban Pro"
+      },
+      {
         "command": "mwnn-kanban-pro.correctLastSession",
         "title": "Correct Last Session",
         "category": "MWNN Kanban Pro"
@@ -422,6 +427,30 @@
           "markdownDescription": "Maximum number of agent handoffs a single AI board loop run may dispatch before it stops on its own. Every launched handoff counts, including credit-fallback replacements and model-escalation retries. `0` (the default) disables the cap: run length and behavior are unchanged. When the cap is reached the loop stops *before* starting the next handoff, so no CLI is left running and the in-flight card is not advanced; the reason is recorded in that card's Activity. This is a count of dispatches, not a spend limit — the extension has no price table and never estimates cost. Any monetary or token figure in the end-of-run report is a line the CLI printed itself, quoted and attributed to that CLI.",
           "scope": "resource"
         },
+        "mwnn-kanban.aiLoopMaxStageAttempts": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 20,
+          "markdownDescription": "Maximum attempts of one card stage (definition, triage, implementation, or verification) inside a durable AI loop run, including the first try. After an interruption the loop reconciles card evidence before counting another attempt. When the bound is reached the loop stops before launching another CLI for that stage and records the reason on the card.",
+          "scope": "application"
+        },
+        "mwnn-kanban.aiLoopMaxElapsedMinutes": {
+          "type": "number",
+          "default": 240,
+          "minimum": 0,
+          "maximum": 10080,
+          "markdownDescription": "Wall-clock limit in minutes for one durable card run across the AI board loop and Portfolio AI loop. When the limit is reached the loop starts no further stages (an in-flight CLI is not killed mid-process). `0` disables the elapsed-time bound.",
+          "scope": "application"
+        },
+        "mwnn-kanban.aiLoopStallTimeoutMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "maximum": 10080,
+          "markdownDescription": "If a durable card run produces no checkpoint heartbeat for this many minutes, the next stage gate treats the work as stalled, reconciles evidence, and refuses a blind retry. `0` disables stall detection.",
+          "scope": "application"
+        },
         "mwnn-kanban.aiLoopUsageResetMaxWaitHours": {
           "type": "number",
           "default": 6,
@@ -493,6 +522,42 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Let card definition replace a model or thinking level already set on the card. Off by default, so a model or level someone chose for a card is kept and only providers the card names nothing for are filled in."
+        },
+        "mwnn-kanban.agentCliAllowedProviders": {
+          "type": "object",
+          "default": {
+            "copilot": true,
+            "codex": true,
+            "claude-code": true,
+            "cursor": true
+          },
+          "properties": {
+            "copilot": {
+              "type": "boolean",
+              "description": "Allow GitHub Copilot CLI for AI dispatch."
+            },
+            "codex": {
+              "type": "boolean",
+              "description": "Allow OpenAI Codex CLI for AI dispatch."
+            },
+            "claude-code": {
+              "type": "boolean",
+              "description": "Allow Anthropic Claude Code CLI for AI dispatch."
+            },
+            "cursor": {
+              "type": "boolean",
+              "description": "Allow Cursor Agent CLI, including its Other Models identity, for AI dispatch."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Choose which installed agent CLI executables may be selected for Run Card with AI, AI board loop, Portfolio AI loop, and configured fallback. All supported CLIs are allowed by default. Allowing a CLI leaves its current permissions unchanged; this setting does not restrict the tools or operations available to it.",
+          "scope": "resource"
+        },
+        "mwnn-kanban.agentCliNoExtraChargesAcknowledged": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Your acknowledgement that no enabled agent CLI can incur an extra usage charge (for example, every account is on a plan with overage or pay-as-you-go usage turned off). Checked by default and never re-prompted. Unchecking it stops all AI dispatch — Run Card with AI, AI board loop, Portfolio AI loop, fallback, and model escalation — until it is checked again. The extension does not inspect provider accounts or billing; this is your attestation.",
+          "scope": "application"
         },
         "mwnn-kanban.agentCliModels": {
           "type": "object",
@@ -955,6 +1020,20 @@
           "type": "number",
           "default": 5,
           "description": "Maximum minutes in one persisted time slice before a checkpoint is written.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.workflowProjectLaunchLimit": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Maximum card-work CLI launches per project per calendar month, across all runs, windows and editors. `0` (the default) is unlimited. Each card stage is separately limited to two launches per run, shared by fallback and model escalation.",
+          "scope": "application"
+        },
+        "mwnn-kanban-pro.workflowGlobalLaunchLimit": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Maximum card-work CLI launches across all projects per calendar month. `0` (the default) is unlimited.",
           "scope": "application"
         },
         "mwnn-kanban-pro.trackWhenUnfocused": {

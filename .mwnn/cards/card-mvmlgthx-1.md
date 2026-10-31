@@ -1,8 +1,8 @@
 ---
 id: card-mvmlgthx-1
 title: Fix cursor agent cli runs output to MWNN Agent CLI output window doesn't update until it is finished. Would prefer if it updated as it's running.
-column: col-mqxta6ho-4
-position: 0
+column: col-mqwk2njn-4
+position: -92000
 assignee: { kind: human }
 preferredModel.copilot: claude-sonnet-5.5
 preferredModel.codex: gpt-6.1-sol
@@ -11,7 +11,7 @@ thinkingLevel.copilot: high
 thinkingLevel.codex: high
 thinkingLevel.claude-code: high
 createdAt: 1792858175061
-updatedAt: 1792859719011
+updatedAt: 1793324371794
 ---
 
 ## Description
@@ -45,7 +45,7 @@ All work happens in the free repo, `e:\mwnn-kanban`; this Pro repo is not touche
 - [x] No raw `{"type":...}` JSON line appears in the output channel for Cursor runs, including Usage Orchestrator attempts. Copilot, Codex, and Claude Code channel output is byte-for-byte unchanged, verified by an existing or new feed test.
 - [x] Credit and usage-limit exhaustion, model rejection, and the exit-failure summary still trigger for a Cursor run whose error arrives inside a stream-json event or on stderr. Unit tests with stream-json fixtures cover each of the three.
 - [x] Actual-model discovery still reports the model from Cursor's `system.init` event, and `test/unit/agentCliModelDiscovery.test.ts` passes unchanged or is updated only for the new argv.
-- [ ] Manual smoke test from the free repo with Pro linked: start a Cursor Agent CLI Define on a card, open the "MWNN Agent CLI" channel, and see output lines appear progressively before the `■ Exited with code 0.` footer.
+- [x] Manual smoke test from the free repo with Pro linked: start a Cursor Agent CLI Define on a card, open the "MWNN Agent CLI" channel, and see output lines appear progressively before the `■ Exited with code 0.` footer.
 - [x] In `e:\mwnn-kanban`, `npm run compile-tests`, `npm run compile`, `npm test`, and `npm run lint` pass.
 
 ## Activity
@@ -79,4 +79,21 @@ Live progressive channel updates are covered by the streaming renderer + feed wi
 
 Smoke steps: Extension Development Host → open a card → Define with Cursor Agent CLI → open Output → "MWNN Agent CLI" → confirm rendered lines appear before `■ Exited with code 0.` Offer: package/install the working-tree VSIX if helpful.
 
-STATUS: BLOCKED: Manual Development Host smoke test with Pro linked still required (progressive Cursor channel output before exit footer).
+Initially reported as blocked: Manual Development Host smoke test with Pro linked still required (progressive Cursor channel output before exit footer); resolved in interview below.
+
+### 2026-10-30T01:35:51.577Z - AI-guided interview started in Claude Code
+Opened an interview chat in Claude Code. Answers are recorded below as they are given; this entry is not evidence that any acceptance criterion is met.
+
+### 2026-10-29 - Interview: code evidence re-checked (verified evidence)
+- `src/agentCliHandoff.ts` lines 216-224: Cursor dispatch argv is `-p --force --output-format stream-json --stream-partial-output`, and the orchestrator argv also has `stream-json` and `--stream-partial-output` (read with grep).
+- `src/cursorStreamJson.ts` exists, and `src/agentCliCredit.ts`, `src/agentCliHandoff.ts`, `src/aiLoopBudget.ts` and `src/extension.ts` import it (grep).
+- `npm run compile-tests` passed. `node --test` over `cursorStreamJson.test.js` and `agentCliCursorOther.test.js` gave 16 pass, 0 fail.
+- Still open: the manual Development Host smoke test with Pro linked. Only the person can run it.
+
+### 2026-10-29 - Interview: smoke test answer (user-reported)
+Question: Have you run the Development Host smoke test (Cursor Agent CLI Define, "MWNN Agent CLI" channel), and did output lines show up before the `■ Exited with code 0.` footer?
+Answer: "yes it works now". Reported by the person in the interview chat, 2026-10-29.
+
+### 2026-10-29 - Interview summary
+All 9 acceptance criteria are checked. The first 7 and the validation criterion rest on earlier implementation evidence, plus today's verified re-check of the argv, the renderer wiring and the focused tests. The manual smoke-test criterion is user-reported (see the entry above). No unresolved exceptions remain. The card stays in the Verify column; this interview did not move it.
+STATUS: DONE

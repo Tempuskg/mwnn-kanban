@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import type {
   AgentCliPanelList,
+  AgentCliSettingsPanelCli,
   AgentCliSettingsPanelMessage,
   AgentCliSettingsPanelProvider,
   AgentCliSettingsPanelState,
@@ -131,6 +132,67 @@ function providerList(provider: AgentCliSettingsPanelProvider, list: AgentCliPan
   return section;
 }
 
+function cliAccessSection(current: AgentCliSettingsPanelState): HTMLElement {
+  const section = element('section');
+  section.className = 'cli-access';
+  section.append(
+    element('h2', 'CLI access'),
+    element(
+      'p',
+      'Choose which local CLIs may be selected for AI dispatch. Allowing a CLI keeps its current permissions; this setting does not restrict its tools.',
+    ),
+  );
+  section.append(noExtraChargesRow(current));
+  for (const cli of current.clis) {
+    section.append(cliAccessRow(cli, current));
+  }
+  return section;
+}
+
+function noExtraChargesRow(current: AgentCliSettingsPanelState): HTMLElement {
+  const row = element('div');
+  row.className = 'cli-access-row';
+  const checkbox = element('input');
+  checkbox.type = 'checkbox';
+  checkbox.id = 'no-extra-charges';
+  checkbox.checked = current.noExtraChargesAcknowledged;
+  checkbox.addEventListener('change', () => send({ type: 'noExtraChargesEdit', acknowledged: checkbox.checked }));
+  const label = element(
+    'label',
+    'I confirm no enabled CLI can incur extra usage charges (User setting; unchecking stops all AI dispatch)',
+  );
+  label.htmlFor = checkbox.id;
+  row.append(checkbox, label);
+  return row;
+}
+
+function cliAccessRow(cli: AgentCliSettingsPanelCli, current: AgentCliSettingsPanelState): HTMLElement {
+  const row = element('div');
+  row.className = 'cli-access-row';
+  const checkbox = element('input');
+  checkbox.type = 'checkbox';
+  checkbox.id = `allow-${cli.id}`;
+  checkbox.checked = cli.allowed;
+  checkbox.addEventListener('change', () => send({
+    type: 'cliAccessEdit',
+    scope: current.scope,
+    provider: cli.id,
+    allowed: checkbox.checked,
+  }));
+  const label = element('label', `Allow ${cli.label} for AI dispatch`);
+  label.htmlFor = checkbox.id;
+  row.append(checkbox, label);
+  if (cli.inheritedAllowed !== null) {
+    const inherited = element(
+      'span',
+      `Inherited from ${current.inheritedScope}: ${cli.inheritedAllowed ? 'Allowed' : 'Disabled'}`,
+    );
+    inherited.className = 'inherited';
+    row.append(inherited);
+  }
+  return row;
+}
+
 function render(current: AgentCliSettingsPanelState): void {
   if (!root) {
     return;
@@ -165,6 +227,7 @@ function render(current: AgentCliSettingsPanelState): void {
     error.setAttribute('role', 'alert');
     root.append(error);
   }
+  root.append(cliAccessSection(current));
   const providers = element('div');
   providers.className = 'providers';
   for (const provider of current.providers) {

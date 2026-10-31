@@ -43,11 +43,14 @@ export interface AgentCliModelRecoveryUiDeps {
  * Ask the user for a working model (and thinking level when the CLI supports
  * it), which settings scope to update, then write only that scope and return
  * the selection for an immediate re-dispatch. Escape at any step writes
- * nothing and returns undefined.
+ * nothing and returns undefined. So does an aborted `signal`, checked before
+ * the write: a restart abandoned the attempt that asked, and a late answer to
+ * its prompt must not change settings.
  */
 export async function promptAndApplyModelRecovery(
   request: AgentCliModelRecoveryRequest,
   deps: AgentCliModelRecoveryUiDeps,
+  signal?: AbortSignal,
 ): Promise<AgentCliModelRecoverySelection | undefined> {
   const title = modelRecoveryTitle(request.provider);
   const model = await pickOrEnterName(
@@ -84,7 +87,7 @@ export async function promptAndApplyModelRecovery(
     request.workspaceAvailable && deps.workspaceAvailable(),
   );
   const scope = await pickScope(title, scopes, deps);
-  if (scope === undefined) {
+  if (scope === undefined || signal?.aborted) {
     return undefined;
   }
 

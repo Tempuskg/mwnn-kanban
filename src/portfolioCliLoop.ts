@@ -3,14 +3,16 @@ import * as path from 'node:path';
 import { createAgentCliFallbackRunner, type AgentCliFallbackDeps } from './agentCliFallback';
 import { createAiLoopBudget, formatAiLoopBudgetStopEntry, formatAiLoopBudgetStopMessage, formatAiLoopBudgetTally } from './aiLoopBudget';
 import { createAiLoopPauseGate } from './aiLoopPause';
+import { createAgentCliLaunchScope } from './agentCliLaunchGate';
 import { createLoopSession, planLoopAction, pruneLoopSession, isVerifyColumn, runBoardLoop, buildTriagePrompt, type LoopSession, type LoopOptions } from './boardLoop';
 import { buildCardDefinitionPrompt, buildCardHandoffPrompt, buildCardVerificationPrompt } from './aiCards';
 import type { BoardStore } from './boardStore';
 import type { Card } from './types';
 import type { DefinitionRunSettings } from './cardRunSettings';
 import type { PortfolioAiLoopCapabilityV1, PortfolioLoopProject, PortfolioLoopSessionV1, PortfolioLoopProgress, PortfolioLoopUsageWait } from './pro/contracts';
+import type { DurableWorkerSession } from './durableWorker';
 
-type FallbackOptions = Omit<AgentCliFallbackDeps, 'cwd' | 'store' | 'signal' | 'isCancelled' | 'cardKey' | 'beforeDispatch' | 'afterDispatch' | 'onPause' | 'onUsageWait'>;
+type FallbackOptions = Omit<AgentCliFallbackDeps, 'cwd' | 'store' | 'signal' | 'isCancelled' | 'cardKey' | 'launchScope' | 'beforeDispatch' | 'afterDispatch' | 'onPause' | 'onUsageWait'>;
 export interface PortfolioCliLoopDeps {
   enabled(): boolean;
   busy(): boolean;
@@ -23,6 +25,12 @@ export interface PortfolioCliLoopDeps {
   maxDispatches(): number | undefined;
   readonly onDidChange: PortfolioAiLoopCapabilityV1['onDidChange'];
   delay(ms: number): Promise<void>;
+  /**
+   * Optional durable worker for this portfolio session. When provided, each
+   * card claims repo/card leases, persists checkpoints, enforces bounds, and
+   * reconciles before retrying an interrupted stage.
+   */
+  createDurableWorker?: () => DurableWorkerSession;
 }
 export function createPortfolioCliLoopCapability(deps: PortfolioCliLoopDeps): PortfolioAiLoopCapabilityV1 {
   return {
@@ -47,6 +55,11 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
   const cap = deps.maxDispatches();
   const budget = createAiLoopBudget(cap === undefined ? {} : { maxDispatches: cap });
   const options = deps.options();
+  const worker = deps.createDurableWorker?.();
+  // Launch scope: one id for this session; a durable card run keeps its own id
+  // across sessions, so recovery never replenishes that card's stage launches.
+  const launchRun = createAgentCliLaunchScope();
+  let durableRunId: string | undefined;
   const sessions = new Map<string, LoopSession>();
   const settledCards = new Map<string, Set<string>>();
   let active: { project: PortfolioLoopProject; store: BoardStore } | undefined;
@@ -68,6 +81,10 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
     ...fallback,
     get cwd() { return current().project.root; },
     cardKey: (id) => JSON.stringify([current().project.projectId, id]),
+    launchScope: (id) => ({
+      runId: launchRun.runId,
+      cardRunId: durableRunId ?? `${launchRun.runId}:${current().project.projectId}:${id}`,
+    }),
     store: {
       reload: () => current().store.reload(),
       appendActivity: (id, entry) => current().store.appendActivity(id, entry),
@@ -75,7 +92,14 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
     signal: abort.signal,
     waitBeforeDispatch: () => gate.waitWhilePaused(),
     isCancelled: stopped,
-    onProgress: (message) => { fallback.onProgress?.(message); emit(message); },
+    onProgress: (message) => {
+      fallback.onProgress?.(message);
+      emit(message);
+      const project = active?.project;
+      if (worker && project && currentCard) {
+        void worker.heartbeat(project.projectId, currentCard.id, message);
+      }
+    },
     onPause: (reason) => { outcome = 'credits'; creditsReason = reason; gate.release(); },
     onUsageWait: (wait) => { usageWait = wait; },
     beforeDispatch: ({ kind, target, card }) => {
@@ -111,31 +135,87 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
     runCard: async (project, cardId, onProgress) => {
       if (running || stopped()) { return { outcome: 'stopped' }; }
       running = true;
+      let cardFinish: 'completed' | 'failed' | 'stopped' | undefined;
+      let cardOutcome: string | undefined;
       try {
         const store = await deps.openStore(project);
         if (!store) { return { outcome: 'skipped', reason: 'Board is missing or unreadable.' }; }
         active = { project, store };
         report = onProgress;
         currentCard = (await store.reload()).columns.flatMap(column => column.cards).find(card => card.id === cardId);
+        durableRunId = undefined;
+        if (worker) {
+          const claimed = await worker.beginCard(project.projectId, cardId);
+          if (!claimed.ok) {
+            return { outcome: 'skipped', reason: claimed.reason };
+          }
+          durableRunId = claimed.runId;
+          emit(claimed.message);
+        }
         const session = sessionFor(project.projectId);
         const path = project.boardFolder.replace(/\\/g, '/').replace(/\/+$/, '') + '/cards/' + cardId + '.md';
         const handoff = async (kind: 'definition' | 'triage' | 'implementation' | 'verification', card: Card, buildPrompt: (latest: Card) => string) => {
           await gate.waitWhilePaused();
           if (stopped()) { return { started: false }; }
-          stage = kind; currentCard = card; emit('Running ' + kind);
+          stage = kind; currentCard = card;
+          if (worker) {
+            const baseline = (card.activity ?? '').length;
+            const gateResult = await worker.beforeStage({
+              projectId: project.projectId,
+              cardId,
+              stage: kind,
+              card,
+              activityBaseline: baseline,
+            });
+            if (!gateResult.ok) {
+              if (gateResult.activityEntry) {
+                await store.appendActivity(cardId, gateResult.activityEntry);
+              }
+              emit(gateResult.reason);
+              if (gateResult.reconcile?.kind === 'already-complete') {
+                return { started: true, activityBaseline: baseline };
+              }
+              if (gateResult.stop) {
+                outcome = 'stopped';
+                gate.release();
+                cardFinish = 'stopped';
+                cardOutcome = gateResult.stop.kind;
+              }
+              return { started: false };
+            }
+            emit(gateResult.progress);
+          } else {
+            emit('Running ' + kind);
+          }
           const result = await runner.run({ kind, card, buildPrompt });
           if (result.kind === 'stopped') {
             outcome = 'budget'; gate.release();
             const stop = budget.stop();
             if (stop) { await store.appendActivity(cardId, formatAiLoopBudgetStopEntry(stop)); }
+            cardFinish = 'stopped';
+            cardOutcome = 'budget';
             return { started: false };
           }
-          if (result.kind !== 'ran') { return { started: false }; }
+          if (result.kind !== 'ran') {
+            if (worker) {
+              await worker.afterStage({ projectId: project.projectId, cardId, stage: kind, completed: false });
+            }
+            return { started: false };
+          }
           if (result.result.failure === 'credit-exhausted') { outcome = 'credits'; creditsReason ??= result.result.reason; gate.release(); }
           if (!result.result.completed && !result.result.cancelled && !stopped()) {
             await store.appendActivity(cardId, '### ' + new Date().toISOString() + ' - Portfolio AI Loop handoff failed\n' + (result.result.reason ?? 'CLI handoff failed.'));
           }
-          return { started: result.result.completed, activityBaseline: result.result.activityBaseline };
+          if (worker) {
+            await worker.afterStage({
+              projectId: project.projectId,
+              cardId,
+              stage: kind,
+              completed: result.result.completed,
+              ...(result.result.reason !== undefined ? { message: result.result.reason } : {}),
+            });
+          }
+          return { started: result.result.completed, activityBaseline: result.result.activityBaseline, ...(result.result.revalidateOutcome ? { revalidateOutcome: result.result.revalidateOutcome } : {}) };
         };
         const summary = await runBoardLoop(store, {
           decideDoability: async () => undefined, // CLI-only triage; never opens chat.
@@ -154,28 +234,54 @@ function createSession(deps: PortfolioCliLoopDeps, fallback: FallbackOptions, re
           ...options, session, cardId,
           onEvent: (message) => { stage = 'advancement'; emit(message); },
         });
-        if (stopped()) { return { outcome: 'stopped' }; }
+        if (stopped()) {
+          cardFinish ??= 'stopped';
+          return { outcome: 'stopped' };
+        }
         const state = await store.reload();
         const column = state.columns.find(c => c.cards.some(card => card.id === cardId));
         const card = column?.cards.find(c => c.id === cardId);
-        if (session.skipped.has(cardId)) { return { outcome: 'skipped', reason: /STATUS:\s*BLOCKED[^\n]*/i.exec(card?.activity ?? '')?.[0] ?? 'Handoff failed or could not advance safely.' }; }
-        const settle = (outcome: 'completed' | 'human' | 'review') => {
+        if (session.skipped.has(cardId)) {
+          cardFinish = 'failed';
+          cardOutcome = 'skipped';
+          return { outcome: 'skipped', reason: /STATUS:\s*BLOCKED[^\n]*/i.exec(card?.activity ?? '')?.[0] ?? 'Handoff failed or could not advance safely.' };
+        }
+        const settle = (settleOutcome: 'completed' | 'human' | 'review') => {
           const cards = settledCards.get(project.projectId) ?? new Set<string>();
           cards.add(cardId); settledCards.set(project.projectId, cards);
-          return { outcome };
+          cardFinish = settleOutcome === 'completed' ? 'completed' : 'completed';
+          cardOutcome = settleOutcome;
+          return { outcome: settleOutcome };
         };
         if (column?.role === 'done') { return settle('completed'); }
         if (card?.assignee?.kind === 'human') { return settle('human'); }
         if (options.reviewFreshDefinitions && session.definedThisRun.has(cardId)) { return settle('review'); }
+        cardFinish = 'completed';
+        cardOutcome = summary.cancelled ? 'stopped' : 'held';
         return { outcome: 'held', reason: summary.cancelled ? 'Run stopped.' : 'Waiting for board capacity or dependencies.' };
-      } finally { running = false; active = undefined; currentCard = undefined; usageWait = undefined; }
+      } finally {
+        if (worker) {
+          await worker.finishCard({
+            projectId: project.projectId,
+            cardId,
+            status: cardFinish ?? (stopped() ? 'stopped' : 'failed'),
+            ...(cardOutcome !== undefined ? { outcome: cardOutcome } : {}),
+          });
+        }
+        running = false; active = undefined; currentCard = undefined; usageWait = undefined;
+      }
     },
     pause: () => { gate.pause(); },
     resume: () => { gate.resume(); },
     stop: () => { if (outcome === 'finished') { outcome = 'stopped'; } abort.abort(); gate.release(); },
     outcome: () => outcome,
     finish: () => {
-      if (!finished) { finished = true; gate.release(); release(); }
+      if (!finished) {
+        finished = true;
+        gate.release();
+        release();
+        void worker?.release();
+      }
       const tally = formatAiLoopBudgetTally(budget.tally(), outcome === 'budget' ? 'budget' : outcome === 'credits' ? 'paused' : outcome === 'stopped' ? 'cancelled' : 'finished');
       // The host's reason (e.g. a declined or expired usage wait) reaches the run summary.
       return outcome === 'credits' && creditsReason ? creditsReason + '\n' + tally : tally;

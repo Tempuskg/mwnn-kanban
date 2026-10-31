@@ -1,11 +1,13 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPortfolioCliLoopCapability, isPortfolioPrimaryBoard, type PortfolioCliLoopDeps } from '../../src/portfolioCliLoop';
-import { runAgentCliCardHandoff, type AgentCliCardHandoff, type AgentCliInvocation, type AgentCliProcessResult, type AgentCliTarget } from '../../src/agentCliHandoff';
+import { runAgentCliCardHandoff as rawRunAgentCliCardHandoff, type AgentCliCardHandoff, type AgentCliInvocation, type AgentCliProcessResult, type AgentCliTarget } from '../../src/agentCliHandoff';
 import type { PortfolioLoopProgress, PortfolioLoopProject, PortfolioLoopSessionV1 } from '../../src/pro/contracts';
 import type { BoardStore } from '../../src/boardStore';
 import type { BoardState, Card } from '../../src/types';
 import { cloneBoard, appendActivity, moveCard, setAssignee, setDescription, setAcceptanceCriteria } from '../../src/utils';
+import { createDurableWorkerSession, createMemoryWorkerFileSystem, createWorkerBoundsConfig } from '../../src/durableWorker';
 
 const project = (id: string): PortfolioLoopProject => ({ projectId: id, projectName: id, root: '/repos/' + id, boardFolder: '.tasks' });
 function board(extra: Partial<Card> = {}, role = 'in-progress'): BoardState {
@@ -293,3 +295,38 @@ test('a blocked handoff reports remaining blocked work and a fresh session can s
   next.finish();
   assert.equal(h.counts().released, 2);
 });
+
+test('durable worker leases block a second portfolio session from mutating the same card', async () => {
+  const fs = createMemoryWorkerFileSystem();
+  const bounds = createWorkerBoundsConfig({ maxAttemptsPerStage: 2, maxElapsedMinutes: 0, stallTimeoutMinutes: 0 });
+  const makeWorker = (ownerId: string) => () => createDurableWorkerSession({
+    rootPath: '/worker',
+    fileSystem: fs,
+    ownerId,
+    bounds,
+    createRunId: () => `run-${ownerId}`,
+  });
+  const first = harness();
+  first.deps.createDurableWorker = makeWorker('owner-a');
+  const hold = deferred();
+  first.hook(async () => { await hold.promise; return undefined; });
+  const sessionA = await start(first);
+  const pending = sessionA.runCard(project('A'), 'same', () => undefined);
+  await until(() => first.calls.length === 1);
+
+  const second = harness();
+  second.deps.createDurableWorker = makeWorker('owner-b');
+  const sessionB = await start(second);
+  const blocked = await sessionB.runCard(project('A'), 'same', () => undefined);
+  assert.equal(blocked.outcome, 'skipped');
+  assert.match(blocked.reason ?? '', /held by worker owner-a/);
+  assert.equal(second.calls.length, 0);
+
+  hold.resolve();
+  assert.equal((await pending).outcome, 'human');
+  sessionA.finish();
+  sessionB.finish();
+});
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

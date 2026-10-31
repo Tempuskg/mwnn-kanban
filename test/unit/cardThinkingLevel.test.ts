@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
@@ -8,7 +9,7 @@ import {
   formatAgentCliStartEntry,
   resolveAgentCliModelSelection,
   resolveAgentCliThinkingSelection,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliInvocation,
   type AgentCliProcessResult,
   type AgentCliProviderId,
@@ -775,3 +776,6 @@ function findCard(state: BoardState, cardId: string): Card {
   }
   throw new Error(`Card ${cardId} not found`);
 }
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

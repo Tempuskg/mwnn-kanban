@@ -1,11 +1,11 @@
 ---
 id: card-mvmp629m-1
 title: When running AI Loop skip cards that are Blocked
-column: col-mqxta6ho-4
-position: 2000
+column: col-mqwk2njn-4
+position: -94000
 assignee: { kind: human }
 createdAt: 1792864391674
-updatedAt: 1792864606956
+updatedAt: 1793324391550
 ---
 
 ## Description

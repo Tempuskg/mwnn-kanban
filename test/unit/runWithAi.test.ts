@@ -1,10 +1,11 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
   resolveAgentCliTarget,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliCardHandoff,
   type AgentCliCardHandoffResult,
   type AgentCliProcessResult,
@@ -903,6 +904,135 @@ suite('Run with AI model-rejection recovery', () => {
   });
 });
 
+suite('Run with AI restart handling', () => {
+  test('reports the lease as running only while the CLI process runs', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const inFlight = createChatHandoffInFlight();
+    let releaseProcess: (() => void) | undefined;
+    let processLaunches = 0;
+    const harness = dispatchHarness(board, {
+      resolveTarget: fakeResolver(['C:\\Tools\\claude.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        processLaunches += 1;
+        await new Promise<void>((resolve) => {
+          releaseProcess = resolve;
+        });
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+    });
+    const first = inFlight.run(cardId, (lease) =>
+      runCardWithAgentCli(request('claude-code', cardId), { ...harness.deps, lease }), { kind: 'card' });
+    while (releaseProcess === undefined) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(inFlight.processRunning(cardId), true);
+
+    const restart = await inFlight.restart(cardId, async () => 'second run', { kind: 'card' });
+    assert.deepEqual(restart, { started: false });
+    assert.equal(processLaunches, 1, 'restart must not start a second CLI process');
+
+    releaseProcess();
+    await first;
+    assert.equal(inFlight.processRunning(cardId), false);
+  });
+
+  test('a restart during model recovery stops the run: no card write, no re-dispatch, no messages', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const inFlight = createChatHandoffInFlight();
+    let attempts = 0;
+    let answerRecovery!: () => void;
+    const recoveryAnswer = new Promise<void>((resolve) => { answerRecovery = resolve; });
+    let recoveryOpened = false;
+    let recoverySignal: AbortSignal | undefined;
+    const preferredWrites: string[] = [];
+    const harness = dispatchHarness(board, {
+      modelCatalog: readAgentCliModelCatalog({ codex: ['broken-model'] }),
+      resolveTarget: fakeResolver(['C:\\Tools\\codex.EXE']),
+      runHandoff: realHandoffWith(async () => {
+        attempts += 1;
+        return {
+          started: true,
+          cancelled: false,
+          exitCode: 1,
+          signal: null,
+          stdout: '',
+          stderr: 'Error: unknown model "broken-model"',
+        };
+      }),
+      recoverFromModelRejection: async (_recoveryRequest, signal) => {
+        recoveryOpened = true;
+        recoverySignal = signal;
+        await recoveryAnswer;
+        return { model: 'gpt-5.5', scope: 'workspace' };
+      },
+    });
+    const deps: RunCardWithAgentCliDeps = {
+      ...harness.deps,
+      store: {
+        ...harness.deps.store,
+        setPreferredModel: async (_id, _provider, model) => { preferredWrites.push(String(model)); },
+      },
+    };
+    const stale = inFlight.run(cardId, (lease) =>
+      runCardWithAgentCli(request('codex', cardId), { ...deps, lease }), { kind: 'card' });
+    while (!recoveryOpened) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(inFlight.processRunning(cardId), false, 'recovery is not a running process, so it can be restarted');
+
+    const restarted = await inFlight.restart(cardId, async () => 'fresh attempt', { kind: 'card' });
+    assert.deepEqual(restarted, { started: true, value: 'fresh attempt' });
+    assert.equal(recoverySignal?.aborted, true, 'the recovery prompt is told its attempt was abandoned');
+    answerRecovery();
+    const staleOutcome = await stale;
+
+    assert.equal(staleOutcome.started && staleOutcome.value, false);
+    assert.equal(attempts, 1, 'the abandoned attempt did not re-dispatch');
+    assert.deepEqual(preferredWrites, []);
+    assert.deepEqual(harness.warnings, []);
+    assert.deepEqual(harness.infos, []);
+  });
+
+  test('a restart while the provider is being resolved launches nothing and writes nothing', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const inFlight = createChatHandoffInFlight();
+    let finishResolve!: () => void;
+    const resolving = new Promise<void>((resolve) => { finishResolve = resolve; });
+    let resolveStarted = false;
+    const realResolver = fakeResolver(['C:\\Tools\\claude.EXE']);
+    let launches = 0;
+    const harness = dispatchHarness(board, {
+      resolveTarget: async (provider, paths, options) => {
+        resolveStarted = true;
+        await resolving;
+        return realResolver(provider, paths, options);
+      },
+      runHandoff: realHandoffWith(async () => {
+        launches += 1;
+        return successfulProcess();
+      }),
+    });
+    const stale = inFlight.run(cardId, (lease) =>
+      runCardWithAgentCli(request('claude-code', cardId), { ...harness.deps, lease }), { kind: 'card' });
+    while (!resolveStarted) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await inFlight.restart(cardId, async () => 'fresh', { kind: 'card' });
+    finishResolve();
+    await stale;
+
+    assert.equal(launches, 0);
+    assert.deepEqual(board.appendedEntries(), []);
+    assert.deepEqual(harness.warnings, []);
+    assert.deepEqual(harness.infos, []);
+    assert.equal(harness.progressTitles.length, 0);
+  });
+});
+
 suite('Run with AI CLI outcome messages', () => {
   test('names the provider and card in every outcome', () => {
     const base = { completed: false, cancelled: false, activityBaseline: 0 };
@@ -952,3 +1082,6 @@ suite('Run with AI CLI outcome messages', () => {
     assert.doesNotMatch(outcome.message, /STATUS: DONE/);
   });
 });
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

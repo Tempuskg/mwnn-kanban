@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import * as path from 'node:path/posix';
 import { suite, test } from 'node:test';
@@ -10,7 +11,7 @@ import {
   formatAgentCliStartEntry,
   prepareAgentCliInvocation,
   resolveAgentCliModelSelection,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliInvocation,
   type AgentCliProcessResult,
   type AgentCliProviderId,
@@ -1189,3 +1190,6 @@ function createFakeFileSystem(
     },
   };
 }
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

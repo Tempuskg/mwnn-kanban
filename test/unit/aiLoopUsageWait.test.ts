@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
@@ -7,7 +8,7 @@ import {
 } from '../../src/agentCliFallback';
 import {
   AGENT_CLI_LABELS,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliProcessResult,
   type AgentCliProviderId,
   type AgentCliResolution,
@@ -583,3 +584,6 @@ suite('planPaceWait', () => {
     assert.match(plan.kind === 'decline' ? plan.reason : '', new RegExp(new Date(predicted).toISOString()));
   });
 });
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

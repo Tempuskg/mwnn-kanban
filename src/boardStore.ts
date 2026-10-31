@@ -45,6 +45,7 @@ import {
   setDependencies,
   setDescription,
   setPreferredModel,
+  setScheduledFor,
   setThinkingLevel,
   normalizeCardPreferredModels,
   normalizeCardThinkingLevels,
@@ -113,6 +114,7 @@ export interface BoardStore {
   moveCard(cardId: string, toColumnId: string, toIndex: number): Promise<BoardState>;
   setAssignee(cardId: string, assignee: Card['assignee']): Promise<BoardState>;
   setDependencies(cardId: string, dependsOn: readonly string[]): Promise<BoardState>;
+  setScheduledFor(cardId: string, scheduledFor: string | undefined): Promise<BoardState>;
   setPreferredModel(
     cardId: string,
     provider: AgentCliProviderId,
@@ -248,6 +250,8 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
       runQueued((current) => moveCard(current, cardId, toColumnId, toIndex)),
     setAssignee: (cardId, assignee) => runQueued((current) => setAssignee(current, cardId, assignee)),
     setDependencies: (cardId, dependsOn) => runQueued((current) => setDependencies(current, cardId, dependsOn)),
+    setScheduledFor: (cardId, scheduledFor) =>
+      runQueued((current) => setScheduledFor(current, cardId, scheduledFor)),
     setPreferredModel: (cardId, provider, preferredModel) =>
       runQueued((current) => setPreferredModel(current, cardId, provider, preferredModel)),
     setThinkingLevel: (cardId, provider, thinkingLevel) =>
@@ -884,6 +888,7 @@ function buildBoardReadme(): string {
     '',
     '- `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or `{ kind: human, name: Alice }`. Omit the key for unassigned.',
     '- `dependsOn` (optional) — array of ids of other cards this card is blocked by, e.g. `[card-x, card-y]`. Omit the key when there are none.',
+    '- `scheduledFor` (optional) — local wall time at minute precision, e.g. `scheduledFor: "2026-11-01T09:30"` (`YYYY-MM-DDTHH:mm`, no timezone or UTC conversion). Date-only `YYYY-MM-DD` normalizes to local midnight (`T00:00`); invalid values are ignored. Omit the key to clear. While now is strictly before this time, the card is blocked alongside any unfinished dependencies: it cannot advance past Ready, does not count toward Ready reverse-WIP, and the AI Loop skips it. At or after the time, only the schedule hold expires; dependencies still apply. Blocked cards beyond Ready are relocated back to Ready.',
     '- `preferredModel.<provider>` (optional) — free-form name of the AI model this card should be run with **on that agent CLI**, spelled the way that CLI spells it, e.g. `preferredModel.claude-code: claude-opus-5`. One key per provider, where `<provider>` is one of `copilot`, `codex`, `claude-code`, or `cursor`; an unknown provider key is ignored. A card never chooses its own CLI — the CLI is picked per dispatch, and the credit fallback can change it mid-run — so the model is scoped to the CLI it is valid for, and the entry for whichever provider actually runs is the one that is used. When a provider has no key (or its value is blank), the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageModels`) is used, else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else the model that CLI runs by default. Omit a key entirely rather than writing an empty value.',
     '- `preferredModel` (legacy, optional) — a single bare `preferredModel` scalar predates per-provider scoping. It is still read, and applies to every provider that has no `preferredModel.<provider>` key of its own, so an existing card keeps working unchanged. The extension never writes the bare key again: the next time it saves that card, the value is migrated to the per-provider keys.',
     '- `thinkingLevel.<provider>` (optional) — free-form name of the thinking level (reasoning effort) this card should be run at **on that agent CLI**, spelled the way that CLI spells it, e.g. `thinkingLevel.claude-code: high`. One key per provider, using the same four provider ids; an unknown provider key or a blank value is ignored. A second axis of the same selection and fully independent of the model — how hard the agent thinks, not which model runs — and scoped per provider for the same reason the model is. When a provider has no key, the rule for the AI loop stage being run (`mwnn-kanban.agentCliStageThinkingLevels`) is used, else the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`), else the default effort that CLI runs at. Codex CLI uses its `model_reasoning_effort` config override; Copilot CLI and Claude Code CLI accept `--effort <level>`. Cursor Agent CLI does not accept an effort argument, so its level is recorded on the card as not applied and the run proceeds at its default effort. Omit a key entirely rather than writing an empty value.',
@@ -920,6 +925,9 @@ function cloneCard(card: Card): Card {
   }
   if (card.dependsOn !== undefined) {
     clone.dependsOn = [...card.dependsOn];
+  }
+  if (card.scheduledFor !== undefined) {
+    clone.scheduledFor = card.scheduledFor;
   }
   const preferredModels = normalizeCardPreferredModels(card.preferredModels);
   if (preferredModels !== undefined) {

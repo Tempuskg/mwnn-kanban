@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import { AGENT_CLI_PROVIDER_IDS, AGENT_CLI_STAGE_PROVIDER_IDS } from '../../src/agentCliProviders';
 import { createAgentCliUsageOrchestrator } from '../../src/agentCliOrchestrator';
 import * as assert from 'node:assert/strict';
@@ -9,7 +10,7 @@ import {
   isAgentCliHandoffKind,
   resolveAgentCliModelSelection,
   resolveAgentCliTarget,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliCardHandoff,
   type AgentCliCardHandoffResult,
   type AgentCliHandoffKind,
@@ -1001,3 +1002,6 @@ function cleanExit(): AgentCliProcessResult {
 function failedProcess(message: string): AgentCliProcessResult {
   return { started: true, cancelled: false, exitCode: 1, signal: null, stdout: '', stderr: message };
 }
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

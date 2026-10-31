@@ -6,8 +6,15 @@ import { registerAgentCliSettingsPanel } from './agentCliSettingsPanel';
 import { createAiLoopProgressOptions, createStatusBarProgressOptions } from './aiLoopProgress';
 import { createAiLoopPauseGate, type AiLoopPauseGate } from './aiLoopPause';
 import { createPortfolioCliLoopCapability, isPortfolioPrimaryBoard } from './portfolioCliLoop';
+import {
+  createDurableWorkerSession,
+  createNodeWorkerFileSystem,
+  createWorkerBoundsConfig,
+  resolveSharedWorkerRoot,
+} from './durableWorker';
 import type { AiLoopState } from './sidebarMessages';
 import { isCardDefined } from './cardDefinition';
+import { CARD_HANDOFF_BUSY_MESSAGE, runRestartableCardHandoff } from './cardRunHandoff';
 import {
   JEV_API_KEY_ENV,
   JevPendingDefinitions,
@@ -23,6 +30,15 @@ import {
   formatCliRunStart,
 } from './agentCliFeedback';
 import { createCursorStreamJsonRenderer } from './cursorStreamJson';
+import {
+  createAgentCliLaunchGateRegistry,
+  createAgentCliLaunchScope,
+} from './agentCliLaunchGate';
+import {
+  effectiveAgentCliAllowedProviders,
+  readAgentCliAllowedProviders,
+  readAgentCliNoExtraChargesAcknowledged,
+} from './agentCliAccess';
 import { isCursorAgentCliProvider } from './agentCliProviders';
 import {
   agentCliModelSuggestions,
@@ -47,6 +63,7 @@ import {
   type AgentCliProcessObserver,
   type AgentCliProviderId,
   type AgentCliTarget,
+  type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
 import {
   createAgentCliFallbackRunner,
@@ -99,6 +116,7 @@ import {
   CHAT_PROVIDER_LABELS,
   activateChatHandoffProvider,
   ChatHandoffAbandonedError,
+  type ChatHandoffLease,
   createChatHandoffInFlight,
   createChatHandoffQueue,
   deliverClipboardHandoff,
@@ -267,6 +285,15 @@ function readAiLoopMaxDispatchesSetting(): number | undefined {
   );
 }
 
+function readDurableWorkerBoundsConfig() {
+  const config = vscode.workspace.getConfiguration('mwnn-kanban');
+  return createWorkerBoundsConfig({
+    maxAttemptsPerStage: config.get<unknown>('aiLoopMaxStageAttempts', 2),
+    maxElapsedMinutes: config.get<unknown>('aiLoopMaxElapsedMinutes', 240),
+    stallTimeoutMinutes: config.get<unknown>('aiLoopStallTimeoutMinutes', 30),
+  });
+}
+
 /**
  * The per-wait cap for waiting out a spent usage allowance, validated in
  * `aiLoopUsageWait`. `0` keeps the stop-on-exhaustion behavior.
@@ -305,6 +332,28 @@ function readAgentCliPaths(): AgentCliPathOverrides {
   return vscode.workspace
     .getConfiguration('mwnn-kanban')
     .get<AgentCliPathOverrides>('agentCliPaths', {});
+}
+
+function readAllowedAgentCliProviders() {
+  const config = vscode.workspace.getConfiguration(
+    'mwnn-kanban',
+    vscode.workspace.workspaceFolders?.[0]?.uri,
+  );
+  return effectiveAgentCliAllowedProviders(
+    readAgentCliAllowedProviders(config.get<unknown>('agentCliAllowedProviders', {})),
+    readAgentCliNoExtraChargesAcknowledged(config.get<unknown>('agentCliNoExtraChargesAcknowledged', true)),
+  );
+}
+
+function resolveAllowedAgentCliTarget(
+  provider: AgentCliProviderId,
+  configuredPaths: AgentCliPathOverrides,
+  options: ExecutableDiscoveryOptions,
+) {
+  return resolveAgentCliTarget(provider, configuredPaths, {
+    ...options,
+    allowedProviders: readAllowedAgentCliProviders(),
+  });
 }
 
 /** Agent CLIs the Usage Orchestrator never chooses; unknown ids are dropped. */
@@ -501,11 +550,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const runCardHandoff = async (cardId: string, action: () => Promise<boolean>): Promise<boolean> => {
     const attempt = await inFlightCardHandoffs.run(cardId, action);
     if (!attempt.started) {
-      void vscode.window.showInformationMessage('A handoff for this card is already in progress. Please wait for it to finish.');
+      void vscode.window.showInformationMessage(CARD_HANDOFF_BUSY_MESSAGE);
       return false;
     }
     return attempt.value;
   };
+
+  /**
+   * Run with AI / Fill in with AI: like `runCardHandoff`, but a stuck earlier
+   * attempt (no agent CLI process running) can be restarted without reloading
+   * the window. The AI loop keeps using `runCardHandoff`, which never offers it.
+   */
+  const runRestartableCardRun = (
+    cardId: string,
+    action: (lease: ChatHandoffLease) => Promise<boolean>,
+  ): Promise<boolean> => runRestartableCardHandoff(cardId, {
+    runExclusive: (key, run) => inFlightCardHandoffs.run(key, run, { kind: 'card' }),
+    restartExclusive: (key, run) => inFlightCardHandoffs.restart(key, run, { kind: 'card' }),
+    holder: (key) => inFlightCardHandoffs.holder(key),
+    processRunning: (key) => inFlightCardHandoffs.processRunning(key),
+    confirmRestart: async () => {
+      const restart = 'Restart';
+      const answer = await vscode.window.showWarningMessage(
+        'An earlier AI run for this card is still starting, and it may be stuck. Restart it to abandon the earlier attempt and begin again, or wait for it to finish.',
+        restart,
+        'Wait',
+      );
+      return answer === restart;
+    },
+    showInformation: (message) => void vscode.window.showInformationMessage(message),
+  }, action);
 
   // Every provider CLI run streams its full output here, so the user can
   // follow along and read back what a CLI actually did.
@@ -593,8 +667,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    */
   const readRejectedModels = (): RejectedAgentCliModel[] =>
     readRejectedAgentCliModels(context.globalState.get<unknown>(REJECTED_AGENT_CLI_MODELS_KEY), Date.now());
+  // Pro registers its durable budget journal here; absent Pro, no gate applies.
+  const launchGates = createAgentCliLaunchGateRegistry();
   const runRecordingHandoff: typeof runAgentCliCardHandoff = async (handoff, options) => {
-    const result = await runAgentCliCardHandoff(handoff, options);
+    const launchGate = launchGates.current();
+    const result = await runAgentCliCardHandoff(handoff, {
+      ...(options ?? {}),
+      allowedProviders: readAllowedAgentCliProviders(),
+      ...(launchGate ? { launchGate } : {}),
+      boardFolder: vscode.workspace.getConfiguration('mwnn-kanban', vscode.Uri.file(handoff.cwd)).get<string>('boardFolder', '.mwnn'),
+    });
     const selection = result.modelSelection;
     if (selection?.applied) {
       const records = readRejectedModels();
@@ -638,7 +720,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       configuredPaths: readAgentCliPaths(),
       excludedProviders: readUsageOrchestratorExcludedClis(),
       cwd: workspaceRoot.fsPath,
+      resolveTarget: resolveAllowedAgentCliTarget,
     }),
+    resolveTarget: resolveAllowedAgentCliTarget,
     onRanking: (lines) => {
       for (const line of lines) {
         cliOutputChannel.info(line);
@@ -646,8 +730,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     // Model-not-found on Define/Run with AI: pick a working model/thinking
     // level, save at workspace or user scope, then re-dispatch the same run.
-    recoverFromModelRejection: (recoveryRequest) =>
-      promptAndApplyModelRecovery(recoveryRequest, createModelRecoveryUiDeps()),
+    recoverFromModelRejection: (recoveryRequest, signal) =>
+      promptAndApplyModelRecovery(recoveryRequest, createModelRecoveryUiDeps(), signal),
     refreshModelSettings: () => ({
       modelCatalog: readAgentCliModels(),
       stageModels: readAgentCliStageModelRules(),
@@ -671,9 +755,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    await runCardHandoff(selection.card.id, async () => {
+    await runRestartableCardRun(selection.card.id, async (lease) => {
       const choice = await pickRunWithAiProvider();
-      if (!choice) {
+      // A restart abandoned this attempt while its picker was open: say nothing.
+      if (!choice || lease.signal.aborted) {
         return false;
       }
 
@@ -687,7 +772,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // the prompt it receives is the unchanged one.
         return runCardWithAgentCli(
           { provider: choice.provider, kind: 'implementation', card: selection.card, prompt },
-          agentCliRunDeps(),
+          { ...agentCliRunDeps(), lease },
         );
       }
 
@@ -698,8 +783,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         choice.target,
         withPreferredModelNote(prompt, cardPreferredModelFor(selection.card, choice.target.provider)),
         `"${selection.card.title}"`,
+        lease.signal,
       );
-      if (!handedOff) {
+      if (!handedOff || lease.signal.aborted) {
         return false;
       }
 
@@ -862,9 +948,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
-    await runCardHandoff(card.id, async () => {
+    await runRestartableCardRun(card.id, async (lease) => {
       const choice = await pickRunWithAiProvider('Fill in this card with which AI provider?');
-      if (!choice) {
+      if (!choice || lease.signal.aborted) {
         return false;
       }
 
@@ -876,8 +962,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const prompt = buildCardDefinitionPrompt(current, cardFile, runSettings);
         const completed = await runCardWithAgentCli(
           { provider: choice.provider, kind: 'definition', card, prompt },
-          agentCliRunDeps(),
+          { ...agentCliRunDeps(), lease },
         );
+        if (lease.signal.aborted) {
+          return false;
+        }
         await finishCliDefinition(card.id, runSettings, completed);
         return completed;
       }
@@ -885,11 +974,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // A person is watching the chat, so the agent may ask clarifying questions
       // before defining the card. CLI runs and the AI loop stay non-interactive.
       const prompt = buildCardDefinitionPrompt(current, cardFile, runSettings, { interactive: true });
-      const handedOff = await handOffDefinitionToChat(current, runSettings, () => handOffPromptToChat(
-        choice.target,
-        withPreferredModelNote(prompt, cardPreferredModelFor(card, choice.target.provider)),
-        `"${card.title}"`,
-      ));
+      const handedOff = await handOffDefinitionToChat(current, runSettings, async () => {
+        const delivered = await handOffPromptToChat(
+          choice.target,
+          withPreferredModelNote(prompt, cardPreferredModelFor(card, choice.target.provider)),
+          `"${card.title}"`,
+          lease.signal,
+        );
+        return delivered && !lease.signal.aborted;
+      });
       if (!handedOff) {
         return false;
       }
@@ -1038,9 +1131,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * stopped short of it. Cancelling the loop here is what guarantees no
      * further handoffs follow; the ledger's latched stop refuses them anyway.
      */
-    const stopOnBudget = async (cardId: string): Promise<void> => {
+    const stopOnBudget = async (cardId: string, refusal?: string): Promise<void> => {
       const stop = budget.stop();
       if (!stop) {
+        // The durable launch gate refused; its reason is already on the card.
+        if (refusal !== undefined) {
+          loop.cancelled = true;
+          showCliWarning(refusal);
+          BoardPanel.postStateIfOpen();
+        }
         return;
       }
       loop.cancelled = true;
@@ -1150,9 +1249,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // One fallback runner per loop run: it owns the active CLI, the
       // providers whose allowance is already spent, and the single-handoff
       // guard. The user's saved provider preference is never written to.
+      const launchRun = createAgentCliLaunchScope();
       const fallbackRunner = createAgentCliFallbackRunner({
         initialTarget: cliTarget,
         runHandoff: runRecordingHandoff,
+        launchScope: (id) => ({ runId: launchRun.runId, cardRunId: `${launchRun.runId}:${id}` }),
+        resolveTarget: resolveAllowedAgentCliTarget,
         // Only an orchestrated run probes usage; every other selection keeps
         // its fixed CLI and the configured fallback order exactly as before.
         ...(selectedTarget.orchestrated
@@ -1164,6 +1266,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 behindPaceOnly: readUsageOrchestratorBehindPaceOnly(),
                 cwd: workspaceRoot.fsPath,
                 signal: loop.abortController.signal,
+                resolveTarget: resolveAllowedAgentCliTarget,
               }),
               onRanking: (lines: readonly string[]) => {
                 for (const line of lines) {
@@ -1276,7 +1379,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (outcome.kind === 'stopped') {
           // The dispatch budget refused this handoff before anything was
           // spawned, so the card is untouched and the run ends here.
-          await stopOnBudget(card.id);
+          await stopOnBudget(card.id, outcome.reason);
           return { started: false };
         }
 
@@ -1292,6 +1395,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return {
           started: result.completed,
           activityBaseline: result.activityBaseline,
+          ...(result.revalidateOutcome ? { revalidateOutcome: result.revalidateOutcome } : {}),
         };
       };
 
@@ -1337,7 +1441,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             {
               onEvent: (message) => progress.report({ message }),
               reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(),
-              verifyWithAi: readAiLoopVerifyCards(),
+              verifyWithAi: readAiLoopVerifyCards(), requireIndependentEvidence: true,
             },
           );
         },
@@ -1385,6 +1489,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return {
         initialTarget: pick.target,
         runHandoff: runRecordingHandoff,
+        resolveTarget: resolveAllowedAgentCliTarget,
         settings: readAiLoopCliFallback(),
         configuredPaths: readAgentCliPaths(),
         modelCatalog: readAgentCliModels(), stageModels: readAgentCliStageModelRules(),
@@ -1397,6 +1502,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             excludedProviders: readUsageOrchestratorExcludedClis(),
             behindPaceOnly: readUsageOrchestratorBehindPaceOnly(),
             cwd: workspaceRoot.fsPath,
+            resolveTarget: resolveAllowedAgentCliTarget,
           }),
           onRanking: (lines: readonly string[]) => {
             for (const line of lines) {
@@ -1435,9 +1541,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (completed && settings.mode.kind === 'jev-after-definition') { await applyJevRunSettingsAfterDefinition(cardId, targetStore); }
       BoardPanel.postStateIfOpen();
     },
-    options: () => ({ reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(), verifyWithAi: readAiLoopVerifyCards() }),
+    options: () => ({ reviewFreshDefinitions: readAiLoopReviewFreshDefinitions(), verifyWithAi: readAiLoopVerifyCards(), requireIndependentEvidence: true }),
     maxDispatches: readAiLoopMaxDispatchesSetting,
     delay: waitForMilliseconds,
+    createDurableWorker: () => createDurableWorkerSession({
+      rootPath: resolveSharedWorkerRoot({
+        platform: process.platform,
+        homeDirectory: os.homedir(),
+        env: process.env,
+      }),
+      fileSystem: createNodeWorkerFileSystem(),
+      bounds: readDurableWorkerBoundsConfig(),
+    }),
   });
 
   const stopBoardLoopCommand = (): void => {
@@ -1675,6 +1790,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     capabilities: {
       board: boardCapability,
       portfolioAiLoop,
+      workflowLaunchGate: {
+        version: 1,
+        noExtraChargesAcknowledged: () => readAgentCliNoExtraChargesAcknowledged(
+          vscode.workspace.getConfiguration('mwnn-kanban').get<unknown>('agentCliNoExtraChargesAcknowledged', true),
+        ),
+        register: (gate) => new vscode.Disposable(launchGates.register(gate)),
+      },
       copilotUsage: createCopilotUsageCapability({
         getSession: async () => vscode.authentication.getSession(
           'github',
@@ -2082,12 +2204,13 @@ async function pickAgentCliTarget(
   preference: 'prompt' | 'orchestrator' | AgentCliProviderId,
 ): Promise<{ readonly target: AgentCliTarget; readonly orchestrated: boolean } | undefined> {
   const configuredPaths = readAgentCliPaths();
+  const allowedProviders = readAllowedAgentCliProviders();
 
   if (preference !== 'prompt' && preference !== 'orchestrator') {
     const resolution = await resolveAgentCliTarget(
       preference,
       configuredPaths,
-      { cwd: workspaceCwd },
+      { cwd: workspaceCwd, allowedProviders },
     );
     if (!resolution.available) {
       void vscode.window.showWarningMessage(resolution.reason);
@@ -2098,11 +2221,17 @@ async function pickAgentCliTarget(
 
   const resolutions = await resolveAllAgentCliTargets(
     configuredPaths,
-    { cwd: workspaceCwd },
+    { cwd: workspaceCwd, allowedProviders },
   );
   const targets = resolutions.flatMap((resolution) =>
     resolution.available ? [resolution.target] : []);
   if (targets.length === 0) {
+    if (allowedProviders.length === 0) {
+      void vscode.window.showWarningMessage(
+        'All supported local AI CLIs are disabled for dispatch. In the Agent CLI Models settings panel, enable a CLI and confirm that no extra charges are possible to use the MWNN loop.',
+      );
+      return undefined;
+    }
     const commands = AGENT_CLI_PROVIDER_IDS
       .map((provider) => `${AGENT_CLI_LABELS[provider]} (${provider})`)
       .join(', ');
@@ -2238,7 +2367,13 @@ async function pickRunWithAiProvider(
   placeHolder = 'Run this card with which AI provider?',
 ): Promise<RunWithAiProviderChoice | undefined> {
   const { targets } = await discoverChatHandoffTargets();
-  const choices = listRunWithAiProviderChoices(targets);
+  const choices = listRunWithAiProviderChoices(targets, readAllowedAgentCliProviders());
+  if (choices.length === 0) {
+    void vscode.window.showWarningMessage(
+      'No supported AI chat or enabled local CLI was found. Enable a CLI in the Agent CLI Models settings panel or install a supported AI chat extension.',
+    );
+    return undefined;
+  }
   const pick = await vscode.window.showQuickPick(
     choices.map((choice) => ({
       label: choice.label,

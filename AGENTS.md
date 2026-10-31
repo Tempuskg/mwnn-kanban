@@ -94,6 +94,7 @@ Rules for direct board edits:
 
 - Treat `columns.json` and `cards/*.md` as the only canonical board state. Do not look for task state in workspace memento.
 - Move a card by editing its `column` and `position` frontmatter. Column order lives only in `columns.json`.
+- `scheduledFor` is an optional, JSON-quoted local wall time at minute precision, e.g. `scheduledFor: "2026-11-01T09:30"` (`YYYY-MM-DDTHH:mm`, no timezone or UTC conversion). Date-only `YYYY-MM-DD` normalizes to local midnight (`T00:00`); invalid values are ignored. Omit the key to clear. While now is strictly before the schedule, the card is blocked alongside unfinished dependencies: it cannot advance past Ready, is excluded from Ready reverse-WIP, and the AI Loop skips it. At or after the time, only the schedule hold expires; dependencies still apply. Blocked cards beyond Ready are relocated back to Ready. Import only explicit start/not-before schedules, never deadlines or metadata dates.
 - A card counts as "defined" for Ready reverse-WIP when `## Description` is non-empty.
 - Respect `wipLimit` on flow columns and `reverseWip` on the Ready column when claiming or moving work.
 - Prefer appending dated entries to `## Activity` when claiming, handing off, or reporting progress.
@@ -328,6 +329,12 @@ is not a card.
   prefer `{ kind: ai }`.
 - `dependsOn` — capture real prerequisites between the cards you create. See
   **Dependencies** below.
+- `scheduledFor` — import only explicit start/not-before schedules, never deadlines
+  or metadata dates. Use JSON-quoted local `YYYY-MM-DDTHH:mm` (no timezone/UTC
+  conversion); date-only expands to `T00:00`. Omit when unscheduled. Invalid
+  values are ignored. Future schedules block past Ready, exclude the card from
+  Ready reverse-WIP, and make the AI Loop skip it until the exact time; unfinished
+  dependencies still apply afterward.
 - Place every card in the Backlog column (the column whose `role` is `backlog`,
   or the first column if none), preserving plan order via ascending `position`.
 
@@ -454,6 +461,13 @@ What the slice of work is.
   for a new card. Omit the key entirely rather than writing an empty value.
 - `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or
   `{ kind: human, name: Alice }`. Omit for unassigned.
+- `scheduledFor` (optional) — JSON-quoted local wall time `YYYY-MM-DDTHH:mm`,
+  e.g. `scheduledFor: "2026-11-01T09:30"`, without timezone or UTC conversion.
+  Date-only normalizes to local midnight (`T00:00`); invalid values are ignored.
+  Omit to clear. A future schedule blocks alongside unfinished dependencies,
+  prevents moves past Ready, excludes the card from Ready reverse-WIP, and makes
+  the AI Loop skip it. At or after the exact time the schedule hold expires;
+  dependencies still apply. Blocked cards beyond Ready relocate back to Ready.
 - `dependsOn` (optional) — array of ids of other cards this card is blocked by,
   e.g. `[card-x, card-y]`. The card stays blocked until every listed card reaches
   a `done` column, and a blocked card cannot advance past the Ready column.

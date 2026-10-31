@@ -146,6 +146,62 @@ Depends on an existing card.
     assert.deepEqual(parseColumns(serialized), document);
   });
 
+  test('card markdown round-trips scheduledFor and expands date-only to T00:00', () => {
+    const document: CardDocument = {
+      columnId: 'col-ready',
+      position: 1000,
+      card: {
+        id: 'card-scheduled',
+        title: 'Timed work',
+        createdAt: 1719360000000,
+        scheduledFor: '2026-11-01T09:30',
+      },
+    };
+
+    const serialized = serializeCard(document);
+    assert.match(serialized, /scheduledFor: "2026-11-01T09:30"/);
+    assert.deepEqual(parseCard(serialized), document);
+
+    const dateOnly = `---
+id: card-scheduled
+title: Timed work
+column: col-ready
+position: 1000
+scheduledFor: 2026-11-01
+createdAt: 1719360000000
+---
+
+## Description
+
+## Acceptance criteria
+
+## Activity
+`;
+    assert.equal(parseCard(dateOnly).card.scheduledFor, '2026-11-01T00:00');
+    assert.match(serializeCard(parseCard(dateOnly)), /scheduledFor: "2026-11-01T00:00"/);
+  });
+
+  test('card markdown ignores invalid scheduledFor without failing the card', () => {
+    const markdown = `---
+id: card-bad-schedule
+title: Bad schedule
+column: col-ready
+position: 1000
+scheduledFor: not-a-datetime
+createdAt: 1719360000000
+---
+
+## Description
+
+## Acceptance criteria
+
+## Activity
+`;
+    const parsed = parseCard(markdown);
+    assert.equal(parsed.card.scheduledFor, undefined);
+    assert.ok(!serializeCard(parsed).includes('scheduledFor'));
+  });
+
   test('parseCard rejects missing frontmatter', () => {
     assert.throws(() => parseCard('## Description\nNo frontmatter'), /frontmatter/i);
   });

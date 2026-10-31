@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -14,7 +15,7 @@ import {
   resolveAgentCliTarget,
   resolveCursorWindowsLaunch,
   formatAgentCliOrchestratedAttemptStartEntry,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   runAgentCliProcess,
   type AgentCliCardHandoffOptions,
   type AgentCliProcessResult,
@@ -32,6 +33,11 @@ import {
   setDescription,
 } from '../../src/utils';
 import type { BoardState, Card } from '../../src/types';
+import {
+  AGENT_CLI_DEFAULT_MODEL,
+  AGENT_CLI_LAUNCH_AUTHORITY,
+  type AgentCliLaunchRequest,
+} from '../../src/agentCliLaunchGate';
 
 interface FakeHandoffStore {
   store: {
@@ -113,6 +119,26 @@ function handoffOptions(
 }
 
 suite('agent CLI provider registry and discovery', () => {
+  test('does not discover a CLI disabled by the access allowlist', async () => {
+    let discoveryCalls = 0;
+    const resolution = await resolveAgentCliTarget(
+      'cursor-other',
+      {},
+      {
+        allowedProviders: ['copilot'],
+        canExecute: async () => {
+          discoveryCalls += 1;
+          return true;
+        },
+      },
+    );
+    assert.equal(resolution.available, false);
+    if (!resolution.available) {
+      assert.match(resolution.reason, /disabled for AI dispatch/);
+    }
+    assert.equal(discoveryCalls, 0);
+  });
+
   test('builds the documented non-interactive command and pipes the exact prompt via stdin for every provider', () => {
     const prompt = 'Existing MWNN implementation handoff\nwith multiple lines & symbols';
     const expected: Record<AgentCliProviderId, readonly string[]> = {
@@ -532,6 +558,130 @@ suite('Cursor Agent CLI prompt delivery', () => {
 });
 
 suite('agent CLI card handoff evidence', () => {
+  test('a disabled CLI is rejected before a process starts', async () => {
+    const initial = boardWithCard();
+    const board = fakeStore(initial.state);
+    let processRuns = 0;
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('copilot'),
+        cardId: initial.cardId,
+        prompt: 'Do the work',
+        cwd: 'E:\\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      {
+        ...handoffOptions(async () => {
+          processRuns += 1;
+          return successfulProcess();
+        }),
+        allowedProviders: ['codex'],
+      },
+    );
+    assert.equal(result.completed, false);
+    assert.equal(result.failure, 'provider-disabled');
+    assert.match(result.reason ?? '', /disabled for AI dispatch/);
+    assert.equal(processRuns, 0);
+    assert.equal(board.card(initial.cardId).activity, undefined);
+  });
+
+  test('a refused launch reservation starts no process and records the refusal', async () => {
+    const initial = boardWithCard();
+    const board = fakeStore(initial.state);
+    let processRuns = 0;
+    const requests: AgentCliLaunchRequest[] = [];
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('codex'),
+        cardId: initial.cardId,
+        prompt: 'Do the work',
+        cwd: 'E:\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+        launchScope: { runId: 'run-1', cardRunId: 'run-1:card' },
+      },
+      {
+        ...handoffOptions(async () => {
+          processRuns += 1;
+          return successfulProcess();
+        }),
+        launchGate: {
+          reserve: async (request) => {
+            requests.push(request);
+            return { allowed: false, reason: 'Workflow launch-count limit reached or counts invalid.' };
+          },
+          settle: async () => assert.fail('nothing to settle'),
+        },
+      },
+    );
+    assert.equal(result.failure, 'launch-refused');
+    assert.equal(result.completed, false);
+    assert.equal(processRuns, 0);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(
+      { ...requests[0], root: undefined },
+      {
+        root: undefined,
+        cardId: initial.cardId,
+        stage: 'implementation',
+        provider: 'codex',
+        model: AGENT_CLI_DEFAULT_MODEL,
+        runId: 'run-1',
+        cardRunId: 'run-1:card',
+        authority: AGENT_CLI_LAUNCH_AUTHORITY,
+      },
+    );
+    assert.equal(requests[0]?.root, path.resolve('E:\workspace'));
+    assert.match(board.card(initial.cardId).activity ?? '', /launch refused[\s\S]*No CLI was started/);
+  });
+
+  test('a throwing launch gate refuses rather than launching', async () => {
+    const initial = boardWithCard();
+    const board = fakeStore(initial.state);
+    let processRuns = 0;
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation', target: target('codex'), cardId: initial.cardId, prompt: 'Do the work',
+        cwd: 'E:\workspace', store: board.store, signal: new AbortController().signal,
+      },
+      {
+        ...handoffOptions(async () => { processRuns += 1; return successfulProcess(); }),
+        launchGate: {
+          reserve: async () => { throw new Error('EACCES C:\secret\path'); },
+          settle: async () => undefined,
+        },
+      },
+    );
+    assert.equal(result.failure, 'launch-refused');
+    assert.equal(processRuns, 0);
+    assert.doesNotMatch(result.reason ?? '', /secret|EACCES/);
+  });
+
+  test('an admitted launch is settled once after the process ends, or as not-started', async () => {
+    for (const started of [true, false]) {
+      const initial = boardWithCard();
+      const board = fakeStore(initial.state);
+      const settled: [string, string][] = [];
+      await runAgentCliCardHandoff(
+        {
+          kind: 'implementation', target: target('codex'), cardId: initial.cardId, prompt: 'Do the work',
+          cwd: 'E:\workspace', store: board.store, signal: new AbortController().signal,
+        },
+        {
+          ...handoffOptions(async () => ({ ...successfulProcess(), started, ...(started ? {} : { exitCode: null, error: 'ENOENT' }) })),
+          launchGate: {
+            reserve: async () => ({ allowed: true, reservationId: 'res-1' }),
+            settle: async (id, outcome) => { settled.push([id, outcome]); },
+          },
+        },
+      );
+      assert.deepEqual(settled, [['res-1', started ? 'ended' : 'not-started']]);
+    }
+  });
+
   test('gh copilot uses the shared evidence contract for every AI-loop handoff kind', async (context) => {
     for (const kind of ['definition', 'triage', 'implementation', 'verification'] as const) {
       await context.test(kind, async () => {
@@ -1547,3 +1697,107 @@ async function waitForProcessExit(pid: number): Promise<boolean> {
   }
   return !processExists(pid);
 }
+
+suite('terminal blocker precedence', () => {
+  test('an unresolved blocker outranks a later DONE in the same dispatch', () => {
+    assert.deepEqual(
+      parseTerminalCardStatus('STATUS: BLOCKED: check failed\nSTATUS: DONE', 0),
+      { valid: true, status: { kind: 'blocked', reason: 'check failed' } },
+    );
+  });
+
+  test('the latest blocker supplies the reason despite later DONE text', () => {
+    assert.deepEqual(
+      parseTerminalCardStatus('STATUS: BLOCKED: first\nstatus: blocked: second\nSTATUS: DONE', 0),
+      { valid: true, status: { kind: 'blocked', reason: 'second' } },
+    );
+  });
+
+  test('a blocker without a reason cannot be hidden by later DONE text', () => {
+    for (const marker of ['STATUS: BLOCKED', 'STATUS: BLOCKED:   ']) {
+      assert.equal(parseTerminalCardStatus(`${marker}\nSTATUS: DONE`, 0).valid, false);
+    }
+  });
+
+  test('blockers from earlier dispatches do not block a new dispatch', () => {
+    const earlier = 'STATUS: BLOCKED: earlier dispatch\n';
+    assert.deepEqual(
+      parseTerminalCardStatus(`${earlier}STATUS: DONE`, earlier.length),
+      { valid: true, status: { kind: 'done' } },
+    );
+  });
+
+  test('rewording a resolved blocker permits completion', () => {
+    assert.deepEqual(
+      parseTerminalCardStatus('Initially reported as blocked: check failed; resolved below.\nSTATUS: DONE', 0),
+      { valid: true, status: { kind: 'done' } },
+    );
+  });
+});
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });
+
+suite('handoff independent acceptance gate', () => {
+  for (const kind of ['implementation', 'verification'] as const) {
+    test(`${kind} rejects DONE/PASS without configured host evidence`, async () => {
+      const { state, cardId } = boardWithCard();
+      const board = fakeStore(state);
+      const result = await rawRunAgentCliCardHandoff({
+        kind, target: target('copilot'), cardId, prompt: 'implement task',
+        cwd: path.join(os.tmpdir(), 'mwnn-missing-verification-profile'),
+        store: board.store, signal: new AbortController().signal,
+      }, handoffOptions(async () => {
+        board.mutate((current) => appendActivity(current, cardId,
+          kind === 'implementation' ? 'STATUS: DONE' : 'VERIFY: PASS'));
+        return successfulProcess();
+      }));
+      assert.equal(result.completed, false);
+      assert.equal(result.failure, 'outcome-unverified');
+      assert.match(result.reason ?? '', /verification inputs/i);
+    });
+  }
+
+  test('failed host checks cannot be bypassed by agent terminal text', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const result = await runAgentCliCardHandoff({
+      kind: 'implementation', target: target('copilot'), cardId, prompt: 'implement task',
+      cwd: 'E:\\workspace', store: board.store, signal: new AbortController().signal,
+    }, {
+      ...handoffOptions(async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+      outcomeEvidenceFactory: async () => ({ verify: async () => ({ valid: false, reason: 'Independent test failed.' }) }),
+    });
+    assert.equal(result.completed, false);
+    assert.equal(result.failure, 'outcome-unverified');
+    assert.doesNotMatch(board.card(cardId).activity ?? '', /independent verification receipt/);
+  });
+
+  test('a new blocker during host checks prevents accepting a previous DONE', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const result = await runAgentCliCardHandoff({
+      kind: 'implementation', target: target('copilot'), cardId, prompt: 'implement task',
+      cwd: 'E:\\workspace', store: board.store, signal: new AbortController().signal,
+    }, {
+      ...handoffOptions(async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return successfulProcess();
+      }),
+      outcomeEvidenceFactory: async (input) => {
+        const checker = await fakeOutcomeEvidence(input);
+        return { verify: async () => {
+          const result = await checker.verify();
+          board.mutate((current) => appendActivity(current, cardId, 'STATUS: BLOCKED: review required'));
+          return result;
+        } };
+      },
+    });
+    assert.equal(result.completed, false);
+    assert.equal(result.failure, 'outcome-unverified');
+    assert.match(result.reason ?? '', /marker changed/);
+  });
+});

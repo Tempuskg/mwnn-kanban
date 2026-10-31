@@ -93,6 +93,12 @@ is not a card.
   prefer `{ kind: ai }`.
 - `dependsOn` — capture real prerequisites between the cards you create. See
   **Dependencies** below.
+- `scheduledFor` — import only explicit start/not-before schedules, never deadlines
+  or metadata dates. Use JSON-quoted local `YYYY-MM-DDTHH:mm` (no timezone/UTC
+  conversion); date-only expands to `T00:00`. Omit when unscheduled. Invalid
+  values are ignored. Future schedules block past Ready, exclude the card from
+  Ready reverse-WIP, and make the AI Loop skip it until the exact time; unfinished
+  dependencies still apply afterward.
 - Place every card in the Backlog column (the column whose `role` is `backlog`,
   or the first column if none), preserving plan order via ascending `position`.
 

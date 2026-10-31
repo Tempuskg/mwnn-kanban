@@ -696,6 +696,31 @@ suite('restartable per-card hand-off lock', () => {
     assert.deepEqual(order, ['old-start']);
   });
 
+  test('a holder reporting a running process is never abandoned by restart', async () => {
+    const inFlight = createChatHandoffInFlight();
+    let signal: AbortSignal | undefined;
+    let setRunning!: (running: boolean) => void;
+    void inFlight.run('card-A', async (lease) => {
+      signal = lease.signal;
+      setRunning = lease.setProcessRunning;
+      return never();
+    }, { kind: 'card' });
+    assert.equal(inFlight.processRunning('card-A'), false);
+
+    setRunning(true);
+    assert.equal(inFlight.processRunning('card-A'), true);
+    let ran = false;
+    assert.deepEqual(await inFlight.restart('card-A', async () => { ran = true; }, { kind: 'card' }), { started: false });
+    assert.equal(ran, false);
+    assert.equal(signal?.aborted, false);
+    assert.equal(inFlight.holder('card-A'), 'card');
+
+    setRunning(false);
+    assert.deepEqual(await inFlight.restart('card-A', async () => 'again', { kind: 'card' }), { started: true, value: 'again' });
+    assert.equal(signal?.aborted, true);
+    assert.equal(inFlight.processRunning('card-A'), false);
+  });
+
   test('a delivery abandoned while still queued never starts', async () => {
     const queue = createChatHandoffQueue();
     void queue.run(never);

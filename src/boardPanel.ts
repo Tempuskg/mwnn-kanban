@@ -406,6 +406,9 @@ export class BoardPanel {
       case 'setDependencies':
         await this.deps.store.setDependencies(message.cardId, message.dependsOn);
         break;
+      case 'setScheduledFor':
+        await this.deps.store.setScheduledFor(message.cardId, message.scheduledFor);
+        break;
       case 'setPreferredModel':
         await this.deps.store.setPreferredModel(message.cardId, message.provider, message.preferredModel);
         break;

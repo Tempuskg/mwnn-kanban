@@ -579,6 +579,36 @@ body {
   flex: 1;
 }
 
+.card-schedule-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.card-schedule-controls .card-field-input {
+  flex: 1;
+  color-scheme: light dark;
+}
+
+.card-schedule-clear {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+}
+
+.card-schedule-clear:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.card-schedule-clear:focus-visible {
+  border-color: var(--vscode-focusBorder);
+  outline: none;
+}
+
 .card-chip-assign {
   font-family: inherit;
   font-size: 0.75rem;

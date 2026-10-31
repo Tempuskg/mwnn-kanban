@@ -13,6 +13,7 @@ import {
   normalizeCardPreferredModels,
   normalizeCardThinkingLevels,
   normalizePreferredModel,
+  normalizeScheduledFor,
   normalizeThinkingLevel,
 } from './utils';
 
@@ -68,6 +69,7 @@ export interface CardDocument {
 }
 
 export function serializeCard(document: CardDocument): string {
+  const scheduledFor = normalizeScheduledFor(document.card.scheduledFor);
   const lines = [
     '---',
     `id: ${serializeScalar(document.card.id)}`,
@@ -82,6 +84,7 @@ export function serializeCard(document: CardDocument): string {
     ...(document.card.dependsOn && document.card.dependsOn.length > 0
       ? [`dependsOn: ${serializeStringArray(document.card.dependsOn)}`]
       : []),
+    ...(scheduledFor ? [`scheduledFor: ${serializeScalar(scheduledFor)}`] : []),
     '---',
     '',
     '## Description',
@@ -118,6 +121,7 @@ export function parseCard(text: string): CardDocument {
   const updatedAt = optionalNumber(frontmatter, 'updatedAt');
   const assignee = optionalAssignee(frontmatter, 'assignee');
   const dependsOn = optionalStringArray(frontmatter, 'dependsOn');
+  const scheduledFor = optionalScheduledFor(frontmatter);
   const preferredModels = optionalPreferredModels(frontmatter);
   const thinkingLevels = optionalThinkingLevels(frontmatter);
   // A legacy `interview:` key (the retired AI-guided interview opt-in) is ignored
@@ -141,6 +145,9 @@ export function parseCard(text: string): CardDocument {
   }
   if (dependsOn !== undefined) {
     card.dependsOn = dependsOn;
+  }
+  if (scheduledFor !== undefined) {
+    card.scheduledFor = scheduledFor;
   }
   if (preferredModels !== undefined) {
     card.preferredModels = preferredModels;
@@ -483,6 +490,25 @@ function readPreferredModelScalar(value: string | undefined): string | undefined
     return undefined;
   }
   return normalizePreferredModel(parsed);
+}
+
+/**
+ * Read `scheduledFor` from frontmatter. Date-only values expand to local
+ * `T00:00`; invalid values are ignored so a typo never drops the whole card.
+ */
+function optionalScheduledFor(frontmatter: Record<string, string>): string | undefined {
+  const value = frontmatter['scheduledFor'];
+  if (value === undefined) {
+    return undefined;
+  }
+
+  let parsed: string;
+  try {
+    parsed = parseScalar(value);
+  } catch {
+    return undefined;
+  }
+  return normalizeScheduledFor(parsed);
 }
 
 function optionalStringArray(frontmatter: Record<string, string>, key: string): string[] | undefined {

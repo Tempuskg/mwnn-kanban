@@ -180,6 +180,37 @@ function assertHumanVerificationInstructions(activity: string): void {
 }
 
 suite('board loop planning', () => {
+  for (const columnIndex of [0, 1, 2, 3]) {
+    test(`skips future scheduled work in column ${columnIndex} and resumes at the exact local time`, (t) => {
+      const at = new Date(2026, 10, 1, 9, 30);
+      t.mock.timers.enable({ apis: ['Date'], now: at.getTime() - 1 });
+      const { state, cardId } = boardWithCard(FULL_COLUMNS, columnIndex, 'Scheduled', { kind: 'ai' });
+      state.columns[columnIndex]!.cards[0]!.scheduledFor = '2026-11-01T09:30';
+      const session = createLoopSession();
+      const options = { verifyWithAi: true };
+      assert.equal(planLoopAction(state, session, options), undefined);
+      assert.equal(session.skipped.has(cardId), false, 'a schedule hold must not skip the rest of the run');
+      t.mock.timers.setTime(at.getTime());
+      assert.equal(planLoopAction(state, session, options)?.card.id, cardId);
+      t.mock.timers.setTime(at.getTime() + 1);
+      assert.equal(planLoopAction(state, session, options)?.card.id, cardId);
+    });
+  }
+
+  test('a future schedule does not prevent the loop selecting other eligible work', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 1, 9, 0).getTime() });
+    let { state, cardId } = boardWithCard(FULL_COLUMNS, 2, 'Scheduled', { kind: 'ai' });
+    state.columns[2]!.cards[0]!.scheduledFor = '2026-11-01T09:30';
+    state = addCard(state, state.columns[2]!.id, 'Available');
+    const available = state.columns[2]!.cards[1]!.id;
+    state = setDescription(state, available, 'Implement now');
+    state = setAcceptanceCriteria(state, available, '- [ ] Implemented');
+    state = setAssignee(state, available, { kind: 'ai' });
+    const session = createLoopSession();
+    assert.equal(planLoopAction(state, session)?.card.id, available);
+    assert.equal(session.skipped.has(cardId), false);
+  });
+
   for (const scenario of [
     'definition', 'triage', 'fresh-definition', 'record-triage', 'advance',
     'dispatch', 'finished-dispatch', 'park', 'verify', 'complete',
@@ -1483,5 +1514,57 @@ suite('runBoardLoop pause gate', () => {
     assert.equal(summary.cancelled, true);
     assert.deepEqual(log.dispatched, [first]);
     assert.equal(gate.isPaused(), false);
+  });
+});
+
+suite('board loop independent evidence admission', () => {
+  for (const proof of ['missing', 'stale', 'current', 'throws'] as const) {
+    test(`verification ${proof} proof controls advancement independently of PASS text`, async () => {
+      let state = defaultBoard([...FULL_COLUMNS]);
+      state = addCard(state, state.columns[3]!.id, 'Verify independent evidence');
+      const cardId = state.columns[3]!.cards[0]!.id;
+      state = setAssignee(state, cardId, { kind: 'ai' });
+      state = setDescription(state, cardId, 'Verify the behavior');
+      state = setAcceptanceCriteria(state, cardId, '- [ ] Behavior is correct');
+      const board = fakeBoard(state);
+      const summary = await runBoardLoop(board.store, {
+        dispatchCard: async () => false, requestDefinition: async () => false,
+        requestTriage: async () => false, decideDoability: async () => undefined,
+        verifyCard: async () => {
+          board.mutate((current) => appendActivity(current, cardId, 'VERIFY: PASS'));
+          return { started: true, activityBaseline: 0,
+            ...(proof !== 'missing' ? { revalidateOutcome: async () => {
+              if (proof === 'throws') { throw new Error('unreadable evidence'); }
+              return proof === 'current';
+            } } : {}) };
+        },
+      }, { isCancelled: () => false, delay: async () => undefined },
+      { verifyWithAi: true, requireIndependentEvidence: true });
+      assert.equal(board.columnTitleOf(cardId), proof === 'current' ? 'Done' : 'Verify');
+      assert.equal(summary.verified.length, proof === 'current' ? 1 : 0);
+      if (proof !== 'current') { assert.equal(board.findCard(cardId).assignee?.kind, 'human'); }
+    });
+  }
+
+  test('implementation DONE without a live host proof leaves the work open for review', async () => {
+    let state = defaultBoard([...FULL_COLUMNS]);
+    state = addCard(state, state.columns[2]!.id, 'Implementation evidence');
+    const cardId = state.columns[2]!.cards[0]!.id;
+    state = setAssignee(state, cardId, { kind: 'ai' });
+    state = setDescription(state, cardId, 'Implement the behavior');
+    state = setAcceptanceCriteria(state, cardId, '- [ ] Behavior is correct');
+    const board = fakeBoard(state);
+    const summary = await runBoardLoop(board.store, {
+      dispatchCard: async () => {
+        board.mutate((current) => appendActivity(current, cardId, 'STATUS: DONE'));
+        return true;
+      },
+      requestDefinition: async () => false, requestTriage: async () => false,
+      decideDoability: async () => undefined,
+    }, { isCancelled: () => false, delay: async () => undefined }, { requireIndependentEvidence: true });
+    assert.equal(board.columnTitleOf(cardId), 'In Progress');
+    assert.equal(board.findCard(cardId).assignee?.kind, 'human');
+    assert.equal(summary.advanced.length, 0);
+    assert.match(board.findCard(cardId).acceptanceCriteria ?? '', /\[ \]/);
   });
 });

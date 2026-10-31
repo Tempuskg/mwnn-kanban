@@ -75,13 +75,23 @@ export async function resolveClipboardHandoffResult(
 
 export type ChatHandoffAttempt<T> = { readonly started: true; readonly value: T } | { readonly started: false };
 
-/** What kind of hand-off holds a card's lock; only interviews can be restarted. */
-export type ChatHandoffKind = 'interview' | 'other';
+/**
+ * What kind of hand-off holds a card's lock. Interviews and the per-card Run
+ * with AI / Fill in with AI actions can be restarted; anything else (the AI
+ * loop) never can.
+ */
+export type ChatHandoffKind = 'interview' | 'card' | 'other';
 
 /** Handed to a lock holder so it can tell when a restart has abandoned it. */
 export interface ChatHandoffLease {
   /** Aborted when a restart supersedes this attempt; it must then stop writing and messaging. */
   readonly signal: AbortSignal;
+  /**
+   * Marks whether this attempt has an agent CLI process running. While it is,
+   * a restart is refused: abandoning the attempt would leave the process
+   * running unseen and let a second one start beside it.
+   */
+  setProcessRunning(running: boolean): void;
 }
 
 export interface ChatHandoffRunOptions {
@@ -97,10 +107,14 @@ export interface ChatHandoffInFlight {
   ): Promise<ChatHandoffAttempt<T>>;
   /** Kind of the hand-off currently holding the key's lock, or undefined when it is free. */
   holder(key: string): ChatHandoffKind | undefined;
+  /** Whether the key's current holder reported an agent CLI process running. */
+  processRunning(key: string): boolean;
   /**
    * Abandons the current holder, if any, and runs the action under a fresh
    * lock generation. The abandoned attempt keeps running but its lease is
-   * aborted, and its late release leaves the new lock held.
+   * aborted, and its late release leaves the new lock held. A holder with a
+   * running agent CLI process is never abandoned: nothing starts and
+   * `{ started: false }` is returned.
    */
   restart<T>(
     key: string,
@@ -179,6 +193,7 @@ export function createChatHandoffInFlight(): ChatHandoffInFlight {
   interface Holder {
     readonly kind: ChatHandoffKind;
     readonly controller: AbortController;
+    processRunning: boolean;
   }
   const pending = new Map<string, Holder>();
 
@@ -187,10 +202,16 @@ export function createChatHandoffInFlight(): ChatHandoffInFlight {
     action: (lease: ChatHandoffLease) => Promise<T>,
     options: ChatHandoffRunOptions | undefined,
   ): Promise<ChatHandoffAttempt<T>> => {
-    const holder: Holder = { kind: options?.kind ?? 'other', controller: new AbortController() };
+    const holder: Holder = { kind: options?.kind ?? 'other', controller: new AbortController(), processRunning: false };
     pending.set(key, holder);
     try {
-      return { started: true, value: await action({ signal: holder.controller.signal }) };
+      return {
+        started: true,
+        value: await action({
+          signal: holder.controller.signal,
+          setProcessRunning: (running) => { holder.processRunning = running; },
+        }),
+      };
     } finally {
       // A restarted key belongs to a newer holder; only free our own claim.
       if (pending.get(key) === holder) {
@@ -215,12 +236,20 @@ export function createChatHandoffInFlight(): ChatHandoffInFlight {
       return pending.get(key)?.kind;
     },
 
+    processRunning(key: string): boolean {
+      return pending.get(key)?.processRunning === true;
+    },
+
     async restart<T>(
       key: string,
       action: (lease: ChatHandoffLease) => Promise<T>,
       options?: ChatHandoffRunOptions,
     ): Promise<ChatHandoffAttempt<T>> {
-      pending.get(key)?.controller.abort();
+      const current = pending.get(key);
+      if (current?.processRunning) {
+        return { started: false };
+      }
+      current?.controller.abort();
       return execute(key, action, options);
     },
   };

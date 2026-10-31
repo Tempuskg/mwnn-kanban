@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
@@ -14,7 +15,7 @@ import {
 } from '../../src/agentCliEscalation';
 import {
   AGENT_CLI_LABELS,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliCardHandoffResult,
   type AgentCliInvocation,
   type AgentCliProcessResult,
@@ -863,3 +864,6 @@ suite('agent CLI model escalation and credit fallback', () => {
     assert.equal(outcome.switches.length, 1);
   });
 });
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

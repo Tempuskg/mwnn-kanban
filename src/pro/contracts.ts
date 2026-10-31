@@ -1,5 +1,6 @@
 import type * as vscode from 'vscode';
 import type { BoardState, CardBadge } from '../types';
+import type { AgentCliLaunchAdmission, AgentCliLaunchGate, AgentCliLaunchRequest } from '../agentCliLaunchGate';
 
 export type { CardBadge } from '../types';
 
@@ -118,10 +119,28 @@ export interface CopilotUsageCapabilityV1 {
   readPremiumUsage(): Promise<CopilotPremiumUsageResult>;
 }
 
+/**
+ * Durable launch admission. Pro registers one gate; the host reserves every
+ * card-work CLI launch through it before spawning and settles it afterwards.
+ * Request/admission shapes are mirrored in Pro's `proApi.ts`.
+ */
+export type WorkflowLaunchRequestV1 = AgentCliLaunchRequest;
+export type WorkflowLaunchAdmissionV1 = AgentCliLaunchAdmission;
+export type WorkflowLaunchGateV1 = AgentCliLaunchGate;
+export interface WorkflowLaunchGateCapabilityV1 {
+  readonly version: 1;
+  /** Live read of the user's no-extra-charges acknowledgement; Pro rereads it per reservation. */
+  noExtraChargesAcknowledged(): boolean;
+  /** Replaces any earlier gate; disposing unregisters it. */
+  register(gate: WorkflowLaunchGateV1): vscode.Disposable;
+}
+
 export interface ProFeatureCapabilities {
   readonly board?: BoardCapabilityV1;
   readonly portfolioAiLoop?: PortfolioAiLoopCapabilityV1;
   readonly copilotUsage?: CopilotUsageCapabilityV1;
+  /** Additive; Pro feature-detects it. */
+  readonly workflowLaunchGate?: WorkflowLaunchGateCapabilityV1;
 }
 
 export interface ProFeatureRegistrationContext {

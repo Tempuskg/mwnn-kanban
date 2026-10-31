@@ -102,6 +102,13 @@ What the slice of work is.
   for a new card. Omit the key entirely rather than writing an empty value.
 - `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or
   `{ kind: human, name: Alice }`. Omit for unassigned.
+- `scheduledFor` (optional) — JSON-quoted local wall time `YYYY-MM-DDTHH:mm`,
+  e.g. `scheduledFor: "2026-11-01T09:30"`, without timezone or UTC conversion.
+  Date-only normalizes to local midnight (`T00:00`); invalid values are ignored.
+  Omit to clear. A future schedule blocks alongside unfinished dependencies,
+  prevents moves past Ready, excludes the card from Ready reverse-WIP, and makes
+  the AI Loop skip it. At or after the exact time the schedule hold expires;
+  dependencies still apply. Blocked cards beyond Ready relocate back to Ready.
 - `dependsOn` (optional) — array of ids of other cards this card is blocked by,
   e.g. `[card-x, card-y]`. The card stays blocked until every listed card reaches
   a `done` column, and a blocked card cannot advance past the Ready column.

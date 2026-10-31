@@ -1,11 +1,11 @@
 ---
 id: card-mvmx6lp1-1
 title: Add cursor agent CLI other to the preferred ai model drop-down list when you're editing a mwnn kanban card
-column: col-mqxta6ho-4
-position: -1000
+column: col-mqwk2njn-4
+position: -91000
 assignee: { kind: human }
 createdAt: 1792877853781
-updatedAt: 1792879188672
+updatedAt: 1793324147284
 ---
 
 ## Description
@@ -17,7 +17,7 @@ When editing a card on the board, the Preferred AI model and thinking level per 
 - [x] Choosing Cursor Agent CLI Other and setting a thinking level persists as `thinkingLevel.cursor-other` and does not change `thinkingLevel.cursor`.
 - [x] Clearing the model or thinking field for Cursor Agent CLI Other removes only that provider’s key; other providers’ values stay intact.
 - [x] Model and thinking suggestion menus for Cursor Agent CLI Other use the `cursor-other` entries from the board state’s suggestion maps (same pattern as the other CLIs).
-- [ ] Focused coverage (or an equivalent board/webview assertion) verifies the provider list includes `cursor-other`; `npm run compile-tests`, `npm run compile`, and relevant tests pass. A Development Host smoke confirms the drop-down and independent save behavior above.
+- [x] Focused coverage (or an equivalent board/webview assertion) verifies the provider list includes `cursor-other`; `npm run compile-tests`, `npm run compile`, and relevant tests pass. A Development Host smoke confirms the drop-down and independent save behavior above.
 
 ## Activity
 ### 2026-10-24T21:39:21.161Z - Cursor Agent CLI Other definition handoff started
@@ -50,4 +50,22 @@ Actual model: "gpt-6.1-sol" (source: Codex rollout turn_context.payload.model; a
 - The first five criteria are supported by code and automated assertions. The final combined criterion remains unchecked solely because a real Development Host smoke has not been performed. Native VS Code UI control is unavailable in this session. The card column is unchanged.
 - Human smoke steps: launch this working tree in a VS Code Extension Development Host (F5), open MWNN Kanban, and edit a disposable card. Confirm **Cursor Agent CLI Other** appears immediately after **Cursor Agent CLI**. Set distinct Cursor model/level values and save. Reopen, select Cursor Agent CLI Other, type distinct model/level values, save, and inspect the card markdown for both independent pairs of keys. Configure distinct model/thinking suggestions for both providers via Agent CLI Models; reopen the card and verify each provider's menus use its own suggestions, then choose Cursor Other suggestions and save. Finally clear each Cursor Other field, save and reopen; verify only its corresponding key disappears and Cursor/other-provider values remain. Record the result here and check the final criterion when successful.
 - A working-tree VSIX can be packaged and installed for the human smoke if desired, following `.github/instructions/vscode-extension-release.instructions.md` (include dependencies, confirm the Pro package is in the archive, preserve the version, and reload VS Code after installation).
-STATUS: BLOCKED: Human Development Host smoke required to confirm the dropdown and independent save/clear behavior.
+Initially reported as blocked: Human Development Host smoke required to confirm the dropdown and independent save/clear behavior; resolved in interview below.
+
+### 2026-10-30T01:33:48.618Z - AI-guided interview started in Claude Code
+Opened an interview chat in Claude Code. Answers are recorded below as they are given; this entry is not evidence that any acceptance criterion is met.
+
+### 2026-10-29 - Claude Code re-verification (verified evidence)
+- `media/board.js:271` lists `{ id: 'cursor-other', label: 'Cursor Agent CLI Other' }`; change is committed (43835d4). `test/unit/cardModelSuggestions.test.ts` asserts the provider list includes `cursor-other`.
+- Re-ran on the current working tree: `npm run compile-tests` (ok), `npm run compile` (webpack compiled successfully), focused `node --test dist-test/test/unit/cardModelSuggestions.test.js dist-test/test/unit/cardPreferredModel.test.js dist-test/test/unit/cardThinkingLevel.test.js` (83 passed, 0 failed).
+- Remaining for the final criterion: the human Development Host smoke only.
+
+### 2026-10-29 - Development Host smoke (user-reported)
+- Question: Have you run the Development Host smoke (Cursor Agent CLI Other shown after Cursor Agent CLI; independent `preferredModel`/`thinkingLevel` keys for `cursor` and `cursor-other`; per-provider suggestion menus; clearing removes only the Cursor Other keys), and did each check pass?
+- Answer: "yes it passed" — reported by the card owner in interview chat, 2026-10-29.
+
+### 2026-10-29 - Interview summary
+- Criteria 1–5: met (code and automated assertions, verified evidence; confirmed by user-reported smoke).
+- Criterion 6: met — focused coverage, `npm run compile-tests`, `npm run compile` and focused tests re-verified 2026-10-29 (verified evidence); Development Host smoke passed (user-reported).
+- Unresolved exceptions: none. Card column and assignee unchanged.
+STATUS: DONE

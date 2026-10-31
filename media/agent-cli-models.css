@@ -5,6 +5,10 @@ h2 { font-size: 18px; margin-top: 0; }
 h3 { font-size: 14px; }
 .scope-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 24px; }
 .scope-row span, .muted { color: var(--vscode-descriptionForeground); }
+.cli-access { padding: 20px; margin-bottom: 24px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
+.cli-access-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 8px 0; }
+.cli-access-row input { accent-color: var(--vscode-checkbox-foreground); }
+.cli-access-row .inherited { color: var(--vscode-descriptionForeground); font-style: italic; }
 .providers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
 .provider, .stages { padding: 20px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
 .stages { margin-top: 24px; }

@@ -1,11 +1,17 @@
 /** Host-side settings bridge. Injected inspect/update functions keep it testable. */
 import {
+  AGENT_CLI_EXECUTABLE_PROVIDER_IDS,
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
   AGENT_CLI_STAGE_PROVIDER_IDS,
   agentCliExecutableProvider,
   type AgentCliStageProviderId,
 } from './agentCliProviders';
+import {
+  readAgentCliNoExtraChargesAcknowledged,
+  readAgentCliProviderSetting,
+  setAgentCliProviderSetting,
+} from './agentCliAccess';
 import { AGENT_CLI_HANDOFF_KINDS } from './agentCliStages';
 import {
   addAgentCliSettingsEntry,
@@ -31,6 +37,7 @@ import {
 } from './types';
 
 export const AGENT_CLI_PANEL_SETTINGS = [
+  'agentCliAllowedProviders', 'agentCliNoExtraChargesAcknowledged',
   'agentCliModels', 'agentCliThinkingLevels', 'agentCliStageModels', 'agentCliStageThinkingLevels',
 ] as const;
 export type AgentCliPanelSetting = (typeof AGENT_CLI_PANEL_SETTINGS)[number];
@@ -44,7 +51,11 @@ export interface AgentCliSettingsInspection {
 export interface AgentCliSettingsPanelDeps {
   readonly workspaceAvailable: () => boolean;
   readonly inspect: (key: AgentCliPanelSetting) => AgentCliSettingsInspection | undefined;
-  readonly update: (key: AgentCliPanelSetting, value: AgentCliSettingsValue, scope: AgentCliSettingsScope) => PromiseLike<void>;
+  readonly update: (
+    key: AgentCliPanelSetting,
+    value: AgentCliSettingsValue | boolean,
+    scope: AgentCliSettingsScope,
+  ) => PromiseLike<void>;
   readonly post: (state: AgentCliSettingsPanelState) => void;
   readonly suggestions: readonly Pick<AgentCliSettingsPanelProvider,
     'id' | 'label' | 'suggestedModels' | 'suggestedThinkingLevels' | 'thinkingApplied'>[];
@@ -91,10 +102,12 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
     }
     const models = raw('agentCliModels');
     const levels = raw('agentCliThinkingLevels');
+    const ownAccess = raw('agentCliAllowedProviders');
     const stageModels = raw('agentCliStageModels');
     const stageLevels = raw('agentCliStageThinkingLevels');
     const inheritedModels = inherited('agentCliModels');
     const inheritedLevels = inherited('agentCliThinkingLevels');
+    const inheritedAccess = inherited('agentCliAllowedProviders');
     const ownStageModels = readAgentCliStageModels(stageModels);
     const ownStageLevels = readAgentCliStageModels(stageLevels);
     const lowerStageModels = readAgentCliStageModels(inherited('agentCliStageModels'));
@@ -102,6 +115,20 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
     deps.post({
       type: 'settingsState', scope, workspaceAvailable,
       inheritedScope: scope === 'workspace' ? 'User' : 'Extension default',
+      clis: AGENT_CLI_EXECUTABLE_PROVIDER_IDS.map((id) => {
+        const own = readAgentCliProviderSetting(ownAccess, id);
+        const lower = readAgentCliProviderSetting(inheritedAccess, id) ?? true;
+        return {
+          id,
+          label: AGENT_CLI_LABELS[id],
+          allowed: own ?? lower,
+          inheritedAllowed: own === undefined ? lower : null,
+        };
+      }),
+      // Application-scoped: the User value is effective regardless of the panel scope.
+      noExtraChargesAcknowledged: readAgentCliNoExtraChargesAcknowledged(
+        deps.inspect('agentCliNoExtraChargesAcknowledged')?.globalValue,
+      ),
       providers: AGENT_CLI_PROVIDER_IDS.map((id) => {
         const suggestions = deps.suggestions.find((provider) => provider.id === id);
         return {
@@ -169,6 +196,15 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
       refresh();
       return;
     }
+    if (value.type === 'noExtraChargesEdit') {
+      try {
+        await deps.update('agentCliNoExtraChargesAcknowledged', value.acknowledged, 'user');
+      } catch (cause) {
+        error = `Could not save settings: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
+      refresh();
+      return;
+    }
     if (value.scope === 'workspace' && !deps.workspaceAvailable()) {
       error = 'Open a workspace folder to edit Workspace settings.';
       refresh();
@@ -181,6 +217,19 @@ export function createAgentCliSettingsPanelController(deps: AgentCliSettingsPane
     }
     if (value.scope !== scope) {
       error = 'The settings scope changed. Retry this edit in the selected scope.';
+      refresh();
+      return;
+    }
+    if (value.type === 'cliAccessEdit') {
+      try {
+        await deps.update(
+          'agentCliAllowedProviders',
+          setAgentCliProviderSetting(raw('agentCliAllowedProviders'), value.provider, value.allowed),
+          scope,
+        );
+      } catch (cause) {
+        error = `Could not save settings: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
       refresh();
       return;
     }

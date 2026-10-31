@@ -1,3 +1,4 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import { detectCreditExhaustion, redactSecrets } from '../../src/agentCliCredit';
@@ -10,7 +11,7 @@ import {
 } from '../../src/agentCliFallback';
 import {
   AGENT_CLI_LABELS,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliInvocation,
   type AgentCliProcessResult,
   type AgentCliProviderId,
@@ -29,6 +30,118 @@ import {
 import type { BoardState, Card } from '../../src/types';
 
 const NOW = new Date('2026-09-19T09:30:00.000Z');
+
+suite('asynchronous dispatch accounting', () => {
+  test('awaits reservation before launch and settlement before returning', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const events: string[] = [];
+    let admit: (() => void) | undefined;
+    const reservation = new Promise<void>((resolve) => { admit = resolve; });
+    let settle: (() => void) | undefined;
+    const settlement = new Promise<void>((resolve) => { settle = resolve; });
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('codex'), settings: { enabled: false, providers: [] }, configuredPaths: {},
+      cwd: '/project', store: board.store, signal: new AbortController().signal,
+      beforeDispatch: async () => { events.push('reserve'); await reservation; return { allowed: true }; },
+      runHandoff: async () => { events.push('launch'); return { completed: true, cancelled: false, activityBaseline: 0 }; },
+      afterDispatch: async () => { events.push('settle'); await settlement; },
+    });
+    const running = runner.run({ kind: 'implementation', card: board.card(cardId), buildPrompt: () => 'work' })
+      .then((result) => { events.push('return'); return result; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, ['reserve']);
+    admit?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(events, ['reserve', 'launch', 'settle']);
+    settle?.();
+    assert.equal((await running).kind, 'ran');
+    assert.deepEqual(events, ['reserve', 'launch', 'settle', 'return']);
+  });
+
+  test('cancellation during reservation prevents launch', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const abort = new AbortController();
+    let launches = 0;
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('codex'), settings: { enabled: false, providers: [] }, configuredPaths: {},
+      cwd: '/project', store: board.store, signal: abort.signal,
+      beforeDispatch: async () => { abort.abort(); return { allowed: true }; },
+      runHandoff: async () => { launches += 1; return { completed: true, cancelled: false, activityBaseline: 0 }; },
+    });
+    const result = await runner.run({ kind: 'implementation', card: board.card(cardId), buildPrompt: () => 'work' });
+    assert.equal(launches, 0);
+    assert.equal(result.kind, 'ran');
+    if (result.kind === 'ran') { assert.equal(result.result.cancelled, true); }
+  });
+
+  test('a refused launch stops the run without trying a fallback provider', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const providers: string[] = [];
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('codex'), settings: { enabled: true, providers: ['copilot'] }, configuredPaths: {},
+      cwd: '/project', store: board.store, signal: new AbortController().signal,
+      resolveTarget: resolverFor(['codex', 'copilot']),
+      runHandoff: async (handoff) => {
+        providers.push(handoff.target.provider);
+        return { completed: false, cancelled: false, activityBaseline: 0, failure: 'launch-refused', reason: 'Workflow launch-count limit reached or counts invalid.' };
+      },
+    });
+    const result = await runner.run({ kind: 'implementation', card: board.card(cardId), buildPrompt: () => 'work' });
+    assert.equal(result.kind, 'stopped');
+    if (result.kind === 'stopped') { assert.match(result.reason, /launch-count limit/); }
+    assert.deepEqual(providers, ['codex']);
+  });
+
+  test('a fallback replacement carries the same launch scope as the exhausted attempt', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const scopes: unknown[] = [];
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('codex'), settings: { enabled: true, providers: ['copilot'] }, configuredPaths: {},
+      cwd: '/project', store: board.store, signal: new AbortController().signal,
+      resolveTarget: resolverFor(['codex', 'copilot']),
+      launchScope: (id) => ({ runId: 'run-7', cardRunId: `run-7:${id}` }),
+      runHandoff: async (handoff) => {
+        scopes.push(handoff.launchScope);
+        return handoff.target.provider === 'codex'
+          ? { completed: false, cancelled: false, activityBaseline: 0, failure: 'credit-exhausted', reason: 'spent',
+              creditExhaustion: { detail: 'Usage limit reached.' } }
+          : { completed: true, cancelled: false, activityBaseline: 0 };
+      },
+    });
+    const result = await runner.run({ kind: 'implementation', card: board.card(cardId), buildPrompt: () => 'work' });
+    assert.equal(result.kind, 'ran');
+    assert.equal(scopes.length, 2);
+    assert.deepEqual(scopes[0], { runId: 'run-7', cardRunId: `run-7:${cardId}` });
+    assert.deepEqual(scopes[1], scopes[0]);
+  });
+
+  for (const failingHook of ['reservation', 'settlement'] as const) {
+    test(`${failingHook} failure stops without fallback or leaking raw errors`, async () => {
+      const { state, cardId } = boardWithCard();
+      const board = fakeBoard(state);
+      let launches = 0;
+      const fakeSecret = 'FAKE-ACCOUNTING-SECRET';
+      const runner = createAgentCliFallbackRunner({
+        initialTarget: target('codex'), settings: { enabled: true, providers: ['copilot'] }, configuredPaths: {},
+        cwd: '/project', store: board.store, signal: new AbortController().signal,
+        beforeDispatch: async () => {
+          if (failingHook === 'reservation') { throw new Error(fakeSecret); }
+          return { allowed: true };
+        },
+        runHandoff: async () => { launches += 1; return { completed: true, cancelled: false, activityBaseline: 0 }; },
+        afterDispatch: async () => { throw new Error(fakeSecret); },
+      });
+      const result = await runner.run({ kind: 'implementation', card: board.card(cardId), buildPrompt: () => 'work' });
+      assert.equal(result.kind, 'stopped');
+      assert.equal(launches, failingHook === 'reservation' ? 0 : 1);
+      assert.equal(JSON.stringify(result).includes(fakeSecret), false);
+    });
+  }
+});
 
 interface FakeBoard {
   readonly store: {
@@ -807,3 +920,6 @@ suite('AI loop CLI fallback behaviour', () => {
     assert.equal(log.length, 0);
   });
 });
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

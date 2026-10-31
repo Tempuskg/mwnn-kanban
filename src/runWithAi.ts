@@ -4,6 +4,12 @@ import type {
   AgentCliStageThinkingLevels,
   AgentCliThinkingLevelDefaults,
 } from './agentCliModels';
+import { isAgentCliProviderAllowed } from './agentCliAccess';
+import { createAgentCliLaunchScope } from './agentCliLaunchGate';
+import {
+  AGENT_CLI_EXECUTABLE_PROVIDER_IDS,
+  type AgentCliExecutableProviderId,
+} from './agentCliProviders';
 import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
@@ -50,6 +56,7 @@ import {
 import {
   CHAT_PROVIDER_LABELS,
   describeChatHandoffTarget,
+  type ChatHandoffLease,
   type ChatHandoffTarget,
 } from './chatHandoff';
 import type { Assignee, Card, Column } from './types';
@@ -80,6 +87,7 @@ export type RunWithAiProviderChoice =
 
 export function listRunWithAiProviderChoices(
   chatTargets: readonly ChatHandoffTarget[],
+  allowedProviders: readonly AgentCliExecutableProviderId[] = AGENT_CLI_EXECUTABLE_PROVIDER_IDS,
 ): readonly RunWithAiProviderChoice[] {
   const chatChoices = chatTargets.map((target) => ({
     kind: 'chat' as const,
@@ -88,7 +96,9 @@ export function listRunWithAiProviderChoices(
     detail: describeChatHandoffTarget(target),
     target,
   }));
-  const cliChoices = AGENT_CLI_PROVIDER_IDS.map((provider) => ({
+  const cliChoices = AGENT_CLI_PROVIDER_IDS.filter(
+    (provider) => isAgentCliProviderAllowed(provider, allowedProviders),
+  ).map((provider) => ({
     kind: 'cli' as const,
     label: AGENT_CLI_LABELS[provider],
     description: 'Local agent CLI',
@@ -102,7 +112,11 @@ export function listRunWithAiProviderChoices(
     detail: USAGE_ORCHESTRATOR_DETAIL,
     provider: 'orchestrator' as const,
   };
-  return [...chatChoices, ...cliChoices, orchestratorChoice];
+  return [
+    ...chatChoices,
+    ...cliChoices,
+    ...(allowedProviders.length > 0 ? [orchestratorChoice] : []),
+  ];
 }
 
 /** Per-card CLI actions: run the card's work, or fill in its definition. */
@@ -213,7 +227,15 @@ export interface RunCardWithAgentCliDeps {
    */
   readonly recoverFromModelRejection?: (
     request: AgentCliModelRecoveryRequest,
+    signal?: AbortSignal,
   ) => Promise<AgentCliModelRecoverySelection | undefined>;
+  /**
+   * The per-card hand-off lease this run executes under. When a restart
+   * aborts its signal the run stops at its next step, writing, messaging and
+   * launching nothing. The lease is also told while a CLI process runs, which
+   * is the only time a restart is refused.
+   */
+  readonly lease?: ChatHandoffLease;
   /**
    * Re-read model/thinking settings after a successful recovery write so the
    * retry sees the updated catalog. Omitting it keeps the deps snapshot from
@@ -252,6 +274,8 @@ export async function runCardWithAgentCli(
   request: RunCardWithAgentCliRequest,
   deps: RunCardWithAgentCliDeps,
 ): Promise<boolean> {
+  // A restart abandoned this attempt: it must now write, say and launch nothing.
+  const superseded = (): boolean => deps.lease?.signal.aborted === true;
   let target: AgentCliTarget;
   let choiceEntry: string | undefined;
   if (request.provider === 'orchestrator') {
@@ -277,6 +301,9 @@ export async function runCardWithAgentCli(
       }),
       request.card.id,
     );
+    if (superseded()) {
+      return false;
+    }
     deps.onRanking?.(formatOrchestratorRanking(decision.ranking, request.kind, request.card.title));
     if (decision.kind === 'none') {
       deps.showWarning(decision.reason);
@@ -287,6 +314,9 @@ export async function runCardWithAgentCli(
   } else {
     const resolveTarget = deps.resolveTarget ?? resolveAgentCliTarget;
     const resolution = await resolveTarget(request.provider, deps.configuredPaths, { cwd: deps.cwd });
+    if (superseded()) {
+      return false;
+    }
     if (!resolution.available) {
       deps.showWarning(resolution.reason);
       return false;
@@ -296,6 +326,9 @@ export async function runCardWithAgentCli(
 
   if (request.kind === 'implementation' && await startReadyCardForImplementation(deps.store, request.card.id)) {
     deps.refreshBoard();
+  }
+  if (superseded()) {
+    return false;
   }
   if (choiceEntry !== undefined) {
     await deps.store.appendActivity(request.card.id, choiceEntry);
@@ -313,12 +346,17 @@ export async function runCardWithAgentCli(
   let escalatedModel: string | undefined;
   let escalatedThinkingLevel: string | undefined;
   let result: AgentCliCardHandoffResult;
+  // One run: a model-recovery retry shares this card stage's launch count.
+  const launchScope = createAgentCliLaunchScope(request.card.id);
 
   // A model-not-found refusal opens recovery once per attempt; confirming
   // writes settings and re-dispatches with escalated overrides so the new
   // model is used immediately. Cancel or a non-model failure ends the loop.
   for (;;) {
-    result = await deps.runWithProgress(
+    if (superseded()) {
+      return false;
+    }
+    result = await whileProcessRunning(deps.lease, () => deps.runWithProgress(
       progressTitle,
       (signal, reportProgress) => {
         const observer = deps.createProcessObserver?.(
@@ -339,6 +377,7 @@ export async function runCardWithAgentCli(
             cwd: deps.cwd,
             store: deps.store,
             signal,
+            launchScope,
             ...(modelCatalog !== undefined ? { modelCatalog } : {}),
             ...(stageModels !== undefined ? { stageModels } : {}),
             ...(thinkingLevels !== undefined ? { thinkingLevels } : {}),
@@ -355,7 +394,7 @@ export async function runCardWithAgentCli(
         );
       },
       request.card.id,
-    );
+    ));
 
     if (!isRecoverableModelRejection(result) || !deps.recoverFromModelRejection) {
       break;
@@ -388,7 +427,12 @@ export async function runCardWithAgentCli(
         : [],
       thinkingSupported,
       workspaceAvailable: true,
-    });
+    }, deps.lease?.signal);
+    // The recovery prompt can outlive a restart; its answer then belongs to
+    // an abandoned attempt, which re-dispatches and writes nothing.
+    if (superseded()) {
+      return false;
+    }
     if (!recovery) {
       break;
     }
@@ -454,6 +498,23 @@ export async function runCardWithAgentCli(
     deps.showInformation(outcome.message);
   }
   return result.completed;
+}
+
+/**
+ * Tells the lease an agent CLI process is running for the duration of `run`.
+ * The flag is set with no await before the launch, so a restart either lands
+ * before it (the caller's superseded check stops the launch) or is refused.
+ */
+async function whileProcessRunning<T>(
+  lease: ChatHandoffLease | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  lease?.setProcessRunning(true);
+  try {
+    return await run();
+  } finally {
+    lease?.setProcessRunning(false);
+  }
 }
 
 /**

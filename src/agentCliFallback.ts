@@ -62,6 +62,7 @@ import {
   type AgentCliTarget,
   type ExecutableDiscoveryOptions,
 } from './agentCliHandoff';
+import type { AgentCliLaunchScope } from './agentCliLaunchGate';
 import {
   formatNoEligibleCliReason,
   formatOrchestratorChoiceEntry,
@@ -318,13 +319,13 @@ export interface AgentCliFallbackDeps {
    */
   /** Pause between process attempts, including fallback and escalation retries. */
   readonly waitBeforeDispatch?: () => Promise<void>;
-  readonly beforeDispatch?: (intent: AgentCliDispatchIntent) => AgentCliDispatchDecision;
+  readonly beforeDispatch?: (intent: AgentCliDispatchIntent) => AgentCliDispatchDecision | Promise<AgentCliDispatchDecision>;
   /**
    * Called once per launched process after it has fully ended, carrying the
    * model it actually ran on, so a tally is grouped by what was really used
    * rather than by what was requested.
    */
-  readonly afterDispatch?: (settlement: AgentCliDispatchSettlement) => void;
+  readonly afterDispatch?: (settlement: AgentCliDispatchSettlement) => void | Promise<void>;
   readonly createObserver?: (
     target: AgentCliTarget,
     request: AgentCliFallbackRequest,
@@ -347,6 +348,11 @@ export interface AgentCliFallbackDeps {
    * The wall clock is `now`; the wait is announced through `onProgress`.
    */
   readonly usageResetWait?: AgentCliUsageResetWaitSettings;
+  /**
+   * The launch scope for a card in this run. Every attempt for the card,
+   * including fallback replacements and escalation retries, carries it.
+   */
+  readonly launchScope?: (cardId: string) => AgentCliLaunchScope;
   /** Test seams; default to the shared agentCliHandoff implementations. */
   readonly resolveTarget?: (
     provider: AgentCliProviderId,
@@ -922,11 +928,23 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         const target = active;
         // Asked before the prompt is built and before anything is spawned, so a
         // refusal costs nothing and leaves no process to wind down.
-        const decision = deps.beforeDispatch?.({ kind: request.kind, target, card })
-          ?? { allowed: true };
+        let decision: AgentCliDispatchDecision;
+        try {
+          decision = await deps.beforeDispatch?.({ kind: request.kind, target, card })
+            ?? { allowed: true };
+        } catch {
+          return { kind: 'stopped', reason: 'Dispatch accounting unavailable; reconcile before retrying.', switches, escalations };
+        }
         if (!decision.allowed) {
           deps.onProgress?.(decision.reason);
           return { kind: 'stopped', reason: decision.reason, switches, escalations };
+        }
+        if (cancelled()) {
+          return {
+            kind: 'ran', target,
+            result: { completed: false, cancelled: true, activityBaseline: (card.activity ?? '').length },
+            switches, escalations, exhaustedWithoutFallback: false,
+          };
         }
         deps.onProgress?.(
           `${target.label}: ${STAGE_LABELS[request.kind]} handoff for "${card.title}"...`,
@@ -945,6 +963,7 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
             cwd: deps.cwd,
             store: deps.store,
             signal: deps.signal,
+            ...(deps.launchScope ? { launchScope: deps.launchScope(card.id) } : {}),
             ...(deps.modelCatalog !== undefined ? { modelCatalog: deps.modelCatalog } : {}),
             ...(deps.stageModels !== undefined ? { stageModels: deps.stageModels } : {}),
             ...(deps.thinkingLevels !== undefined ? { thinkingLevels: deps.thinkingLevels } : {}),
@@ -966,15 +985,26 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
         markTried(card.id, target.provider, result.modelSelection?.requested);
         // The process has ended by now (the await above), so a settlement can
         // never describe a dispatch that is still running.
-        deps.afterDispatch?.({
-          kind: request.kind,
-          target,
-          card,
-          ...(result.modelSelection?.applied === true
-            ? { model: result.modelSelection.requested }
-            : {}),
-          result,
-        });
+        try {
+          await deps.afterDispatch?.({
+            kind: request.kind,
+            target,
+            card,
+            ...(result.modelSelection?.applied === true
+              ? { model: result.modelSelection.requested }
+              : {}),
+            result,
+          });
+        } catch {
+          return { kind: 'stopped', reason: 'Dispatch settlement unavailable; reconcile usage before retrying.', switches, escalations };
+        }
+        // A refused reservation is a budget/attempt stop, never a reason to try
+        // another provider or model: those share the same limits.
+        if (result.failure === 'launch-refused') {
+          const reason = result.reason ?? 'Launch budget refused the next CLI launch.';
+          deps.onProgress?.(reason);
+          return { kind: 'stopped', reason, switches, escalations };
+        }
 
         const exhaustion = result.creditExhaustion;
         if (!exhaustion || result.cancelled) {

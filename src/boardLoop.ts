@@ -58,6 +58,7 @@ export type LoopHandoffResult =
   | boolean
   | {
       readonly started: boolean;
+      readonly revalidateOutcome?: () => Promise<boolean>;
       readonly activityBaseline?: number;
     };
 
@@ -94,6 +95,8 @@ export interface LoopControl {
 }
 
 export interface LoopOptions {
+  /** Production loops require a current host receipt before advancing completed work. */
+  readonly requireIndependentEvidence?: boolean;
   /** Reuse project-scoped evidence and review holds across portfolio turns. */
   readonly session?: LoopSession;
   /** Execute only this card, keeping the entire board for admission checks. */
@@ -138,6 +141,7 @@ export interface LoopSummary {
 
 /** An implementation hand-off the loop made and is waiting on. */
 interface DispatchRecord {
+  readonly revalidateOutcome?: () => Promise<boolean>;
   /** Column the card was in when dispatched; a move resets the record. */
   columnId: string;
   /** Length of the card's activity at dispatch, so only newly appended text is scanned. */
@@ -159,6 +163,7 @@ interface TriageRequestRecord extends WaitRecord {
 
 /** An AI verification hand-off the loop made and is waiting on. */
 interface VerificationRecord extends WaitRecord {
+  readonly revalidateOutcome?: () => Promise<boolean>;
   /** Verify column the card was in when requested; a move resets the record. */
   columnId: string;
   /** Length of Activity at hand-off, so stale verdicts never resolve this run. */
@@ -800,6 +805,8 @@ export async function runBoardLoop(
           session.verifications.set(card.id, {
             columnId: action.column.id,
             activityBaseline: handoffActivityBaseline(result, (card.activity ?? '').length),
+            ...(typeof result !== 'boolean' && result.revalidateOutcome
+              ? { revalidateOutcome: result.revalidateOutcome } : {}),
             requestedAt: now(),
           });
           summary.verificationsRequested.push(card.title);
@@ -809,6 +816,10 @@ export async function runBoardLoop(
         return;
       }
       case 'complete': {
+        if (options.requireIndependentEvidence && !await hasCurrentOutcome(session.verifications.get(card.id))) {
+          await handVerificationToHuman(card, 'Independent verification is missing or stale; fresh checks or human review are required.');
+          return;
+        }
         report(`Completing verified card "${card.title}" in ${action.toColumn.title}`);
         // Put the most recently completed AI Loop card first while leaving the
         // existing Done-card order intact below it.
@@ -819,6 +830,12 @@ export async function runBoardLoop(
         return;
       }
       case 'advance': {
+        if (options.requireIndependentEvidence && session.dispatches.has(card.id)
+          && !await hasCurrentOutcome(session.dispatches.get(card.id))) {
+          await handVerificationToHuman(card, 'Independent verification is missing or stale; fresh checks or human review are required.');
+          session.dispatches.delete(card.id);
+          return;
+        }
         report(`Advancing "${card.title}" to ${action.toColumn.title}`);
         if (session.dispatches.has(card.id)) {
           // STATUS: DONE is the agent's explicit claim that every criterion is
@@ -930,6 +947,8 @@ export async function runBoardLoop(
           session.dispatches.set(card.id, {
             columnId: action.column.id,
             activityBaseline: handoffActivityBaseline(result, (card.activity ?? '').length),
+            ...(typeof result !== 'boolean' && result.revalidateOutcome
+              ? { revalidateOutcome: result.revalidateOutcome } : {}),
             dispatchedAt: now(),
           });
           summary.dispatched.push(card.title);
@@ -1143,4 +1162,8 @@ export function formatTriageHandoffEntry(providerLabel: string, timestamp: Date 
     `### ${timestamp.toISOString()} - Triage requested from ${providerLabel}`,
     `Asked ${providerLabel} to decide whether this card is doable by an AI agent and record the assignee.`,
   ].join('\n');
+}
+
+async function hasCurrentOutcome(record: { readonly revalidateOutcome?: () => Promise<boolean> } | undefined): Promise<boolean> {
+  try { return await record?.revalidateOutcome?.() === true; } catch { return false; }
 }

@@ -1,9 +1,10 @@
+import { fakeOutcomeEvidence } from '../helpers/fakeOutcomeEvidence';
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
   AGENT_CLI_LABELS,
   resolveAgentCliModelSelection,
-  runAgentCliCardHandoff,
+  runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
   type AgentCliHandoffKind,
   type AgentCliInvocation,
   type AgentCliProcessResult,
@@ -586,3 +587,6 @@ function cleanExit(): AgentCliProcessResult {
 function failedProcess(message: string): AgentCliProcessResult {
   return { started: true, cancelled: false, exitCode: 1, signal: null, stdout: '', stderr: message };
 }
+
+const runAgentCliCardHandoff: typeof rawRunAgentCliCardHandoff = (handoff, options = {}) =>
+  rawRunAgentCliCardHandoff(handoff, { outcomeEvidenceFactory: fakeOutcomeEvidence, ...options });

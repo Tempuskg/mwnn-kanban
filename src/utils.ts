@@ -150,6 +150,9 @@ function cloneCard(card: Card): Card {
   if (card.dependsOn !== undefined) {
     clone.dependsOn = [...card.dependsOn];
   }
+  if (card.scheduledFor !== undefined) {
+    clone.scheduledFor = card.scheduledFor;
+  }
   const preferredModels = clonePreferredModels(card.preferredModels);
   if (preferredModels !== undefined) {
     clone.preferredModels = preferredModels;
@@ -227,7 +230,8 @@ function cardsEqual(left: Card, right: Card): boolean {
     left.activity === right.activity &&
     preferredModelsEqual(left.preferredModels, right.preferredModels) &&
     assigneesEqual(left.assignee, right.assignee) &&
-    dependenciesEqual(left.dependsOn, right.dependsOn)
+    dependenciesEqual(left.dependsOn, right.dependsOn) &&
+    left.scheduledFor === right.scheduledFor
   );
 }
 
@@ -313,6 +317,9 @@ export function duplicateCard(state: BoardState, cardId: string): BoardState {
     }
     if (original.dependsOn !== undefined) {
       copy.dependsOn = [...original.dependsOn];
+    }
+    if (original.scheduledFor !== undefined) {
+      copy.scheduledFor = original.scheduledFor;
     }
     const copiedModels = clonePreferredModels(original.preferredModels);
     if (copiedModels !== undefined) {
@@ -682,6 +689,85 @@ function normalizeActivity(activity: string): string | undefined {
 }
 
 /**
+ * Normalize a card schedule to `YYYY-MM-DDTHH:mm` local wall time.
+ *
+ * Accepts the full datetime form or a date-only `YYYY-MM-DD` (expanded to
+ * local `T00:00`). Blank, unpadded, out-of-range, or otherwise malformed
+ * values are treated as "no schedule" so a bad hand-edit cannot drop the card.
+ */
+export function normalizeScheduledFor(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  const datetime = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(trimmed);
+  if (datetime) {
+    const year = Number(datetime[1]);
+    const month = Number(datetime[2]);
+    const day = Number(datetime[3]);
+    const hour = Number(datetime[4]);
+    const minute = Number(datetime[5]);
+    if (!isValidLocalCalendarDate(year, month, day) || hour > 23 || minute > 59) {
+      return undefined;
+    }
+    return `${datetime[1]}-${datetime[2]}-${datetime[3]}T${datetime[4]}:${datetime[5]}`;
+  }
+
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!dateOnly) {
+    return undefined;
+  }
+
+  const year = Number(dateOnly[1]);
+  const month = Number(dateOnly[2]);
+  const day = Number(dateOnly[3]);
+  if (!isValidLocalCalendarDate(year, month, day)) {
+    return undefined;
+  }
+  return `${dateOnly[1]}-${dateOnly[2]}-${dateOnly[3]}T00:00`;
+}
+
+function isValidLocalCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= (daysInMonth[month - 1] ?? 0);
+}
+
+/**
+ * Set or clear a card's local schedule. An omitted, blank, or invalid value
+ * removes the field rather than storing a bad datetime.
+ */
+export function setScheduledFor(
+  state: BoardState,
+  cardId: string,
+  scheduledFor: string | undefined,
+): BoardState {
+  const next = cloneBoard(state);
+  const normalized = normalizeScheduledFor(scheduledFor);
+  for (const column of next.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      if (normalized !== undefined) {
+        card.scheduledFor = normalized;
+      } else {
+        delete card.scheduledFor;
+      }
+      card.updatedAt = Date.now();
+      break;
+    }
+  }
+  return next;
+}
+
+/**
  * Replace a card's dependency list with a normalized set of card ids: the card
  * can never depend on itself, duplicate entries collapse to one, and only ids of
  * cards that still exist on the board are kept. An empty result clears the field.
@@ -866,9 +952,9 @@ export function wipState(column: Column): WipState {
   };
 }
 
-export function readyState(state: BoardState, column: Column): ReadyState {
+export function readyState(state: BoardState, column: Column, now: Date = new Date()): ReadyState {
   const defined = column.cards.filter(
-    (card) => normalizeDescription(card.description ?? '') !== undefined && !isCardBlocked(state, card.id),
+    (card) => normalizeDescription(card.description ?? '') !== undefined && !isCardBlocked(state, card.id, now),
   ).length;
   const min = column.reverseWip ?? null;
   return {
@@ -916,19 +1002,84 @@ export function blockingDependencies(state: BoardState, cardId: string): string[
   return target.dependsOn.filter((id) => existingIds.has(id) && !doneIds.has(id));
 }
 
-/** True when a card has at least one dependency that is not yet in a done column. */
-export function isCardBlocked(state: BoardState, cardId: string): boolean {
-  return blockingDependencies(state, cardId).length > 0;
+/**
+ * Parse a card schedule (`YYYY-MM-DDTHH:mm`, or date-only) as a local wall-time
+ * `Date`. Returns `undefined` for a missing or invalid schedule.
+ */
+export function parseScheduledFor(value: string | undefined): Date | undefined {
+  const normalized = normalizeScheduledFor(value);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  const [date = '', time = ''] = normalized.split('T');
+  const [year = 0, month = 1, day = 1] = date.split('-').map(Number);
+  const [hour = 0, minute = 0] = time.split(':').map(Number);
+  return new Date(year, month - 1, day, hour, minute);
+}
+
+function findCard(state: BoardState, cardId: string): Card | undefined {
+  for (const column of state.columns) {
+    const card = column.cards.find((candidate) => candidate.id === cardId);
+    if (card) {
+      return card;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The card's normalized schedule while `now` is strictly before it, else
+ * `undefined`. At or after the scheduled local moment the card is free.
+ */
+export function blockingSchedule(state: BoardState, cardId: string, now: Date = new Date()): string | undefined {
+  const scheduledFor = findCard(state, cardId)?.scheduledFor;
+  const at = parseScheduledFor(scheduledFor);
+  if (at === undefined || now.getTime() >= at.getTime()) {
+    return undefined;
+  }
+  return normalizeScheduledFor(scheduledFor);
+}
+
+/** True when the card's local `scheduledFor` is still in the future. */
+export function isScheduledBlocked(state: BoardState, cardId: string, now: Date = new Date()): boolean {
+  return blockingSchedule(state, cardId, now) !== undefined;
+}
+
+/** Why a card is blocked: unfinished dependencies and/or a future schedule. */
+export interface CardBlockReasons {
+  readonly blockedBy: readonly { readonly id: string; readonly title: string }[];
+  readonly scheduledFor?: string;
+}
+
+export function cardBlockReasons(state: BoardState, cardId: string, now: Date = new Date()): CardBlockReasons {
+  const titles = blockingDependencyTitles(state, cardId);
+  const blockedBy = blockingDependencies(state, cardId).map((id, i) => ({ id, title: titles[i] ?? id }));
+  const scheduledFor = blockingSchedule(state, cardId, now);
+  return scheduledFor === undefined ? { blockedBy } : { blockedBy, scheduledFor };
+}
+
+/**
+ * True when a card has at least one dependency that is not yet in a done
+ * column, or when `now` is strictly before its local `scheduledFor`.
+ */
+export function isCardBlocked(state: BoardState, cardId: string, now: Date = new Date()): boolean {
+  return blockingDependencies(state, cardId).length > 0 || isScheduledBlocked(state, cardId, now);
 }
 
 /**
  * Whether moving a card into the target column is allowed. A blocked card (one
- * with unfinished dependencies) may not advance past the Ready column — it can
- * still sit in Backlog/Ready or be pulled back, and reordering within its own
- * column is always fine. Unblocked cards may move anywhere.
+ * with unfinished dependencies or a future schedule) may not advance past the
+ * Ready column — it can still sit in Backlog/Ready or be pulled back, and
+ * reordering within its own column is always fine. Unblocked cards may move
+ * anywhere.
  */
-export function canMoveCardToColumn(state: BoardState, cardId: string, toColumnId: string): boolean {
-  if (!isCardBlocked(state, cardId)) {
+export function canMoveCardToColumn(
+  state: BoardState,
+  cardId: string,
+  toColumnId: string,
+  now: Date = new Date(),
+): boolean {
+  if (!isCardBlocked(state, cardId, now)) {
     return true;
   }
 
@@ -961,6 +1112,8 @@ export interface BlockedCardRelocation {
   readonly toColumnId: string;
   readonly toColumnTitle: string;
   readonly blockedBy: readonly { readonly id: string; readonly title: string }[];
+  /** The future local schedule holding the card back, when one applies. */
+  readonly scheduledFor?: string;
 }
 
 /** Titles of a card's unfinished dependencies, in `dependsOn` order. */
@@ -978,37 +1131,64 @@ function quoteTitles(titles: readonly string[]): string {
   return titles.map((title) => `"${title}"`).join(', ');
 }
 
+/** A schedule as user-facing copy, e.g. `2026-11-01 09:30`. */
+export function formatScheduledFor(scheduledFor: string): string {
+  return scheduledFor.replace('T', ' ');
+}
+
+function scheduledClause(scheduledFor: string): string {
+  return `scheduled for ${formatScheduledFor(scheduledFor)}`;
+}
+
+/** The "why" clause shared by relocation and blocked-move messages. */
+function describeBlockReasons(reasons: CardBlockReasons): string {
+  const clauses: string[] = [];
+  if (reasons.blockedBy.length > 0) {
+    clauses.push(
+      `blocked by unfinished ${reasons.blockedBy.length === 1 ? 'dependency' : 'dependencies'} `
+        + quoteTitles(reasons.blockedBy.map((dependency) => dependency.title)),
+    );
+  }
+  if (reasons.scheduledFor !== undefined) {
+    clauses.push(scheduledClause(reasons.scheduledFor));
+  }
+  return clauses.length > 0 ? clauses.join(' and ') : 'blocked by unfinished dependencies';
+}
+
 /** User-facing explanation of one enforced relocation, for notifications. */
 export function describeBlockedCardRelocation(relocation: BlockedCardRelocation): string {
   return `"${relocation.cardTitle}" moved from ${relocation.fromColumnTitle} back to ${relocation.toColumnTitle}: `
-    + `blocked by unfinished ${relocation.blockedBy.length === 1 ? 'dependency' : 'dependencies'} `
-    + `${quoteTitles(relocation.blockedBy.map((dependency) => dependency.title))}.`;
+    + `${describeBlockReasons(relocation)}.`;
 }
 
 /** Explanation shown when the board panel refuses to move a blocked card past Ready. */
-export function describeBlockedMove(state: BoardState, cardId: string): string {
-  const title = state.columns.flatMap((column) => column.cards).find((card) => card.id === cardId)?.title;
-  const blockers = blockingDependencyTitles(state, cardId);
-  const by = blockers.length > 0
-    ? `blocked by unfinished ${blockers.length === 1 ? 'dependency' : 'dependencies'} ${quoteTitles(blockers)}`
-    : 'blocked by unfinished dependencies';
-  return `"${title ?? 'This card'}" is ${by} and can't move past Ready.`;
+export function describeBlockedMove(state: BoardState, cardId: string, now: Date = new Date()): string {
+  const title = findCard(state, cardId)?.title;
+  return `"${title ?? 'This card'}" is ${describeBlockReasons(cardBlockReasons(state, cardId, now))} `
+    + `and can't move past Ready.`;
 }
 
 export function formatBlockedRelocationEntry(
-  relocation: Pick<BlockedCardRelocation, 'fromColumnTitle' | 'toColumnTitle' | 'blockedBy'>,
+  relocation: Pick<BlockedCardRelocation, 'fromColumnTitle' | 'toColumnTitle' | 'blockedBy' | 'scheduledFor'>,
   timestamp: Date = new Date(),
 ): string {
+  const clauses: string[] = [];
+  if (relocation.blockedBy.length > 0) {
+    clauses.push(`blocked by ${quoteTitles(relocation.blockedBy.map((dependency) => dependency.title))}`);
+  }
+  if (relocation.scheduledFor !== undefined) {
+    clauses.push(scheduledClause(relocation.scheduledFor));
+  }
   return [
     `### ${timestamp.toISOString()} - Moved back to ${relocation.toColumnTitle}`,
-    `Moved back to ${relocation.toColumnTitle} from "${relocation.fromColumnTitle}": blocked by `
-      + `${quoteTitles(relocation.blockedBy.map((dependency) => dependency.title))}.`,
+    `Moved back to ${relocation.toColumnTitle} from "${relocation.fromColumnTitle}": ${clauses.join(' and ')}.`,
   ].join('\n');
 }
 
 /**
- * Pull any blocked card that sits past the Ready column back to the end of the
- * Ready column, appending an Activity entry to each moved card and reporting
+ * Pull any blocked card (unfinished dependencies, or a schedule still after
+ * `timestamp`) that sits past the Ready column back to the end of the Ready
+ * column, appending an Activity entry to each moved card and reporting
  * every move so the caller can tell the user. A card can become blocked while
  * already in a work column (e.g. a dependency was added, or a finished
  * dependency was reopened); this keeps the "blocked cards can't advance past
@@ -1030,16 +1210,15 @@ export function relocateBlockedCards(
       return;
     }
     for (const card of column.cards) {
-      if (!isCardBlocked(next, card.id)) {
+      if (!isCardBlocked(next, card.id, timestamp)) {
         continue;
       }
-      const titles = blockingDependencyTitles(next, card.id);
       stranded.push({
         cardId: card.id,
         cardTitle: card.title,
         fromColumnId: column.id,
         fromColumnTitle: column.title,
-        blockedBy: blockingDependencies(next, card.id).map((id, i) => ({ id, title: titles[i] ?? id })),
+        ...cardBlockReasons(next, card.id, timestamp),
       });
     }
   });

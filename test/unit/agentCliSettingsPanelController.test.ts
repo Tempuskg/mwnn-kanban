@@ -52,12 +52,22 @@ function stageEdit(action: 'set' | 'remove', name: string, scope: AgentCliSettin
   return { type: 'settingsStageEdit', scope, list, stage, provider: 'codex', action, name };
 }
 
+function accessEdit(provider: string, allowed: boolean, scope: AgentCliSettingsScope = 'workspace') {
+  return { type: 'cliAccessEdit', scope, provider, allowed };
+}
+
 suite('Agent CLI settings panel host bridge', () => {
   test('starts in Workspace, lists all providers, and exposes bundled suggestions', async () => {
     const f = fixture();
     await f.handle({ type: 'settingsReady' });
     assert.equal(f.state().scope, 'workspace');
     assert.equal(f.state().workspaceAvailable, true);
+    assert.deepEqual(f.state().clis.map((cli) => [cli.id, cli.allowed]), [
+      ['copilot', true],
+      ['codex', true],
+      ['claude-code', true],
+      ['cursor', true],
+    ]);
     assert.equal(f.state().providers.length, 5);
     assert.deepEqual(
       f.state().providers.map((p) => p.id),
@@ -71,6 +81,62 @@ suite('Agent CLI settings panel host bridge', () => {
     assert.equal(cursorOther?.label, 'Cursor Agent CLI Other');
     assert.equal(cursorOther?.thinkingApplied, false);
     assert.equal(f.writes.length, 0);
+  });
+
+  test('CLI access edits preserve scope boundaries and inherit untouched settings', async () => {
+    const f = fixture();
+    f.settings.agentCliAllowedProviders = {
+      defaultValue: { copilot: true, codex: true, 'claude-code': true, cursor: true },
+      globalValue: { copilot: false },
+      workspaceValue: { codex: false, custom: 'preserve' },
+    };
+    await f.handle({ type: 'settingsReady' });
+    assert.deepEqual(
+      f.state().clis.map((cli) => [cli.id, cli.allowed, cli.inheritedAllowed]),
+      [
+        ['copilot', false, false],
+        ['codex', false, null],
+        ['claude-code', true, true],
+        ['cursor', true, true],
+      ],
+    );
+
+    await f.handle(accessEdit('cursor', false));
+    assert.deepEqual(f.writes.at(-1), {
+      key: 'agentCliAllowedProviders',
+      value: { codex: false, custom: 'preserve', cursor: false },
+      scope: 'workspace',
+    });
+    assert.deepEqual(f.settings.agentCliAllowedProviders.globalValue, { copilot: false });
+
+    await f.handle({ type: 'settingsScope', scope: 'user' });
+    await f.handle(accessEdit('copilot', true, 'user'));
+    assert.deepEqual(f.writes.at(-1), {
+      key: 'agentCliAllowedProviders',
+      value: { copilot: true },
+      scope: 'user',
+    });
+    assert.deepEqual(f.settings.agentCliAllowedProviders.workspaceValue, {
+      codex: false,
+      custom: 'preserve',
+      cursor: false,
+    });
+  });
+
+  test('no-extra-charges acknowledgement defaults checked and always writes User scope', async () => {
+    const f = fixture();
+    await f.handle({ type: 'settingsReady' });
+    assert.equal(f.state().scope, 'workspace');
+    assert.equal(f.state().noExtraChargesAcknowledged, true);
+
+    await f.handle({ type: 'noExtraChargesEdit', acknowledged: false });
+    assert.deepEqual(f.writes.at(-1), { key: 'agentCliNoExtraChargesAcknowledged', value: false, scope: 'user' });
+    assert.equal(f.state().noExtraChargesAcknowledged, false);
+    assert.equal(f.state().error, null);
+
+    await f.handle({ type: 'noExtraChargesEdit', acknowledged: 'no' });
+    assert.match(f.state().error ?? '', /Invalid settings message/);
+    assert.equal(f.writes.length, 1);
   });
 
   test('scope selection reads own values and labels lower values without copying them', async () => {
@@ -325,6 +391,8 @@ suite('Agent CLI settings panel host bridge', () => {
       await f.handle(message);
       assert.ok(f.state().error);
     }
+    await f.handle(accessEdit('cursor-other', false));
+    assert.match(f.state().error ?? '', /Invalid settings message/);
     assert.equal(f.writes.length, 0);
   });
 

@@ -36,6 +36,14 @@ export const AGENT_CLI_LABELS: Record<AgentCliProviderId, string> = {
  */
 export type AgentCliExecutableProviderId = Exclude<AgentCliProviderId, 'cursor-other'>;
 
+/** Selectable CLI executables; Cursor Other is a model pool, not a separate CLI. */
+export const AGENT_CLI_EXECUTABLE_PROVIDER_IDS = [
+  'copilot',
+  'codex',
+  'claude-code',
+  'cursor',
+] as const satisfies readonly AgentCliExecutableProviderId[];
+
 /** Stable id for Cursor Agent CLI Other (Other Models pool). */
 export const AGENT_CLI_CURSOR_OTHER_ID = 'cursor-other' as const;
 
@@ -56,6 +64,13 @@ export function isAgentCliProviderId(value: unknown): value is AgentCliProviderI
   return (
     typeof value === 'string' && AGENT_CLI_PROVIDER_IDS.some((provider) => provider === value)
   );
+}
+
+/** Narrow an unvalidated setting key to an executable provider id. */
+export function isAgentCliExecutableProviderId(
+  value: unknown,
+): value is AgentCliExecutableProviderId {
+  return AGENT_CLI_EXECUTABLE_PROVIDER_IDS.some((provider) => provider === value);
 }
 
 /** Narrow an unvalidated stage-settings key to a stage provider id. */

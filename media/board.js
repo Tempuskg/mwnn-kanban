@@ -305,6 +305,7 @@
    *   activity?: string,
    *   assignee?: Assignee,
    *   dependsOn?: string[],
+   *   scheduledFor?: string,
    *   preferredModels?: Record<string, string>,
    *   thinkingLevels?: Record<string, string>
    * }} Card
@@ -479,7 +480,59 @@
     }
   }
 
+  // Schedules unlock by the clock, not by a state push, so while any card not
+  // yet done has a future schedule the board rechecks about every 30s and on
+  // window focus, re-rendering when a schedule's blocked state has changed.
+  const SCHEDULE_REFRESH_MS = 30000;
+  /** @type {ReturnType<typeof setInterval> | undefined} */
+  let scheduleRefreshTimer;
+  let renderedScheduleBlocks = '';
+
+  /** Ids of cards (outside Done) whose schedule is still in the future. */
+  function scheduleBlockSignature() {
+    if (!board) {
+      return '';
+    }
+    const ids = [];
+    for (const column of board.columns) {
+      if (column.role === 'done') {
+        continue;
+      }
+      for (const card of column.cards) {
+        if (blockingSchedule(card) !== undefined) {
+          ids.push(card.id);
+        }
+      }
+    }
+    return ids.join(',');
+  }
+
+  function syncScheduleRefresh() {
+    renderedScheduleBlocks = scheduleBlockSignature();
+    if (renderedScheduleBlocks && scheduleRefreshTimer === undefined) {
+      scheduleRefreshTimer = setInterval(refreshSchedules, SCHEDULE_REFRESH_MS);
+    } else if (!renderedScheduleBlocks && scheduleRefreshTimer !== undefined) {
+      clearInterval(scheduleRefreshTimer);
+      scheduleRefreshTimer = undefined;
+    }
+  }
+
+  function refreshSchedules() {
+    if (!board || scheduleBlockSignature() === renderedScheduleBlocks) {
+      return;
+    }
+    // A full render rebuilds open modals and pickers, dropping unsaved edits or
+    // a drag in flight; closing any of them renders anyway.
+    if (openCardId || openColumnId || draggedCardId || activeAssignPicker || activeModelPicker) {
+      return;
+    }
+    render();
+  }
+
+  window.addEventListener('focus', refreshSchedules);
+
   function render() {
+    syncScheduleRefresh();
     closeAssignPicker();
     closeModelPicker();
     const previousColumns = root.querySelector('.board-columns');
@@ -821,13 +874,14 @@
       });
       meta.appendChild(chip);
     }
-    const blockedByDependency = isCardBlocked(card);
+    const blockerCount = countBlockingDependencies(card);
+    const blockedByDependency = blockerCount > 0;
+    const blockedSchedule = blockingSchedule(card);
     const blockedByStatus = hasBlockedStatus(card.activity);
-    if (blockedByDependency || blockedByStatus) {
-      const blockerCount = countBlockingDependencies(card);
+    if (blockedByDependency || blockedSchedule !== undefined || blockedByStatus) {
       const chip = renderChip('Blocked', 'card-chip-blocked');
-      chip.title = blockedByDependency
-        ? `Blocked by ${blockerCount} unfinished ${blockerCount === 1 ? 'dependency' : 'dependencies'}`
+      chip.title = blockedByDependency || blockedSchedule !== undefined
+        ? blockedChipTitle(blockerCount, blockedSchedule)
         : 'Latest card status is BLOCKED';
       if (blockedByDependency) {
         chip.tabIndex = 0;
@@ -1353,6 +1407,7 @@
     };
     const dependencyControls = renderDependencyControls(record.card, undefined, openLinkedCard);
     const dependentsWrapper = renderDependentsField(record.card, openLinkedCard);
+    const scheduleControls = renderScheduleControls(record.card.scheduledFor);
 
     form.append(
       titleInput.wrapper,
@@ -1363,6 +1418,7 @@
       acceptanceInput.wrapper,
       dependencyControls.wrapper,
       dependentsWrapper,
+      scheduleControls.wrapper,
       activityInput.wrapper,
     );
 
@@ -1444,6 +1500,7 @@
       preferredModels: preferredModelControls.read(),
       thinkingLevels: preferredModelControls.readThinkingLevels(),
       getDependencies: dependencyControls.getDependencies,
+      readScheduledFor: scheduleControls.read,
       currentColumnId: record.column.id,
       columnSelect: columnSelector.select,
     });
@@ -1546,6 +1603,10 @@
 
     const nextDependencies = fields.getDependencies();
     if (!dependenciesEqual(Array.isArray(card.dependsOn) ? card.dependsOn : [], nextDependencies)) {
+      return true;
+    }
+
+    if (fields.readScheduledFor() !== normalizeScheduledFor(card.scheduledFor)) {
       return true;
     }
 
@@ -2393,6 +2454,57 @@
   }
 
   /**
+   * "Scheduled for" field: a local datetime (minute step) plus Clear. The card
+   * stays blocked past Ready until that local moment.
+   * @param {string | undefined} scheduledFor
+   */
+  function renderScheduleControls(scheduledFor) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-field';
+
+    const label = document.createElement('label');
+    label.className = 'card-field-label';
+    label.textContent = 'Scheduled for';
+
+    const controls = document.createElement('div');
+    controls.className = 'card-schedule-controls';
+
+    const input = document.createElement('input');
+    input.className = 'card-field-input';
+    input.type = 'datetime-local';
+    input.step = '60';
+    input.id = 'card-scheduled-for';
+    input.value = normalizeScheduledFor(scheduledFor) ?? '';
+    label.htmlFor = input.id;
+
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'card-schedule-clear';
+    clear.textContent = 'Clear';
+    clear.setAttribute('aria-label', 'Clear scheduled date and time');
+    const syncClear = () => {
+      clear.disabled = input.value === '';
+    };
+    clear.addEventListener('click', () => {
+      input.value = '';
+      syncClear();
+      input.focus();
+    });
+    input.addEventListener('input', syncClear);
+    input.addEventListener('change', syncClear);
+    syncClear();
+
+    const help = document.createElement('span');
+    help.className = 'card-field-help';
+    help.textContent = 'Local time. This card stays blocked past Ready until then.';
+
+    controls.append(input, clear);
+    wrapper.append(label, controls, help);
+    // Browsers may append seconds; the card contract stores minutes only.
+    return { wrapper, read: () => normalizeScheduledFor(input.value.slice(0, 16)) };
+  }
+
+  /**
    * Read-only "Dependent cards" field: every card on the board whose dependsOn
    * names this card, in any column. Editing stays on the dependent card itself.
    * @param {{ id: string }} card
@@ -2717,6 +2829,15 @@
         : { type: 'setThinkingLevel', cardId: card.id, provider: change.provider });
     }
 
+    // Posted before any column move so clearing a schedule can unblock the
+    // move in the same save.
+    const nextScheduledFor = fields.readScheduledFor();
+    if (nextScheduledFor !== normalizeScheduledFor(card.scheduledFor)) {
+      post(nextScheduledFor
+        ? { type: 'setScheduledFor', cardId: card.id, scheduledFor: nextScheduledFor }
+        : { type: 'setScheduledFor', cardId: card.id });
+    }
+
     if (fields.columnSelect && fields.currentColumnId) {
       const move = columnChangeMove(card.id, fields.currentColumnId, fields.columnSelect.value);
       if (move) {
@@ -2869,10 +2990,68 @@
   }
 
   /**
+   * Normalize a card schedule to `YYYY-MM-DDTHH:mm` local wall time; a
+   * date-only value expands to `T00:00`, anything malformed is no schedule.
+   * Mirrors normalizeScheduledFor in src/utils.ts — keep the two in sync.
+   * @param {unknown} value
+   * @returns {string | undefined}
+   */
+  function normalizeScheduledFor(value) {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?$/.exec(value.trim());
+    if (!match) {
+      return undefined;
+    }
+    const [, year, month, day, hour = '00', minute = '00'] = match;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    if (date.getFullYear() !== Number(year) || date.getMonth() !== Number(month) - 1 ||
+      date.getDate() !== Number(day) || Number(hour) > 23 || Number(minute) > 59) {
+      return undefined;
+    }
+    return `${year}-${month}-${day}T${hour}:${minute}`;
+  }
+
+  /**
+   * The card's normalized schedule while `now` is strictly before it, else
+   * undefined. Mirrors blockingSchedule in src/utils.ts.
+   * @param {Card} card
+   * @param {Date} [now]
+   */
+  function blockingSchedule(card, now = new Date()) {
+    const normalized = normalizeScheduledFor(card.scheduledFor);
+    if (normalized === undefined) {
+      return undefined;
+    }
+    const [date, time] = normalized.split('T');
+    const [year, month, day] = date.split('-').map(Number);
+    const [hour, minute] = time.split(':').map(Number);
+    const at = new Date(year, month - 1, day, hour, minute);
+    return now.getTime() < at.getTime() ? normalized : undefined;
+  }
+
+  /**
+   * Blocked chip tooltip for unfinished dependencies and/or a future schedule.
+   * @param {number} blockerCount
+   * @param {string | undefined} scheduledFor
+   */
+  function blockedChipTitle(blockerCount, scheduledFor) {
+    const dependencies = `${blockerCount} unfinished ${blockerCount === 1 ? 'dependency' : 'dependencies'}`;
+    if (scheduledFor === undefined) {
+      return `Blocked by ${dependencies}`;
+    }
+    const schedule = `Scheduled for ${scheduledFor.replace('T', ' ')}`;
+    return blockerCount > 0 ? `${schedule} and blocked by ${dependencies}` : `${schedule}; blocked until then`;
+  }
+
+  /**
+   * Mirrors isCardBlocked in src/utils.ts: unfinished dependencies or a
+   * schedule still in the future.
    * @param {Card} card
    */
   function isCardBlocked(card) {
-    return blockingDependencies(card).length > 0;
+    return blockingDependencies(card).length > 0 || blockingSchedule(card) !== undefined;
   }
 
   /**
