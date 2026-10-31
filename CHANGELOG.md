@@ -5,6 +5,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-31
+
 ### Fixed
 - A card whose Run with AI or Fill in with AI attempt never settled (for example, a chat confirmation toast that hid unanswered) no longer stays locked until the window is reloaded. Starting the action again offers to restart the stuck attempt; the abandoned attempt then writes, records and notifies nothing and leaves the shared chat delivery queue. A running agent CLI process is never restartable: the message points to the card's Stop action. Dismissing a model-recovery prompt writes nothing.
 - CLI fallback awaits asynchronous dispatch admission and usage settlement before continuing. Cancellation during admission prevents launch; accounting failures stop retries without exposing raw callback errors.
@@ -201,7 +203,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 - Card dependencies: a card can depend on one or more other cards (chosen from the board in its detail view). Dependencies are persisted to the card's `dependsOn` frontmatter, a "Blocked" indicator appears while any dependency is not yet in a Done column, and deleting a card removes it from other cards' dependency lists.
 - Board panel persistence: if the board panel was open when VS Code closed or the window was reloaded, it reopens automatically on the same workspace (restored to its previous editor column) via a registered `WebviewPanelSerializer`. A restored panel reuses the existing board singleton, so it shows live store state, reflects external file changes, and supports every action exactly like a freshly opened panel.
 
-[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Tempuskg/mwnn-kanban/compare/v1.0.2...v1.0.3
