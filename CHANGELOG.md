@@ -5,6 +5,14 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-11-01
+
+### Fixed
+- Pro: time capture ignores editor test-host runtime churn and preserves the activity that triggers idle, sleep, or checkpoint cleanup, so resumed work and project switches contribute to tracked hours immediately. Requires `@tempuskg/mwnn-kanban-pro` 1.0.4.
+
+### Added
+- Pro: shared card-work CLI launch budgets enforce two launches per run and stage across providers and models, with optional project and global monthly limits and recovery for abandoned budget locks. Requires `@tempuskg/mwnn-kanban-pro` 1.0.4.
+
 ## [1.0.6] - 2026-10-31
 
 ### Fixed
