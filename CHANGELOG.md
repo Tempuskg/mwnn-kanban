@@ -5,6 +5,17 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-11-06
+
+### Fixed
+- AI loop model escalation skips ladder entries that the selected Cursor usage pool would reject: `cursor` escalates only through Auto-pool models and `cursor-other` only through Other Models. A mis-aimed rung is reported once instead of on every stage, and a ladder with no usable entries no longer counts as available.
+- Clearing a license key or running a gated command no longer starts a new local Pro trial; only first activation can start one.
+- Pro views no longer flash briefly in unlicensed windows while the license check runs at startup.
+
+### Changed
+- The Agent CLI Models panel shows only CLIs that are installed, in its access, provider and stage rows. Hidden CLIs keep their settings unchanged. The list refreshes when the panel opens or is revealed and when CLI paths or workspace folders change.
+- Pro: the My Work view appears only while Pro is licensed and updates when a license is entered, cleared, or expires, without reloading the window. Requires `@tempuskg/mwnn-kanban-pro` 1.0.5.
+
 ## [1.0.7] - 2026-11-01
 
 ### Fixed
