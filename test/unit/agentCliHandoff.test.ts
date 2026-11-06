@@ -422,7 +422,8 @@ suite('agent CLI provider registry and discovery', () => {
     const installed = await listInstalledAgentCliExecutableProviders(
       { cursor: 'C:\\tools\\agent.cmd' },
       {
-        env: { PATH: 'C:\\empty' },
+        platform: 'win32',
+        env: { PATH: 'C:\\empty', PATHEXT: '.CMD' },
         canExecute: async (candidate) => candidate.toLowerCase() === 'c:\\tools\\agent.cmd',
         // Presence listing must ignore dispatch allowlists.
         allowedProviders: [],
