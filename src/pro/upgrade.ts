@@ -144,8 +144,12 @@ export function initializeProLicenseCommands(
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   });
 
-  // Seed the context key so purchase menus are correct on the first palette open.
-  void hasProLicense(deps.getImplicitWorkspaceFolder());
+  // Publish false immediately so My Work's `when` clause cannot flash the
+  // Pro view before the async license/trial check settles.
+  void publishProLicenseContext(false);
+  // First activation may start the local trial; later checks (clear key,
+  // command gates) must not mint a new one.
+  void hasProLicense(deps.getImplicitWorkspaceFolder(), { startTrialIfMissing: true });
 
   return [
     deps.registerCommand(UPGRADE_TO_PRO_COMMAND, async () => {
@@ -178,9 +182,13 @@ export function initializeProLicenseCommands(
 
 export async function hasProLicense(
   workspaceFolder?: vscode.WorkspaceFolder,
+  options?: { readonly startTrialIfMissing?: boolean },
 ): Promise<boolean> {
   const licensed = await (
-    activeLicenseManager?.hasProLicense(workspaceFolder) ?? Promise.resolve(false)
+    activeLicenseManager?.hasProLicense(
+      workspaceFolder,
+      options?.startTrialIfMissing === true ? { startTrialIfMissing: true } : undefined,
+    ) ?? Promise.resolve(false)
   );
   await publishProLicenseContext(licensed);
   return licensed;

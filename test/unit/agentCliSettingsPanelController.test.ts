@@ -1,20 +1,27 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
+import { AGENT_CLI_EXECUTABLE_PROVIDER_IDS, type AgentCliExecutableProviderId } from '../../src/agentCliProviders';
 import {
   createAgentCliSettingsPanelController,
+  isAgentCliInstalledForSettingsPanel,
   type AgentCliPanelSetting,
   type AgentCliSettingsInspection,
 } from '../../src/agentCliSettingsPanelController';
 import type { AgentCliSettingsPanelState, AgentCliSettingsScope } from '../../src/types';
 
-function fixture(workspace = true) {
+function fixture(
+  workspace = true,
+  installed: readonly AgentCliExecutableProviderId[] = [...AGENT_CLI_EXECUTABLE_PROVIDER_IDS],
+) {
   const settings: Partial<Record<AgentCliPanelSetting, AgentCliSettingsInspection>> = {};
   const writes: { key: AgentCliPanelSetting; value: unknown; scope: AgentCliSettingsScope }[] = [];
   let posted: AgentCliSettingsPanelState | undefined;
   let workspaceAvailable = workspace;
+  let availableExecutableProviders = [...installed];
   let fail = false;
   const controller = createAgentCliSettingsPanelController({
     workspaceAvailable: () => workspaceAvailable,
+    availableExecutableProviders: () => availableExecutableProviders,
     inspect: (key) => settings[key],
     update: async (key, value, scope) => {
       if (fail) { throw new Error('settings file is read-only'); }
@@ -40,6 +47,9 @@ function fixture(workspace = true) {
   };
   return { ...controller, settings, writes, state,
     setWorkspace: (value: boolean) => { workspaceAvailable = value; },
+    setInstalled: (value: readonly AgentCliExecutableProviderId[]) => {
+      availableExecutableProviders = [...value];
+    },
     failWrites: () => { fail = true; },
   };
 }
@@ -394,6 +404,74 @@ suite('Agent CLI settings panel host bridge', () => {
     await f.handle(accessEdit('cursor-other', false));
     assert.match(f.state().error ?? '', /Invalid settings message/);
     assert.equal(f.writes.length, 0);
+  });
+
+  test('omits a missing CLI from access, provider, and stage sections without rewriting its settings', async () => {
+    const f = fixture(true, ['codex', 'cursor']);
+    f.settings.agentCliModels = {
+      workspaceValue: {
+        copilot: ['missing-kept'],
+        codex: ['gpt-5'],
+        cursor: ['auto'],
+      },
+    };
+    f.settings.agentCliAllowedProviders = {
+      workspaceValue: { copilot: false, codex: true, cursor: true },
+    };
+    f.settings.agentCliStageModels = {
+      workspaceValue: {
+        implementation: { copilot: 'ghost-model', codex: 'codex-model' },
+      },
+    };
+    await f.handle({ type: 'settingsReady' });
+
+    assert.deepEqual(f.state().clis.map((cli) => cli.id), ['codex', 'cursor']);
+    assert.deepEqual(f.state().providers.map((provider) => provider.id), ['codex', 'cursor', 'cursor-other']);
+    assert.ok(f.state().stages.every((stage) => stage.provider === 'codex'
+      || stage.provider === 'cursor'
+      || stage.provider === 'cursor-other'));
+    assert.equal(f.state().stages.filter((stage) => stage.provider === 'copilot').length, 0);
+    assert.equal(f.state().providers.find((provider) => provider.id === 'codex')?.models[0], 'gpt-5');
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.settings.agentCliModels.workspaceValue, {
+      copilot: ['missing-kept'],
+      codex: ['gpt-5'],
+      cursor: ['auto'],
+    });
+    assert.deepEqual(f.settings.agentCliAllowedProviders.workspaceValue, {
+      copilot: false, codex: true, cursor: true,
+    });
+    assert.deepEqual(f.settings.agentCliStageModels.workspaceValue, {
+      implementation: { copilot: 'ghost-model', codex: 'codex-model' },
+    });
+  });
+
+  test('refresh reflects a CLI that becomes available or unavailable without leaving a ghost section', async () => {
+    const f = fixture(true, ['codex']);
+    await f.handle({ type: 'settingsReady' });
+    assert.deepEqual(f.state().clis.map((cli) => cli.id), ['codex']);
+    assert.deepEqual(f.state().providers.map((provider) => provider.id), ['codex']);
+
+    f.setInstalled(['codex', 'cursor']);
+    f.refresh();
+    assert.deepEqual(f.state().clis.map((cli) => cli.id), ['codex', 'cursor']);
+    assert.deepEqual(f.state().providers.map((provider) => provider.id), ['codex', 'cursor', 'cursor-other']);
+    assert.ok(f.state().stages.some((stage) => stage.provider === 'cursor-other'));
+
+    f.setInstalled(['cursor']);
+    f.refresh();
+    assert.deepEqual(f.state().clis.map((cli) => cli.id), ['cursor']);
+    assert.deepEqual(f.state().providers.map((provider) => provider.id), ['cursor', 'cursor-other']);
+    assert.equal(f.state().providers.find((provider) => provider.id === 'codex'), undefined);
+    assert.equal(f.state().stages.filter((stage) => stage.provider === 'codex').length, 0);
+    assert.equal(f.writes.length, 0);
+  });
+
+  test('installed-filter helper maps cursor-other onto the shared cursor executable', () => {
+    const installed = new Set<AgentCliExecutableProviderId>(['cursor']);
+    assert.equal(isAgentCliInstalledForSettingsPanel('cursor', installed), true);
+    assert.equal(isAgentCliInstalledForSettingsPanel('cursor-other', installed), true);
+    assert.equal(isAgentCliInstalledForSettingsPanel('codex', installed), false);
   });
 
 });

@@ -6,6 +6,7 @@ import {
   initializeProLicenseCommands,
   isProLicenseActive,
   onDidChangeProLicense,
+  CLEAR_PRO_LICENSE_KEY_COMMAND,
   ENTER_PRO_LICENSE_KEY_COMMAND,
   PRO_LICENSE_CONTEXT_KEY,
   type LicenseStorageContext,
@@ -13,6 +14,7 @@ import {
   type ProUpgradeDeps,
 } from '../../src/pro';
 import { portfolioButtonMode } from '../../src/portfolioButton';
+import { myWorkViewMode } from '../../src/myWorkView';
 
 type CommandCallback = (...args: unknown[]) => unknown;
 
@@ -84,7 +86,7 @@ function createHarness(): {
     getConfiguration: () => configuration,
     showInputBox: async () => 'license-key',
     showInformationMessage: async () => undefined,
-    showWarningMessage: async () => undefined,
+    showWarningMessage: async () => 'Clear',
     showErrorMessage: async () => undefined,
     openExternal: async () => true,
     parseUri: (value) => ({ toString: () => value }) as unknown as vscode.Uri,
@@ -122,6 +124,7 @@ suite('Pro license signal behind the sidebar Portfolio button', () => {
     assert.equal(await hasProLicense(), false);
     assert.equal(isProLicenseActive(), false);
     assert.equal(portfolioButtonMode({ licensed: isProLicenseActive() }), 'hidden');
+    assert.equal(myWorkViewMode({ licensed: isProLicenseActive() }), 'hidden');
     assert.equal(harness.contextValues.at(-1), false);
     assert.deepEqual(notified, []);
 
@@ -132,12 +135,41 @@ suite('Pro license signal behind the sidebar Portfolio button', () => {
 
     assert.equal(isProLicenseActive(), true);
     assert.equal(portfolioButtonMode({ licensed: isProLicenseActive() }), 'visible');
+    assert.equal(myWorkViewMode({ licensed: isProLicenseActive() }), 'visible');
     assert.equal(harness.contextValues.at(-1), true);
     assert.deepEqual(notified, [true]);
 
     // Re-checking an unchanged license does not spam listeners.
     await hasProLicense();
     assert.deepEqual(notified, [true]);
+
+    subscription.dispose();
+  });
+
+  test('clearing a key with an expired trial hides My Work without minting a new trial', async () => {
+    const harness = createHarness();
+    const notified: boolean[] = [];
+    const subscription = onDidChangeProLicense((licensed) => notified.push(licensed));
+
+    initializeProLicenseCommands(harness.context, harness.deps);
+    // Let the startup seed finish so it cannot race the enter/clear sequence.
+    assert.equal(await hasProLicense(), false);
+    assert.equal(myWorkViewMode({ licensed: isProLicenseActive() }), 'hidden');
+
+    harness.granted = true;
+    await harness.commands.get(ENTER_PRO_LICENSE_KEY_COMMAND)?.();
+    assert.equal(myWorkViewMode({ licensed: isProLicenseActive() }), 'visible');
+
+    await harness.commands.get(CLEAR_PRO_LICENSE_KEY_COMMAND)?.();
+
+    assert.equal(await hasProLicense(), false);
+    assert.equal(isProLicenseActive(), false);
+    assert.equal(harness.contextValues.at(-1), false);
+    assert.equal(myWorkViewMode({ licensed: isProLicenseActive() }), 'hidden');
+    assert.equal(portfolioButtonMode({ licensed: isProLicenseActive() }), 'hidden');
+    // Clearing must publish false; it must not mint a trial that would push true again.
+    assert.equal(notified.at(-1), false);
+    assert.equal(notified.includes(true), true);
 
     subscription.dispose();
   });

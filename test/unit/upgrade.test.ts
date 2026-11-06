@@ -157,7 +157,8 @@ suite('Pro upgrade commands', () => {
   test('registers all commands and round-trips the license secret and context key', async () => {
     const harness = createHarness();
     const disposables = initializeProLicenseCommands(harness.context, harness.deps);
-    await hasProLicense();
+    // Match activation: only the startup seed may start the local trial.
+    await hasProLicense(undefined, { startTrialIfMissing: true });
 
     assert.equal(disposables.length, 4);
     assert.deepEqual([...harness.commands.keys()].sort(), [
@@ -204,7 +205,7 @@ suite('Pro upgrade commands', () => {
   test('upgrade prompt activates a key and publishes the licensed context', async () => {
     const harness = createHarness();
     initializeProLicenseCommands(harness.context, harness.deps);
-    await hasProLicense();
+    await hasProLicense(undefined, { startTrialIfMissing: true });
     harness.queueInformationSelection(PRO_ACTIVATE_PROMPT_LABEL);
 
     await showUpgradePrompt();
@@ -219,7 +220,7 @@ suite('Pro upgrade commands', () => {
   test('upgrade prompt opens the landing purchase URL', async () => {
     const harness = createHarness();
     initializeProLicenseCommands(harness.context, harness.deps);
-    await hasProLicense();
+    await hasProLicense(undefined, { startTrialIfMissing: true });
     harness.queueInformationSelection(PRO_UPGRADE_PROMPT_LABEL);
 
     await showUpgradePrompt();

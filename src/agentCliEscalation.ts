@@ -33,10 +33,15 @@
 
 import {
   AGENT_CLI_ESCALATION_LADDER_SETTING,
+  modelMatchesCursorProviderPool,
   readAgentCliModelCatalog,
   type AgentCliModelCatalog,
 } from './agentCliModels';
-import type { AgentCliProviderId } from './agentCliProviders';
+import {
+  AGENT_CLI_LABELS,
+  AGENT_CLI_PROVIDER_IDS,
+  type AgentCliProviderId,
+} from './agentCliProviders';
 import type { AgentCliHandoffKind } from './agentCliStages';
 import type { AgentCliCardHandoffResult, AgentCliTarget } from './agentCliHandoff';
 
@@ -143,23 +148,79 @@ export function detectAgentCliEscalationTrigger(
 
 /**
  * The next rung above `currentModel`, skipping anything already tried for this
- * card. A model absent from the ladder (an unrelated card model, or the
- * provider default) starts at the first rung; the last rung escalates to
- * nothing, which is what stops a card cycling between models.
+ * card and any rung the active provider's Cursor usage pool would reject at
+ * model resolution (so escalation never announces a model that
+ * `resolveAgentCliModel` would drop). A model absent from the ladder (an
+ * unrelated card model, or the provider default) starts at the first acceptable
+ * rung; when no acceptable rung remains, escalation stops.
  */
 export function selectNextEscalationModel(
   ladder: readonly string[],
   currentModel: string | undefined,
   tried: ReadonlySet<string>,
+  provider: AgentCliProviderId,
 ): string | undefined {
   const currentIndex = currentModel === undefined ? -1 : ladder.indexOf(currentModel);
   for (let index = currentIndex + 1; index < ladder.length; index += 1) {
     const candidate = ladder[index];
-    if (candidate !== undefined && candidate !== currentModel && !tried.has(candidate)) {
+    if (
+      candidate !== undefined
+      && candidate !== currentModel
+      && !tried.has(candidate)
+      && modelMatchesCursorProviderPool(provider, candidate)
+    ) {
       return candidate;
     }
   }
   return undefined;
+}
+
+/** One ladder entry the named provider's Cursor pool can never accept. */
+export interface RejectedEscalationLadderEntry {
+  readonly provider: AgentCliProviderId;
+  readonly model: string;
+}
+
+/**
+ * Ladder entries that {@link modelMatchesCursorProviderPool} would reject for
+ * their provider. Non-Cursor providers never appear here. Used for settings
+ * validation so a mis-aimed rung is reported once instead of silently skipped
+ * at selection time with no user-visible signal.
+ */
+export function rejectedEscalationLadderEntries(
+  ladders: AgentCliEscalationLadders,
+): readonly RejectedEscalationLadderEntry[] {
+  const rejected: RejectedEscalationLadderEntry[] = [];
+  for (const provider of AGENT_CLI_PROVIDER_IDS) {
+    for (const model of escalationLadderFor(ladders, provider)) {
+      if (!modelMatchesCursorProviderPool(provider, model)) {
+        rejected.push({ provider, model });
+      }
+    }
+  }
+  return rejected;
+}
+
+/**
+ * One user-facing warning for every pool-rejected ladder entry. Returns
+ * undefined when the ladders are clean, so callers can no-op without a blank
+ * toast.
+ */
+export function formatRejectedEscalationLadderWarning(
+  entries: readonly RejectedEscalationLadderEntry[],
+): string | undefined {
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const details = entries.map(
+    (entry) =>
+      `"${entry.model}" under ${AGENT_CLI_LABELS[entry.provider]} (${entry.provider})`,
+  );
+  return (
+    `${AGENT_CLI_ESCALATION_LADDER_SETTING} lists model${entries.length === 1 ? '' : 's'} ` +
+    `the active Cursor usage pool can never accept: ${details.join('; ')}. ` +
+    `Those rungs are skipped during escalation; remove them or move them to the matching Cursor identity.`
+  );
 }
 
 export interface AgentCliEscalationRecord {

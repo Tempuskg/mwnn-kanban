@@ -1,16 +1,25 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
-import { AGENT_CLI_LABELS, AGENT_CLI_THINKING_FLAGS } from './agentCliHandoff';
-import { AGENT_CLI_PROVIDER_IDS } from './agentCliProviders';
+import {
+  AGENT_CLI_LABELS,
+  AGENT_CLI_THINKING_FLAGS,
+  listInstalledAgentCliExecutableProviders,
+  type AgentCliPathOverrides,
+} from './agentCliHandoff';
+import { AGENT_CLI_PROVIDER_IDS, type AgentCliExecutableProviderId } from './agentCliProviders';
 import { BUNDLED_AGENT_CLI_MODELS, BUNDLED_AGENT_CLI_THINKING_LEVELS } from './agentCliDiscovery';
 import { AGENT_CLI_PANEL_SETTINGS, createAgentCliSettingsPanelController } from './agentCliSettingsPanelController';
 
 /** Register before the no-workspace activation exit: User settings always work. */
 export function registerAgentCliSettingsPanel(context: vscode.ExtensionContext): void {
   let panel: vscode.WebviewPanel | undefined;
+  let refreshInstalledClis: (() => Promise<void>) | undefined;
   context.subscriptions.push(vscode.commands.registerCommand('mwnn-kanban.openAgentCliModels', () => {
     if (panel) {
       panel.reveal();
+      // Re-probe so install/uninstall since the last open is reflected without
+      // requiring an editor restart.
+      void refreshInstalledClis?.();
       return;
     }
     const opened = vscode.window.createWebviewPanel(
@@ -23,11 +32,14 @@ export function registerAgentCliSettingsPanel(context: vscode.ExtensionContext):
     );
     panel = opened;
     let ready = false;
+    let availableExecutableProviders: readonly AgentCliExecutableProviderId[] = [];
+    let presenceProbe: Promise<void> = Promise.resolve();
     const disposables: vscode.Disposable[] = [];
     const configuration = (): vscode.WorkspaceConfiguration =>
       vscode.workspace.getConfiguration('mwnn-kanban', vscode.workspace.workspaceFolders?.[0]?.uri);
     const controller = createAgentCliSettingsPanelController({
       workspaceAvailable: () => (vscode.workspace.workspaceFolders?.length ?? 0) > 0,
+      availableExecutableProviders: () => availableExecutableProviders,
       inspect: (key) => configuration().inspect<unknown>(key),
       update: (key, value, scope) => configuration().update(
         key, value, scope === 'workspace' ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global,
@@ -44,20 +56,50 @@ export function registerAgentCliSettingsPanel(context: vscode.ExtensionContext):
         thinkingApplied: AGENT_CLI_THINKING_FLAGS[id] !== undefined,
       })),
     });
+    refreshInstalledClis = (): Promise<void> => {
+      presenceProbe = presenceProbe.then(async () => {
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const configuredPaths = configuration().get<AgentCliPathOverrides>('agentCliPaths', {});
+        availableExecutableProviders = await listInstalledAgentCliExecutableProviders(
+          configuredPaths,
+          cwd ? { cwd } : {},
+        );
+        controller.refresh();
+      }).catch((cause: unknown) => {
+        void vscode.window.showErrorMessage(`Agent CLI Models: ${String(cause)}`);
+      });
+      return presenceProbe;
+    };
     opened.webview.onDidReceiveMessage((message: unknown) => {
       ready = true;
-      void controller.handle(message).catch((cause: unknown) => {
+      void (async () => {
+        // Re-resolve presence on the webview's ready handshake (and on reveal /
+        // agentCliPaths / folder listeners below) so install/uninstall is
+        // reflected without probing on every list edit.
+        if (typeof message === 'object' && message !== null
+          && (message as { type?: unknown }).type === 'settingsReady') {
+          await refreshInstalledClis?.();
+        }
+        await controller.handle(message);
+      })().catch((cause: unknown) => {
         void vscode.window.showErrorMessage(`Agent CLI Models: ${String(cause)}`);
       });
     }, null, disposables);
     vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('mwnn-kanban.agentCliPaths')) {
+        void refreshInstalledClis?.();
+        return;
+      }
       if (AGENT_CLI_PANEL_SETTINGS.some((key) => event.affectsConfiguration(`mwnn-kanban.${key}`))) {
         controller.refresh();
       }
     }, null, disposables);
-    vscode.workspace.onDidChangeWorkspaceFolders(() => controller.refresh(), null, disposables);
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void refreshInstalledClis?.();
+    }, null, disposables);
     opened.onDidDispose(() => {
       panel = undefined;
+      refreshInstalledClis = undefined;
       for (const disposable of disposables) {
         disposable.dispose();
       }

@@ -33,6 +33,7 @@ import {
   type AgentCliModelDiscoverySession,
 } from './agentCliModelDiscovery';
 import {
+  AGENT_CLI_EXECUTABLE_PROVIDER_IDS,
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
   agentCliExecutableProvider,
@@ -756,6 +757,28 @@ export async function resolveAllAgentCliTargets(
 ): Promise<readonly AgentCliResolution[]> {
   return Promise.all(
     AGENT_CLI_PROVIDER_IDS.map((provider) => resolveAgentCliTarget(provider, configuredPaths, options)),
+  );
+}
+
+/**
+ * Which executable-owning CLIs resolve on this machine. Ignores the access
+ * allowlist — the Agent CLI Models panel needs presence so a disabled-but-
+ * installed CLI can still be re-enabled. `cursor-other` shares `cursor`.
+ */
+export async function listInstalledAgentCliExecutableProviders(
+  configuredPaths: AgentCliPathOverrides = {},
+  options: ExecutableDiscoveryOptions = {},
+): Promise<readonly AgentCliExecutableProviderId[]> {
+  // Presence only: never inherit a dispatch allowlist from callers.
+  const presenceOptions: ExecutableDiscoveryOptions = { ...options };
+  Reflect.deleteProperty(presenceOptions, 'allowedProviders');
+  const resolutions = await Promise.all(
+    AGENT_CLI_EXECUTABLE_PROVIDER_IDS.map((provider) =>
+      resolveAgentCliTarget(provider, configuredPaths, presenceOptions),
+    ),
+  );
+  return resolutions.flatMap((resolution) =>
+    resolution.available ? [agentCliExecutableProvider(resolution.target.provider)] : [],
   );
 }
 

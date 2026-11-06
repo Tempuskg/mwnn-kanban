@@ -79,7 +79,9 @@ import {
   type RejectedAgentCliModel,
 } from './agentCliRejectedModels';
 import {
+  formatRejectedEscalationLadderWarning,
   readAgentCliEscalationLadders,
+  rejectedEscalationLadderEntries,
   type AgentCliEscalationSettings,
 } from './agentCliEscalation';
 import {
@@ -316,14 +318,34 @@ function readAiLoopCliFallback(): AgentCliFallbackSettings {
  * Model escalation policy for one loop run. Validated in `agentCliEscalation`,
  * so a malformed ladder degrades to "no escalation for that CLI" instead of
  * breaking a dispatch, and every consumer sees the same already-checked value.
+ *
+ * Cursor pool mismatches are kept in the returned ladders so selection can
+ * skip them explicitly; a separate once-per-message warning surfaces them so
+ * they are not silently ignored.
  */
-function readAiLoopModelEscalation(): AgentCliEscalationSettings {
+let lastEscalationLadderPoolWarning: string | undefined;
+
+function readAiLoopModelEscalation(
+  reportPoolMismatch?: (message: string) => void,
+): AgentCliEscalationSettings {
   const config = vscode.workspace.getConfiguration('mwnn-kanban');
+  const ladders = readAgentCliEscalationLadders(
+    config.get<unknown>('aiLoopModelEscalationLadder', {}),
+  );
+  const warning = formatRejectedEscalationLadderWarning(
+    rejectedEscalationLadderEntries(ladders),
+  );
+  if (
+    warning !== undefined
+    && warning !== lastEscalationLadderPoolWarning
+    && reportPoolMismatch !== undefined
+  ) {
+    lastEscalationLadderPoolWarning = warning;
+    reportPoolMismatch(warning);
+  }
   return {
     enabled: config.get<boolean>('aiLoopModelEscalationEnabled', false),
-    ladders: readAgentCliEscalationLadders(
-      config.get<unknown>('aiLoopModelEscalationLadder', {}),
-    ),
+    ladders,
     overrideCardModel: config.get<boolean>('aiLoopModelEscalationOverridesCardModel', false),
   };
 }
@@ -1282,7 +1304,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         stageModels: readAgentCliStageModelRules(),
         thinkingLevels: readAgentCliThinkingLevelDefaults(),
         stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
-        escalation: readAiLoopModelEscalation(),
+        escalation: readAiLoopModelEscalation(showCliWarning),
         usageResetWait: { maxWaitHours: readAiLoopUsageResetMaxWaitHoursSetting() },
         cwd: workspaceRoot.fsPath,
         store,
@@ -1494,7 +1516,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         configuredPaths: readAgentCliPaths(),
         modelCatalog: readAgentCliModels(), stageModels: readAgentCliStageModelRules(),
         thinkingLevels: readAgentCliThinkingLevelDefaults(), stageThinkingLevels: readAgentCliStageThinkingLevelRules(),
-        escalation: readAiLoopModelEscalation(),
+        escalation: readAiLoopModelEscalation(showCliWarning),
         usageResetWait: { maxWaitHours: readAiLoopUsageResetMaxWaitHoursSetting() },
         ...(pick.orchestrated ? {
           orchestrator: createAgentCliUsageOrchestrator({
@@ -1785,6 +1807,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     extensionContext: context,
     hasProLicense,
     showUpgradePrompt,
+    onDidChangeProLicense,
     log: (message) => cliOutputChannel.appendLine(`[pro] ${message}`),
     registerDisposable: (disposable) => context.subscriptions.push(disposable),
     capabilities: {

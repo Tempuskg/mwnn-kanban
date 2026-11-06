@@ -117,7 +117,7 @@ suite('Pro license manager', () => {
       now: () => currentTime,
     });
 
-    assert.equal(await manager.hasProLicense(), true);
+    assert.equal(await manager.hasProLicense(undefined, { startTrialIfMissing: true }), true);
     assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
 
     currentTime += TRIAL_DURATION_MS - 1;
@@ -126,6 +126,28 @@ suite('Pro license manager', () => {
     currentTime += 1;
     assert.equal(await manager.hasProLicense(), false);
     assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
+  });
+
+  test('does not mint a trial on a routine license check or after clearing a key', async () => {
+    const harness = createHarness();
+    const manager = createProLicenseManager({
+      context: harness.context,
+      fetch: createJsonFetch([{ status: 'granted' }]),
+      getConfiguration: () => createConfiguration(),
+      showInputBox: async () => LICENSE_KEY,
+    });
+
+    // A plain gate check with no key must not start the trial — otherwise
+    // clearing a key would immediately re-grant Pro and leave My Work visible.
+    assert.equal(await manager.hasProLicense(), false);
+    assert.equal(harness.globalState.has(TRIAL_STORAGE_KEY), false);
+
+    assert.equal(await manager.promptEnterKey(), true);
+    assert.equal(await manager.hasProLicense(), true);
+
+    await manager.clearKey();
+    assert.equal(await manager.hasProLicense(), false);
+    assert.equal(harness.globalState.has(TRIAL_STORAGE_KEY), false);
   });
 
   test('validates any granted benefit when no benefit id is configured', async () => {

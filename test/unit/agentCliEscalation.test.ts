@@ -8,11 +8,14 @@ import {
 import {
   detectAgentCliEscalationTrigger,
   escalationLadderFor,
+  formatRejectedEscalationLadderWarning,
   readAgentCliEscalationLadders,
+  rejectedEscalationLadderEntries,
   selectNextEscalationModel,
   type AgentCliEscalationRecord,
   type AgentCliEscalationSettings,
 } from '../../src/agentCliEscalation';
+import { AGENT_CLI_ESCALATION_LADDER_SETTING } from '../../src/agentCliModels';
 import {
   AGENT_CLI_LABELS,
   runAgentCliCardHandoff as rawRunAgentCliCardHandoff,
@@ -266,21 +269,77 @@ suite('agent CLI escalation trigger classification', () => {
 
   test('picks the next unused rung and stops at the top of the ladder', () => {
     const ladder = ['cheap-model', 'mid-model', 'strong-model'];
-    assert.equal(selectNextEscalationModel(ladder, 'cheap-model', new Set()), 'mid-model');
+    assert.equal(selectNextEscalationModel(ladder, 'cheap-model', new Set(), 'codex'), 'mid-model');
     assert.equal(
-      selectNextEscalationModel(ladder, 'cheap-model', new Set(['mid-model'])),
+      selectNextEscalationModel(ladder, 'cheap-model', new Set(['mid-model']), 'codex'),
       'strong-model',
     );
-    assert.equal(selectNextEscalationModel(ladder, 'strong-model', new Set()), undefined);
+    assert.equal(selectNextEscalationModel(ladder, 'strong-model', new Set(), 'codex'), undefined);
     // A model outside the ladder (a card model, or the CLI's own default)
     // starts at the bottom rung rather than escalating to nothing.
-    assert.equal(selectNextEscalationModel(ladder, undefined, new Set()), 'cheap-model');
-    assert.equal(selectNextEscalationModel(ladder, 'unrelated', new Set()), 'cheap-model');
-    assert.equal(selectNextEscalationModel([], undefined, new Set()), undefined);
+    assert.equal(selectNextEscalationModel(ladder, undefined, new Set(), 'codex'), 'cheap-model');
+    assert.equal(selectNextEscalationModel(ladder, 'unrelated', new Set(), 'codex'), 'cheap-model');
+    assert.equal(selectNextEscalationModel([], undefined, new Set(), 'codex'), undefined);
     assert.equal(
-      selectNextEscalationModel(ladder, 'cheap-model', new Set(['mid-model', 'strong-model'])),
+      selectNextEscalationModel(ladder, 'cheap-model', new Set(['mid-model', 'strong-model']), 'codex'),
       undefined,
     );
+  });
+
+  test('Auto-pool cursor ladder skips a non-auto rung and stops when none remain', () => {
+    const ladder = ['claude-opus-5-5', 'composer-2.5', 'gpt-5.4'];
+    // Other-Models names are rejected for `cursor`; the Auto-pool composer rung is kept.
+    assert.equal(
+      selectNextEscalationModel(ladder, 'auto', new Set(), 'cursor'),
+      'composer-2.5',
+    );
+    assert.equal(
+      selectNextEscalationModel(ladder, 'auto', new Set(['composer-2.5']), 'cursor'),
+      undefined,
+    );
+    assert.equal(
+      selectNextEscalationModel(['claude-opus-5-5', 'gpt-5.4'], 'auto', new Set(), 'cursor'),
+      undefined,
+      'a ladder with only Other Models names must not escalate on the Auto pool',
+    );
+  });
+
+  test('cursor-other ladder skips an auto rung and stops when none remain', () => {
+    const ladder = ['auto', 'claude-opus-5-5', 'composer-2.5'];
+    // Auto-pool names are rejected for `cursor-other`; the Other Models rung is kept.
+    assert.equal(
+      selectNextEscalationModel(ladder, undefined, new Set(), 'cursor-other'),
+      'claude-opus-5-5',
+    );
+    assert.equal(
+      selectNextEscalationModel(ladder, 'claude-opus-5-5', new Set(), 'cursor-other'),
+      undefined,
+      'composer is Auto-pool and must not be offered on cursor-other',
+    );
+    assert.equal(
+      selectNextEscalationModel(['auto', 'composer'], 'claude-opus-5-5', new Set(), 'cursor-other'),
+      undefined,
+      'a ladder with only Auto-pool names must not escalate on cursor-other',
+    );
+  });
+
+  test('reports pool-rejected ladder entries once for settings validation', () => {
+    const ladders = readAgentCliEscalationLadders({
+      cursor: ['auto', 'claude-opus-5-5', 'composer'],
+      'cursor-other': ['auto', 'claude-opus-5-5'],
+      codex: ['cheap-model', 'strong-model'],
+    });
+    const rejected = rejectedEscalationLadderEntries(ladders);
+    assert.deepEqual(rejected, [
+      { provider: 'cursor', model: 'claude-opus-5-5' },
+      { provider: 'cursor-other', model: 'auto' },
+    ]);
+    const warning = formatRejectedEscalationLadderWarning(rejected);
+    assert.ok(warning !== undefined);
+    assert.ok(warning.includes(AGENT_CLI_ESCALATION_LADDER_SETTING));
+    assert.ok(warning.includes('"claude-opus-5-5" under Cursor Agent CLI (cursor)'));
+    assert.ok(warning.includes('"auto" under Cursor Agent CLI Other (cursor-other)'));
+    assert.equal(formatRejectedEscalationLadderWarning([]), undefined);
   });
 });
 
@@ -464,6 +523,147 @@ suite('agent CLI model escalation', () => {
     assert.deepEqual(outcome.escalations, []);
     assert.deepEqual(log.map((attempt) => attempt.model), ['cheap-model']);
     assert.ok(!board.activity(cardId).includes('Escalated to a stronger model'));
+  });
+
+  test('cursor Auto-pool ladder never announces or retries a rejected Other Models rung', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const log: AttemptLog[] = [];
+    const progress: string[] = [];
+
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('cursor'),
+      settings: { enabled: false, providers: [] },
+      configuredPaths: {},
+      modelCatalog: { cursor: ['auto'] },
+      // The bug: escalate announced claude-opus, resolve dropped it, retry stayed on auto.
+      escalation: escalationSettings({
+        ladders: { cursor: ['claude-opus-5-5', 'gpt-5.4'] },
+      }),
+      cwd: 'E:\\workspace root',
+      store: board.store,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      onProgress: (message) => progress.push(message),
+      resolveTarget: resolverFor(['cursor']),
+      runHandoff: simulatedHandoff(log, () => {
+        board.mutate((current) =>
+          appendActivity(
+            current,
+            cardId,
+            'STATUS: BLOCKED: the acceptance criteria are ambiguous',
+          ));
+        return cleanExit();
+      }),
+    });
+
+    const outcome = await runner.run({
+      kind: 'implementation',
+      card: board.card(cardId),
+      buildPrompt: IMPLEMENT_PROMPT,
+    });
+
+    assert.ok(outcome.kind === 'ran');
+    assert.deepEqual(outcome.escalations, []);
+    // One launch only — no second slot burned on the same Auto-pool model.
+    assert.deepEqual(log.map((attempt) => attempt.model), ['auto']);
+    assert.ok(!board.activity(cardId).includes('Escalated to a stronger model'));
+    assert.ok(!board.activity(cardId).includes('claude-opus-5-5'));
+    assert.equal(
+      progress.filter((line) => line.includes(AGENT_CLI_ESCALATION_LADDER_SETTING)).length,
+      1,
+      'pool-rejected ladder entries must be reported once',
+    );
+  });
+
+  test('cursor-other ladder never announces or retries a rejected Auto-pool rung', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const log: AttemptLog[] = [];
+
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('cursor-other'),
+      settings: { enabled: false, providers: [] },
+      configuredPaths: {},
+      modelCatalog: { 'cursor-other': ['claude-opus-5-5'] },
+      escalation: escalationSettings({
+        ladders: { 'cursor-other': ['auto', 'composer-2.5'] },
+      }),
+      cwd: 'E:\\workspace root',
+      store: board.store,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      resolveTarget: resolverFor(['cursor-other']),
+      runHandoff: simulatedHandoff(log, () => {
+        board.mutate((current) =>
+          appendActivity(
+            current,
+            cardId,
+            'STATUS: BLOCKED: the acceptance criteria are ambiguous',
+          ));
+        return cleanExit();
+      }),
+    });
+
+    const outcome = await runner.run({
+      kind: 'implementation',
+      card: board.card(cardId),
+      buildPrompt: IMPLEMENT_PROMPT,
+    });
+
+    assert.ok(outcome.kind === 'ran');
+    assert.deepEqual(outcome.escalations, []);
+    assert.deepEqual(log.map((attempt) => attempt.model), ['claude-opus-5-5']);
+    assert.ok(!board.activity(cardId).includes('Escalated to a stronger model'));
+    assert.ok(!board.activity(cardId).includes('Replacement model: "auto"'));
+  });
+
+  test('cursor Auto-pool escalation names only the pool-aligned rung the retry runs', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeBoard(state);
+    const log: AttemptLog[] = [];
+    const escalations: AgentCliEscalationRecord[] = [];
+
+    const runner = createAgentCliFallbackRunner({
+      initialTarget: target('cursor'),
+      settings: { enabled: false, providers: [] },
+      configuredPaths: {},
+      modelCatalog: { cursor: ['auto'] },
+      escalation: escalationSettings({
+        ladders: { cursor: ['claude-opus-5-5', 'composer-2.5'] },
+      }),
+      cwd: 'E:\\workspace root',
+      store: board.store,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      onEscalate: (record) => escalations.push(record),
+      resolveTarget: resolverFor(['cursor']),
+      runHandoff: simulatedHandoff(log, (attempt) => {
+        board.mutate((current) =>
+          appendActivity(
+            current,
+            cardId,
+            attempt.model === 'composer-2.5'
+              ? 'STATUS: DONE'
+              : 'STATUS: BLOCKED: the acceptance criteria are ambiguous',
+          ));
+        return cleanExit();
+      }),
+    });
+
+    const outcome = await runner.run({
+      kind: 'implementation',
+      card: board.card(cardId),
+      buildPrompt: IMPLEMENT_PROMPT,
+    });
+
+    assert.ok(outcome.kind === 'ran');
+    assert.equal(outcome.result.completed, true);
+    assert.deepEqual(log.map((attempt) => attempt.model), ['auto', 'composer-2.5']);
+    assert.equal(escalations.length, 1);
+    assert.equal(escalations[0]?.to, 'composer-2.5');
+    assert.ok(board.activity(cardId).includes('Replacement model: "composer-2.5"'));
+    assert.ok(!board.activity(cardId).includes('claude-opus-5-5'));
   });
 
   test('excluded failure kinds never escalate', async () => {

@@ -52,9 +52,20 @@ export interface ProLicenseManagerDeps {
   readonly showErrorMessage?: (message: string) => unknown;
 }
 
+/** Options for {@link ProLicenseManager.hasProLicense}. */
+export interface HasProLicenseOptions {
+  /**
+   * When true and no license key is stored, start the local trial if it has
+   * not started yet. Default false: clearing a key or a routine gate check
+   * must not mint a fresh trial and keep Pro surfaces like My Work visible.
+   */
+  readonly startTrialIfMissing?: boolean;
+}
+
 export interface ProLicenseManager {
   readonly hasProLicense: (
     workspaceFolder?: vscode.WorkspaceFolder,
+    options?: HasProLicenseOptions,
   ) => Promise<boolean>;
   readonly promptEnterKey: (
     workspaceFolder?: vscode.WorkspaceFolder,
@@ -222,10 +233,12 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
 
   async function hasProLicense(
     workspaceFolder?: vscode.WorkspaceFolder,
+    options?: HasProLicenseOptions,
   ): Promise<boolean> {
+    const startTrialIfMissing = options?.startTrialIfMissing === true;
     const key = await deps.context.secrets.get(SECRETS_KEY);
     if (!key) {
-      return hasActiveTrial(true);
+      return hasActiveTrial(startTrialIfMissing);
     }
 
     const cached = readFreshCachedValidity(workspaceFolder);

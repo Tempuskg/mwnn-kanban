@@ -152,6 +152,14 @@ export interface ProFeatureRegistrationContext {
   readonly showUpgradePrompt: (
     workspaceFolder?: vscode.WorkspaceFolder,
   ) => Promise<void>;
+  /**
+   * Optional. Fired when the published `mwnn-kanban.hasProLicense` context key
+   * changes. Pro uses it to create or dispose My Work without a reload.
+   * Feature-detected; older Pro packages ignore a missing member.
+   */
+  readonly onDidChangeProLicense?: (
+    listener: (licensed: boolean) => void,
+  ) => vscode.Disposable;
   readonly log: (message: string) => void;
   readonly registerDisposable: (disposable: vscode.Disposable) => void;
 }

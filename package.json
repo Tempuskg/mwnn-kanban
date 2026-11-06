@@ -368,7 +368,7 @@
         "mwnn-kanban.aiLoopModelEscalationLadder": {
           "type": "object",
           "default": {},
-          "markdownDescription": "Ordered model names the AI board loop escalates through for each agent CLI when `#mwnn-kanban.aiLoopModelEscalationEnabled#` is on, cheapest first. After an inconclusive attempt the loop retries the same stage on the next entry above the model that just ran. Each entry is tried at most once per card per loop run, so a card walks the ladder once and then stops; when the ladder runs out, the original failure stands. Model names are CLI-specific and are passed through unchanged, so spell each one the way that CLI accepts it. Leave a CLI out to never escalate on it.",
+          "markdownDescription": "Ordered model names the AI board loop escalates through for each agent CLI when `#mwnn-kanban.aiLoopModelEscalationEnabled#` is on, cheapest first. After an inconclusive attempt the loop retries the same stage on the next entry above the model that just ran. Each entry is tried at most once per card per loop run, so a card walks the ladder once and then stops; when the ladder runs out, the original failure stands. Model names are CLI-specific and are passed through unchanged, so spell each one the way that CLI accepts it. For Cursor, `cursor` only escalates through Auto-pool names and `cursor-other` only through Other Models names; a rung that belongs to the other pool is reported once and skipped. Leave a CLI out to never escalate on it.",
           "properties": {
             "copilot": {
               "type": "array",

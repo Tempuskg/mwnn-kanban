@@ -11,6 +11,7 @@ import {
   buildAgentCliInvocation,
   parseTerminalCardStatus,
   prepareAgentCliInvocation,
+  listInstalledAgentCliExecutableProviders,
   resolveAllAgentCliTargets,
   resolveAgentCliTarget,
   resolveCursorWindowsLaunch,
@@ -416,6 +417,19 @@ suite('agent CLI provider registry and discovery', () => {
       }
     });
   }
+
+  test('listInstalledAgentCliExecutableProviders keeps installed CLIs and omits missing ones', async () => {
+    const installed = await listInstalledAgentCliExecutableProviders(
+      { cursor: 'C:\\tools\\agent.cmd' },
+      {
+        env: { PATH: 'C:\\empty' },
+        canExecute: async (candidate) => candidate.toLowerCase() === 'c:\\tools\\agent.cmd',
+        // Presence listing must ignore dispatch allowlists.
+        allowedProviders: [],
+      },
+    );
+    assert.deepEqual(installed, ['cursor']);
+  });
 });
 
 function pathHasExtension(candidate: string): boolean {

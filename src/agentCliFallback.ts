@@ -31,6 +31,8 @@ import {
   formatAgentCliEscalationEntry,
   formatEscalationHandoffNote,
   formatLadderExhaustedReason,
+  formatRejectedEscalationLadderWarning,
+  rejectedEscalationLadderEntries,
   selectNextEscalationModel,
   type AgentCliEscalationRecord,
   type AgentCliEscalationSettings,
@@ -38,6 +40,7 @@ import {
 import {
   EMPTY_AGENT_CLI_STAGE_MODELS,
   describeAgentCliModelSource,
+  modelMatchesCursorProviderPool,
   resolveAgentCliModel,
   type AgentCliModelCatalog,
   type AgentCliStageModels,
@@ -398,6 +401,24 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
    * per run is the budget a user opting into this is agreeing to.
    */
   const triedModels = new Map<string, Map<AgentCliProviderId, Set<string>>>();
+  /**
+   * Pool-rejected ladder entries are a settings mistake, not a per-card event.
+   * Report them once per runner so the user hears about the mis-aimed rungs
+   * without a toast on every stage of every card.
+   */
+  let reportedRejectedLadder = false;
+  const reportRejectedLadderOnce = (): void => {
+    if (reportedRejectedLadder || !escalation.enabled) {
+      return;
+    }
+    reportedRejectedLadder = true;
+    const warning = formatRejectedEscalationLadderWarning(
+      rejectedEscalationLadderEntries(escalation.ladders),
+    );
+    if (warning !== undefined) {
+      deps.onProgress?.(warning);
+    }
+  };
   let active = deps.initialTarget;
   // One handoff at a time: a repeated failure signal, or a second caller,
   // must never launch a duplicate CLI process for this loop.
@@ -759,9 +780,16 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
       ladder,
       currentModel,
       triedFor(card.id, target.provider),
+      target.provider,
     );
     if (!next) {
-      if (ladder.length > 0) {
+      // Only treat the ladder as exhausted when at least one rung could have
+      // run on this provider's pool; a ladder of pool-rejected names is a
+      // configuration problem reported separately, not "we climbed to the top".
+      const hasUsableRung = ladder.some((model) =>
+        modelMatchesCursorProviderPool(target.provider, model),
+      );
+      if (hasUsableRung) {
         deps.onProgress?.(formatLadderExhaustedReason(target, request.kind, currentModel));
       }
       return undefined;
@@ -805,6 +833,7 @@ export function createAgentCliFallbackRunner(deps: AgentCliFallbackDeps): AgentC
     }
     busy = true;
     try {
+      reportRejectedLadderOnce();
       const switches: AgentCliSwitchRecord[] = [];
       const escalations: AgentCliEscalationRecord[] = [];
       let card = request.card;
