@@ -93,6 +93,7 @@ suite('card model suggestions', () => {
       board: emptyBoard(),
       enableRunWithAI: true,
       zoom: 1,
+      hideBlocked: false,
       modelSuggestions,
       thinkingLevelSuggestions: readAgentCliThinkingLevelSuggestions({ codex: ['medium', 'high'] }),
     };

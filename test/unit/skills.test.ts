@@ -300,3 +300,52 @@ suite('skillsInstallLocation setting resolution', () => {
     assert.equal(resolveSkillsInstallLocation(undefined), setting.default);
   });
 });
+
+suite('bundled skill scheduling guidance', () => {
+  const authoring = parseSkillDocument(
+    'mwnn-card-authoring',
+    fs.readFileSync('media/skills/mwnn-card-authoring.md', 'utf8'),
+  );
+  const planImport = parseSkillDocument(
+    'mwnn-plan-import',
+    fs.readFileSync('media/skills/mwnn-plan-import.md', 'utf8'),
+  );
+
+  test('card authoring teaches scheduledFor format, judgment, and effects', () => {
+    const body = authoring.body;
+    assert.match(body, /### Scheduling a card/);
+    assert.match(body, /scheduledFor: "YYYY-MM-DDTHH:mm"/);
+    assert.match(body, /no UTC conversion/);
+    assert.match(body, /local midnight \(`"2026-11-01T00:00"`\)/);
+    assert.match(body, /delete the `scheduledFor` line entirely/);
+    assert.match(body, /explicit start \/ not-before time/);
+    assert.match(body, /\*\*Never set it\*\* from deadlines, due dates/);
+    assert.match(body, /metadata timestamps/);
+    assert.match(body, /does not count toward Ready reverse-WIP/);
+    assert.match(body, /the AI Loop skips\s+it/);
+    assert.match(body, /relocated back to Ready/);
+    assert.match(body, /unfinished\s+dependencies still block the card/);
+  });
+
+  test('plan import schedule rules stay consistent with card authoring', () => {
+    const body = planImport.body;
+    assert.match(body, /only explicit start\/not-before schedules/);
+    assert.match(body, /never deadlines, due\/target dates/);
+    assert.match(body, /JSON-quoted local `YYYY-MM-DDTHH:mm`/);
+    assert.match(body, /date-only expands to `T00:00`/);
+    assert.match(body, /Ready reverse-WIP/);
+    assert.match(body, /relocate a blocked card beyond Ready back to Ready/);
+    assert.match(body, /Scheduling a\s+card/);
+  });
+
+  test('every rendered install target carries the authoring schedule guidance', () => {
+    const plan = planSkillInstallation([planImport, authoring], [...AI_ENVIRONMENTS], undefined);
+    const authoringWrites = plan.writes.filter(
+      (write) => write.path.includes('mwnn-card-authoring') || write.path === 'AGENTS.md',
+    );
+    assert.ok(authoringWrites.length > 0);
+    for (const write of authoringWrites) {
+      assert.match(write.content, /### Scheduling a card/, write.path);
+    }
+  });
+});

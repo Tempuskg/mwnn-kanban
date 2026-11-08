@@ -109,6 +109,7 @@ What the slice of work is.
   prevents moves past Ready, excludes the card from Ready reverse-WIP, and makes
   the AI Loop skip it. At or after the exact time the schedule hold expires;
   dependencies still apply. Blocked cards beyond Ready relocate back to Ready.
+  See **Scheduling a card** below for when to set it.
 - `dependsOn` (optional) — array of ids of other cards this card is blocked by,
   e.g. `[card-x, card-y]`. The card stays blocked until every listed card reaches
   a `done` column, and a blocked card cannot advance past the Ready column.
@@ -158,6 +159,39 @@ empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 quotes: `title: Add login form`. The rule applies per line, so each
 `preferredModel.<provider>` and `thinkingLevel.<provider>` value is quoted on
 its own: the key itself is never quoted.
+
+### Scheduling a card
+
+`scheduledFor` is a "do not start before" hold, not a due date. Most cards have
+no schedule; leave the key out unless the request or source material clearly
+asks for one.
+
+- **Set it only** for an explicit start / not-before time stated in the
+  request or source: "start on 2026-12-01", "not before Monday 09:00", "hold
+  until after the freeze ends on the 15th", "schedule this for 2026-11-20".
+- **Never set it** from deadlines, due dates, target or "by" dates, milestone
+  dates, sprint end dates, or incidental metadata timestamps (file dates,
+  `createdAt`/`updatedAt`, document authoring dates, changelog dates). A
+  deadline means "finish by", and a schedule would wrongly stop work from
+  starting. When it is ambiguous whether a date is a start or a deadline, omit
+  `scheduledFor` and mention the date in `## Description` instead.
+- **Format:** a JSON-quoted local wall time at minute precision,
+  `scheduledFor: "YYYY-MM-DDTHH:mm"`, e.g. `scheduledFor: "2026-11-01T09:30"`.
+  Write the time as the person stated it in local time — no timezone suffix,
+  no offset, and no UTC conversion. When only a date is given you may write
+  `"2026-11-01"`; it normalizes to local midnight (`"2026-11-01T00:00"`).
+  Resolve relative phrases ("next Monday") to a concrete date before writing.
+  An invalid value is ignored, so the card is treated as unscheduled.
+- **Clearing:** to remove a schedule, delete the `scheduledFor` line entirely.
+  Never write it empty.
+- **Runtime effects while now is strictly before the schedule:** the card is
+  blocked alongside any unfinished `dependsOn` prerequisites. It cannot move
+  past Ready, it does not count toward Ready reverse-WIP, and the AI Loop skips
+  it. A blocked card already beyond Ready is relocated back to Ready. At or
+  after the exact scheduled minute only the schedule hold ends; unfinished
+  dependencies still block the card.
+- When editing an existing card, keep its `scheduledFor` unchanged unless the
+  task is about rescheduling or clearing it.
 
 ### Body sections
 

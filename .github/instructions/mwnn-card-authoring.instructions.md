@@ -72,6 +72,7 @@ position: 1000
 assignee: { kind: ai }
 preferredModel.claude-code: claude-opus-5
 preferredModel.codex: gpt-5-codex
+thinkingLevel.codex: high
 createdAt: 1719360000000
 updatedAt: 1719360000000
 ---
@@ -101,6 +102,14 @@ What the slice of work is.
   for a new card. Omit the key entirely rather than writing an empty value.
 - `assignee` (optional) — `{ kind: ai }`, `{ kind: ai, name: Codex }`, or
   `{ kind: human, name: Alice }`. Omit for unassigned.
+- `scheduledFor` (optional) — JSON-quoted local wall time `YYYY-MM-DDTHH:mm`,
+  e.g. `scheduledFor: "2026-11-01T09:30"`, without timezone or UTC conversion.
+  Date-only normalizes to local midnight (`T00:00`); invalid values are ignored.
+  Omit to clear. A future schedule blocks alongside unfinished dependencies,
+  prevents moves past Ready, excludes the card from Ready reverse-WIP, and makes
+  the AI Loop skip it. At or after the exact time the schedule hold expires;
+  dependencies still apply. Blocked cards beyond Ready relocate back to Ready.
+  See **Scheduling a card** below for when to set it.
 - `dependsOn` (optional) — array of ids of other cards this card is blocked by,
   e.g. `[card-x, card-y]`. The card stays blocked until every listed card reaches
   a `done` column, and a blocked card cannot advance past the Ready column.
@@ -117,6 +126,30 @@ What the slice of work is.
   stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace
   default for the active CLI (`mwnn-kanban.agentCliModels`), else whichever
   model that CLI runs by default when none is set.
+- `thinkingLevel.<provider>` (optional) — free-form name of the *thinking
+  level* (reasoning effort) this card should be run at **on that agent CLI**,
+  one key per provider, where `<provider>` is one of `copilot`, `codex`,
+  `claude-code`, or `cursor`, e.g. `thinkingLevel.codex: high`.
+
+  A second axis of the same selection, independent of the model: it answers
+  "how hard should it think", not "which model runs". Scoped per provider for
+  the same reason the model is — a card never chooses its own CLI, the CLI is
+  picked at dispatch, the credit fallback can change it mid-run, and effort
+  names are CLI-specific. The extension passes the entry for whichever provider
+  actually runs straight through to that CLI and never validates it against a
+  list of level names, so use the exact spelling that CLI accepts. JSON-quote a
+  value when it contains any of the characters listed under scalar quoting. An
+  unknown provider key, and a value that is blank or whitespace-only, is
+  ignored rather than stored.
+
+  Omit a key entirely rather than writing an empty value. Fallback order for a
+  provider the card names no level for: the AI loop stage rule
+  (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for
+  that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default
+  effort. Only a CLI that exposes reasoning effort on its command line can
+  honor a level; on one that does not, the level is reported on the card as not
+  applied and the run proceeds at that CLI's default effort — it never fails
+  the run.
 
 ### Scalar quoting (match the extension's parser)
 
@@ -124,8 +157,41 @@ Values are bare YAML-ish scalars. JSON-quote a `title` or any scalar when it is
 empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 `"` `#`. Example: `title: "Refactor: split the store"`. Plain values need no
 quotes: `title: Add login form`. The rule applies per line, so each
-`preferredModel.<provider>` value is quoted on its own: the key itself is never
-quoted.
+`preferredModel.<provider>` and `thinkingLevel.<provider>` value is quoted on
+its own: the key itself is never quoted.
+
+### Scheduling a card
+
+`scheduledFor` is a "do not start before" hold, not a due date. Most cards have
+no schedule; leave the key out unless the request or source material clearly
+asks for one.
+
+- **Set it only** for an explicit start / not-before time stated in the
+  request or source: "start on 2026-12-01", "not before Monday 09:00", "hold
+  until after the freeze ends on the 15th", "schedule this for 2026-11-20".
+- **Never set it** from deadlines, due dates, target or "by" dates, milestone
+  dates, sprint end dates, or incidental metadata timestamps (file dates,
+  `createdAt`/`updatedAt`, document authoring dates, changelog dates). A
+  deadline means "finish by", and a schedule would wrongly stop work from
+  starting. When it is ambiguous whether a date is a start or a deadline, omit
+  `scheduledFor` and mention the date in `## Description` instead.
+- **Format:** a JSON-quoted local wall time at minute precision,
+  `scheduledFor: "YYYY-MM-DDTHH:mm"`, e.g. `scheduledFor: "2026-11-01T09:30"`.
+  Write the time as the person stated it in local time — no timezone suffix,
+  no offset, and no UTC conversion. When only a date is given you may write
+  `"2026-11-01"`; it normalizes to local midnight (`"2026-11-01T00:00"`).
+  Resolve relative phrases ("next Monday") to a concrete date before writing.
+  An invalid value is ignored, so the card is treated as unscheduled.
+- **Clearing:** to remove a schedule, delete the `scheduledFor` line entirely.
+  Never write it empty.
+- **Runtime effects while now is strictly before the schedule:** the card is
+  blocked alongside any unfinished `dependsOn` prerequisites. It cannot move
+  past Ready, it does not count toward Ready reverse-WIP, and the AI Loop skips
+  it. A blocked card already beyond Ready is relocated back to Ready. At or
+  after the exact scheduled minute only the schedule hold ends; unfinished
+  dependencies still block the card.
+- When editing an existing card, keep its `scheduledFor` unchanged unless the
+  task is about rescheduling or clearing it.
 
 ### Body sections
 

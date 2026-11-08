@@ -329,12 +329,16 @@ is not a card.
   prefer `{ kind: ai }`.
 - `dependsOn` — capture real prerequisites between the cards you create. See
   **Dependencies** below.
-- `scheduledFor` — import only explicit start/not-before schedules, never deadlines
-  or metadata dates. Use JSON-quoted local `YYYY-MM-DDTHH:mm` (no timezone/UTC
+- `scheduledFor` — import only explicit start/not-before schedules stated in the
+  plan, never deadlines, due/target dates, milestone dates, or metadata dates
+  (when a date's meaning is ambiguous, omit it and mention it in the
+  description). Use JSON-quoted local `YYYY-MM-DDTHH:mm` (no timezone/UTC
   conversion); date-only expands to `T00:00`. Omit when unscheduled. Invalid
-  values are ignored. Future schedules block past Ready, exclude the card from
-  Ready reverse-WIP, and make the AI Loop skip it until the exact time; unfinished
-  dependencies still apply afterward.
+  values are ignored. Future schedules block past Ready alongside unfinished
+  dependencies, exclude the card from Ready reverse-WIP, make the AI Loop skip
+  it, and relocate a blocked card beyond Ready back to Ready, until the exact
+  time; unfinished dependencies still apply afterward. Follow **Scheduling a
+  card** in the MWNN Card Authoring skill.
 - Place every card in the Backlog column (the column whose `role` is `backlog`,
   or the first column if none), preserving plan order via ascending `position`.
 
@@ -468,55 +472,47 @@ What the slice of work is.
   prevents moves past Ready, excludes the card from Ready reverse-WIP, and makes
   the AI Loop skip it. At or after the exact time the schedule hold expires;
   dependencies still apply. Blocked cards beyond Ready relocate back to Ready.
+  See **Scheduling a card** below for when to set it.
 - `dependsOn` (optional) — array of ids of other cards this card is blocked by,
   e.g. `[card-x, card-y]`. The card stays blocked until every listed card reaches
   a `done` column, and a blocked card cannot advance past the Ready column.
   Reference only ids that exist (or that you are creating in the same batch);
   never list the card's own id or form a cycle. Omit the key when empty.
-- `preferredModel.<provider>` (optional) — free-form name of the AI model this
-  card should be run with **on that agent CLI**, one key per provider, where
-  `<provider>` is one of `copilot`, `codex`, `claude-code`, `cursor`, or
-  `cursor-other`, e.g. `preferredModel.claude-code: claude-opus-5`. Scoped per
-  provider because a card never chooses its own CLI: the CLI is picked at
-  dispatch and the credit fallback can change it mid-run, and model names are
-  CLI-specific. `cursor-other` shares Cursor Agent CLI's executable with
-  `cursor` but keeps an independent preferred model. The extension passes the
-  entry for whichever provider actually runs straight through to that CLI as
-  its model argument and never validates it against a list of model names, so
-  use the exact spelling that CLI accepts. JSON-quote a value when it contains
-  any of the characters listed under scalar quoting, e.g.
-  `preferredModel.codex: "openai/gpt-5: preview"`. An unknown provider key, and
-  a value that is blank or whitespace-only, is ignored rather than stored. Omit
-  a key entirely rather than writing an empty value; a provider the card names
-  no model for uses the AI loop stage rule (`mwnn-kanban.agentCliStageModels`),
-  else the workspace default for that CLI (`mwnn-kanban.agentCliModels`), else
-  whichever model that CLI runs by default. During an orchestrated AI Loop, the
-  selected CLI's effective stage model rule takes precedence over this card
-  value; with no stage rule for that CLI, resolution falls through to that
-  CLI's workspace default and then its CLI default. Other AI run modes retain
-  card-first model selection.
-- `preferredModel` (legacy, optional) — a single bare `preferredModel` scalar
-  predates per-provider scoping. It is still read and applies to every provider
-  that has no `preferredModel.<provider>` key of its own, so an existing card
-  keeps working unchanged. The extension never writes the bare key again: the
-  next time it saves that card, the value is migrated to the per-provider keys.
-  Write the per-provider keys for new cards.
+- `preferredModel` (optional) — free-form name of the AI model this card
+  should be run with, as the chosen agent CLI names it, e.g.
+  `preferredModel: claude-opus-5`. The extension passes it straight through
+  to that CLI as its model argument and never validates it against a list of
+  model names, so use the exact spelling that CLI accepts. JSON-quote it when
+  it contains any of the characters listed under scalar quoting, e.g.
+  `preferredModel: "openai/gpt-5: preview"`. Omit the key entirely rather than
+  writing an empty value; a card without it uses the rule for the AI loop
+  stage being run (`mwnn-kanban.agentCliStageModels`), else the workspace
+  default for the active CLI (`mwnn-kanban.agentCliModels`), else whichever
+  model that CLI runs by default when none is set.
 - `thinkingLevel.<provider>` (optional) — free-form name of the *thinking
   level* (reasoning effort) this card should be run at **on that agent CLI**,
-  one key per provider, e.g. `thinkingLevel.codex: high`. A second axis of the
-  same selection, independent of the model: it answers "how hard should it
-  think", not "which model runs". Scoped per provider for the same reasons the
-  model is, and passed through to that CLI without validation, so use the exact
-  spelling that CLI accepts. JSON-quote a value when it contains any of the
-  characters listed under scalar quoting. An unknown provider key, and a blank
-  or whitespace-only value, is ignored rather than stored. Omit a key entirely
-  rather than writing an empty value; a provider the card names no level for
-  uses the AI loop stage rule (`mwnn-kanban.agentCliStageThinkingLevels`), else
-  the workspace default for that CLI (`mwnn-kanban.agentCliThinkingLevels`),
-  else that CLI's own default effort. Codex CLI, Copilot CLI, and Claude Code
-  CLI accept levels on their command lines. Cursor Agent CLI does not; its
-  level is reported on the card as not applied and the run proceeds at that
-  CLI's default effort — it never fails the run.
+  one key per provider, where `<provider>` is one of `copilot`, `codex`,
+  `claude-code`, or `cursor`, e.g. `thinkingLevel.codex: high`.
+
+  A second axis of the same selection, independent of the model: it answers
+  "how hard should it think", not "which model runs". Scoped per provider for
+  the same reason the model is — a card never chooses its own CLI, the CLI is
+  picked at dispatch, the credit fallback can change it mid-run, and effort
+  names are CLI-specific. The extension passes the entry for whichever provider
+  actually runs straight through to that CLI and never validates it against a
+  list of level names, so use the exact spelling that CLI accepts. JSON-quote a
+  value when it contains any of the characters listed under scalar quoting. An
+  unknown provider key, and a value that is blank or whitespace-only, is
+  ignored rather than stored.
+
+  Omit a key entirely rather than writing an empty value. Fallback order for a
+  provider the card names no level for: the AI loop stage rule
+  (`mwnn-kanban.agentCliStageThinkingLevels`), else the workspace default for
+  that CLI (`mwnn-kanban.agentCliThinkingLevels`), else that CLI's own default
+  effort. Only a CLI that exposes reasoning effort on its command line can
+  honor a level; on one that does not, the level is reported on the card as not
+  applied and the run proceeds at that CLI's default effort — it never fails
+  the run.
 
 ### Scalar quoting (match the extension's parser)
 
@@ -526,6 +522,39 @@ empty, starts or ends with whitespace, or contains any of `:` `{` `}` `[` `]`
 quotes: `title: Add login form`. The rule applies per line, so each
 `preferredModel.<provider>` and `thinkingLevel.<provider>` value is quoted on
 its own: the key itself is never quoted.
+
+### Scheduling a card
+
+`scheduledFor` is a "do not start before" hold, not a due date. Most cards have
+no schedule; leave the key out unless the request or source material clearly
+asks for one.
+
+- **Set it only** for an explicit start / not-before time stated in the
+  request or source: "start on 2026-12-01", "not before Monday 09:00", "hold
+  until after the freeze ends on the 15th", "schedule this for 2026-11-20".
+- **Never set it** from deadlines, due dates, target or "by" dates, milestone
+  dates, sprint end dates, or incidental metadata timestamps (file dates,
+  `createdAt`/`updatedAt`, document authoring dates, changelog dates). A
+  deadline means "finish by", and a schedule would wrongly stop work from
+  starting. When it is ambiguous whether a date is a start or a deadline, omit
+  `scheduledFor` and mention the date in `## Description` instead.
+- **Format:** a JSON-quoted local wall time at minute precision,
+  `scheduledFor: "YYYY-MM-DDTHH:mm"`, e.g. `scheduledFor: "2026-11-01T09:30"`.
+  Write the time as the person stated it in local time — no timezone suffix,
+  no offset, and no UTC conversion. When only a date is given you may write
+  `"2026-11-01"`; it normalizes to local midnight (`"2026-11-01T00:00"`).
+  Resolve relative phrases ("next Monday") to a concrete date before writing.
+  An invalid value is ignored, so the card is treated as unscheduled.
+- **Clearing:** to remove a schedule, delete the `scheduledFor` line entirely.
+  Never write it empty.
+- **Runtime effects while now is strictly before the schedule:** the card is
+  blocked alongside any unfinished `dependsOn` prerequisites. It cannot move
+  past Ready, it does not count toward Ready reverse-WIP, and the AI Loop skips
+  it. A blocked card already beyond Ready is relocated back to Ready. At or
+  after the exact scheduled minute only the schedule hold ends; unfinished
+  dependencies still block the card.
+- When editing an existing card, keep its `scheduledFor` unchanged unless the
+  task is about rescheduling or clearing it.
 
 ### Body sections
 

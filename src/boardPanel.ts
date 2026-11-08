@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import type { BoardStore } from './boardStore';
 import type { BoardPanelStatus } from './boardButton';
 import { BoardPanelLifecycle } from './boardPanelLifecycle';
+import { unownedBoardTabs } from './boardPanelTabs';
 import { resolveBoardPanelPlacement } from './boardPanelPlacement';
 import { cardNeedsDefinition } from './cardDefinition';
 import { copyCardPathToClipboard } from './cardPath';
@@ -34,6 +35,8 @@ const ZOOM_MAX = 2;
 const ZOOM_DEFAULT = 1;
 /** Memento key for the persisted per-workspace board zoom level. */
 const ZOOM_MEMENTO_KEY = 'mwnn-kanban.boardZoom';
+/** Memento key for the persisted per-workspace "Hide blocked" view filter. */
+const HIDE_BLOCKED_MEMENTO_KEY = 'mwnn-kanban.hideBlocked';
 
 function clampZoom(value: number): number {
   if (!Number.isFinite(value)) {
@@ -52,7 +55,10 @@ export interface BoardPanelDeps {
   /** Starts or resumes a Human card's AI-guided interview in a chat. */
   readonly startCardInterview: (cardId: string) => Promise<void>;
   readonly fillCardDefinition: (cardId: string) => Promise<void>;
-  /** Persists the board zoom level so it survives closing and reopening the panel. */
+  /**
+   * Workspace memento for board view preferences (zoom, hide-blocked) so they
+   * survive closing and reopening the panel in the same workspace.
+   */
   readonly zoomMemento: vscode.Memento;
 }
 
@@ -120,6 +126,12 @@ export class BoardPanel {
 
   static show(deps: BoardPanelDeps): BoardPanel {
     const current = BoardPanel.lifecycle.current;
+    const staleTabs = unownedBoardTabs(
+      current !== undefined,
+      vscode.window.tabGroups.all.flatMap((group) => group.tabs),
+      (tab) => tab.input instanceof vscode.TabInputWebview ? tab.input.viewType : undefined,
+      VIEW_TYPE,
+    );
     const placement = resolveBoardPanelPlacement(
       current !== undefined,
       vscode.window.tabGroups.activeTabGroup.viewColumn,
@@ -137,6 +149,18 @@ export class BoardPanel {
       return new BoardPanel(panel, deps);
     });
     if (!current) {
+      // A hidden restored editor may not deserialize until selected. Close the
+      // pre-creation snapshot only, retaining the new live panel even if tab
+      // notifications or serializer callbacks arrive while close is pending.
+      if (staleTabs.length > 0) {
+        void vscode.window.tabGroups.close(staleTabs, true).then((closed) => {
+          if (!closed) {
+            void vscode.window.showWarningMessage('Could not close a stale MWNN Kanban tab. Close it manually.');
+          }
+        }, (error: unknown) => {
+          console.error('Could not close stale MWNN Kanban tabs.', error);
+        });
+      }
       BoardPanel.onDidChangeStateEmitter.fire();
     }
     // Revealing an already-open panel fires onDidChangeViewState, which
@@ -240,6 +264,7 @@ export class BoardPanel {
       board: this.deps.store.getState(),
       enableRunWithAI,
       zoom: clampZoom(this.deps.zoomMemento.get<number>(ZOOM_MEMENTO_KEY, ZOOM_DEFAULT)),
+      hideBlocked: this.deps.zoomMemento.get<boolean>(HIDE_BLOCKED_MEMENTO_KEY, false) === true,
       modelSuggestions,
       thinkingLevelSuggestions,
     };
@@ -457,6 +482,11 @@ export class BoardPanel {
         // Persist the zoom preference only; the webview already applied it
         // locally, so re-pushing state here would just churn the render.
         await this.deps.zoomMemento.update(ZOOM_MEMENTO_KEY, clampZoom(message.zoom));
+        return;
+      case 'setHideBlocked':
+        // Persist the view filter only; the webview already re-rendered locally
+        // without mutating cards, so skip a state push.
+        await this.deps.zoomMemento.update(HIDE_BLOCKED_MEMENTO_KEY, message.hideBlocked === true);
         return;
     }
     this.postState();

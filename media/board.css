@@ -110,6 +110,40 @@ body {
   justify-content: flex-end;
 }
 
+.board-hide-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+  user-select: none;
+}
+
+.board-hide-blocked:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.board-hide-blocked:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.board-hide-blocked-input {
+  margin: 0;
+  accent-color: var(--vscode-focusBorder, var(--vscode-button-background));
+  cursor: pointer;
+}
+
+.board-hide-blocked-label {
+  white-space: nowrap;
+}
+
 .board-zoom {
   display: inline-flex;
   align-items: stretch;
@@ -403,10 +437,20 @@ body {
   outline-offset: 1px;
 }
 
+/* Inset ring + wash stay inside the card box so overflow-y:auto on .cards
+   (Implement and other scrolling columns) cannot clip the highlight to faint
+   corner fragments. Outer outline/box-shadow would paint into the gap and
+   get clipped by the scrollport. */
 .card.card-blocker-highlight {
-  outline: 2px solid var(--vscode-inputValidation-errorBorder, var(--vscode-focusBorder));
-  outline-offset: 1px;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #be1100) 30%, transparent);
+  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+  box-shadow:
+    inset 0 0 0 2px var(--vscode-inputValidation-errorBorder, var(--vscode-focusBorder)),
+    inset 0 0 10px color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #be1100) 35%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--vscode-inputValidation-errorBackground, #5a1d1d) 28%,
+    var(--vscode-editor-background)
+  );
 }
 
 .card-chip-done {

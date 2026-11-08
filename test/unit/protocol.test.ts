@@ -56,6 +56,8 @@ suite('webview protocol', () => {
       true,
     );
     assert.equal(isWebviewToHostMessage({ type: 'setZoom', zoom: 1.5 }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'setHideBlocked', hideBlocked: true }), true);
+    assert.equal(isWebviewToHostMessage({ type: 'setHideBlocked', hideBlocked: false }), true);
   });
 
   test('rejects malformed or unsupported messages', () => {
@@ -97,6 +99,8 @@ suite('webview protocol', () => {
     );
     assert.equal(isWebviewToHostMessage({ type: 'setZoom', zoom: 'big' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'setZoom', zoom: Number.NaN }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'setHideBlocked', hideBlocked: 'yes' }), false);
+    assert.equal(isWebviewToHostMessage({ type: 'setHideBlocked' }), false);
     assert.equal(isWebviewToHostMessage({ type: 'archiveCard', cardId: 'card-1' }), false);
   });
 });

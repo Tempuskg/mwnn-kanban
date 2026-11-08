@@ -7,6 +7,10 @@ import type {
   AgentCliSettingsPanelState,
   AgentCliSettingsScope,
 } from '../types';
+import {
+  stageOverrideCommandLabels,
+  wireStageOverrideAutoSave,
+} from './agentCliModelsStageAutoSave';
 
 declare function acquireVsCodeApi(): { postMessage(message: AgentCliSettingsPanelMessage): void };
 const host = acquireVsCodeApi();
@@ -199,7 +203,8 @@ function render(current: AgentCliSettingsPanelState): void {
   }
   const drafts = new Map<string, string>();
   if (renderedScope === current.scope) {
-    root.querySelectorAll<HTMLInputElement>('input[data-draft]').forEach((input) => drafts.set(input.id, input.value));
+    root.querySelectorAll<HTMLInputElement>('input[data-draft], input[data-stage-draft]')
+      .forEach((input) => drafts.set(input.id, input.value));
   }
   renderedScope = current.scope;
   const focus = document.activeElement?.id;
@@ -259,19 +264,25 @@ function render(current: AgentCliSettingsPanelState): void {
       const inherited = models ? stage.inheritedModel : stage.inheritedThinkingLevel;
       const suggestions = models ? stage.suggestedModels : stage.suggestedThinkingLevels;
       const field = inputField(`${stage.id}-${stage.provider}-${list}`, models ? 'Model override' : 'Thinking override', suggestions, own ?? '');
+      // Preserve typed text only when a write fails; successful saves take the host value.
+      field.input.dataset['stageDraft'] = 'true';
       const form = element('form');
       const edit = (action: 'set' | 'remove'): void => send({
         type: 'settingsStageEdit', scope: current.scope, stage: stage.id, provider: stage.provider, list, action, name: field.input.value,
       });
-      form.append(field.wrapper, button('Save', () => edit('set')));
-      if (own !== null) {
-        form.append(button('Remove override', () => edit('remove')));
-      } else {
+      wireStageOverrideAutoSave(field.input, form, {
+        ownedValue: own,
+        commitSet: () => edit('set'),
+      });
+      form.append(field.wrapper);
+      for (const label of stageOverrideCommandLabels(own !== null)) {
+        form.append(button(label, () => edit('remove')));
+      }
+      if (own === null) {
         const note = element('p', inherited !== null ? `Inherited from ${current.inheritedScope}: ${inherited}` : 'Uses provider default');
         note.className = 'inherited';
         form.append(note);
       }
-      form.addEventListener('submit', (event) => { event.preventDefault(); edit('set'); });
       row.append(form);
     }
     stages.append(row);
@@ -281,6 +292,12 @@ function render(current: AgentCliSettingsPanelState): void {
     input.value = drafts.get(input.id) ?? '';
   });
   if (current.error) {
+    root.querySelectorAll<HTMLInputElement>('input[data-stage-draft]').forEach((input) => {
+      const draft = drafts.get(input.id);
+      if (draft !== undefined) {
+        input.value = draft;
+      }
+    });
     const error = root.querySelector<HTMLElement>('[role="alert"]');
     if (error) {
       error.tabIndex = -1;

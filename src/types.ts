@@ -275,7 +275,9 @@ export type WebviewToHostMessage =
   | { readonly type: 'offerCardDefinition'; readonly cardId: string }
   | { readonly type: 'deleteCard'; readonly cardId: string }
   | { readonly type: 'moveCard'; readonly cardId: string; readonly toColumnId: string; readonly toIndex: number }
-  | { readonly type: 'setZoom'; readonly zoom: number };
+  | { readonly type: 'setZoom'; readonly zoom: number }
+  /** Persist the board-level "Hide blocked" view filter (view-only; no card writes). */
+  | { readonly type: 'setHideBlocked'; readonly hideBlocked: boolean };
 
 /**
  * Model names to *suggest* for each agent CLI, sent to the webview with the
@@ -379,6 +381,11 @@ export type HostToWebviewMessage =
       readonly board: BoardState;
       readonly enableRunWithAI: boolean;
       readonly zoom: number;
+      /**
+       * When true, the webview hides cards that would show a Blocked chip.
+       * View-only; default false. Restored from workspace memento like zoom.
+       */
+      readonly hideBlocked: boolean;
       /**
        * Per-provider model names to offer in the card UI's model picker. The
        * webview has no `vscode` API, so the configured list has to travel with
@@ -513,6 +520,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       );
     case 'setZoom':
       return typeof value['zoom'] === 'number' && Number.isFinite(value['zoom']);
+    case 'setHideBlocked':
+      return typeof value['hideBlocked'] === 'boolean';
     default:
       return false;
   }

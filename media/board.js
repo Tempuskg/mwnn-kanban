@@ -369,6 +369,10 @@
   const ZOOM_DEFAULT = 1;
   let zoom = ZOOM_DEFAULT;
   let zoomInitialized = false;
+  // View-only filter: when true, cards that would show a Blocked chip are not
+  // rendered. Default off; restored from workspace memento like zoom.
+  let hideBlocked = false;
+  let hideBlockedInitialized = false;
 
   const root = /** @type {HTMLElement} */ (document.getElementById('board'));
 
@@ -400,6 +404,11 @@
           zoom = clampZoom(message.zoom);
         }
         zoomInitialized = true;
+      }
+      // Same first-push-only restore for the hide-blocked view filter.
+      if (!hideBlockedInitialized) {
+        hideBlocked = message.hideBlocked === true;
+        hideBlockedInitialized = true;
       }
       if (openCardId && !findCardRecord(openCardId)) {
         openCardId = null;
@@ -600,12 +609,99 @@
 
     const actions = document.createElement('div');
     actions.className = 'board-intro-actions';
-    actions.append(renderZoomControls(), addColumn);
+    actions.append(renderHideBlockedToggle(), renderZoomControls(), addColumn);
 
     copy.append(title, hint);
     row.append(copy, actions);
     intro.appendChild(row);
     return intro;
+  }
+
+  /**
+   * Board-level "Hide blocked" checkbox beside the zoom controls. View-only:
+   * toggles which cards are rendered without posting card mutations.
+   */
+  function renderHideBlockedToggle() {
+    const label = document.createElement('label');
+    label.className = 'board-hide-blocked';
+    label.title = 'Hide cards that show a Blocked chip (dependencies, schedule, or STATUS: BLOCKED)';
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'board-hide-blocked-input';
+    input.checked = hideBlocked;
+    input.setAttribute('aria-label', 'Hide blocked cards');
+    input.addEventListener('change', () => {
+      setHideBlocked(input.checked);
+    });
+
+    const text = document.createElement('span');
+    text.className = 'board-hide-blocked-label';
+    text.textContent = 'Hide blocked';
+
+    label.append(input, text);
+    return label;
+  }
+
+  /**
+   * Apply the hide-blocked view filter, re-render immediately, and persist the
+   * preference on the host. Does not create, update, delete, or move cards.
+   * @param {boolean} next
+   */
+  function setHideBlocked(next) {
+    const value = next === true;
+    if (value === hideBlocked) {
+      return;
+    }
+    hideBlocked = value;
+    render();
+    post({ type: 'setHideBlocked', hideBlocked: value });
+  }
+
+  /**
+   * True when the board would render this card's Blocked chip: unfinished
+   * dependencies, a still-future schedule, or latest Activity STATUS: BLOCKED.
+   * @param {Card} card
+   */
+  function showsBlockedChip(card) {
+    return (
+      countBlockingDependencies(card) > 0
+      || blockingSchedule(card) !== undefined
+      || hasBlockedStatus(card.activity)
+    );
+  }
+
+  /**
+   * Cards to render in a column for the current view filter. WIP metrics and
+   * move rules still use the full `column.cards` list.
+   * @param {Column} column
+   */
+  function visibleColumnCards(column) {
+    return hideBlocked ? column.cards.filter((card) => !showsBlockedChip(card)) : column.cards;
+  }
+
+  /**
+   * Map a drop index among currently rendered cards back to an index in the
+   * full column list, so hidden blocked cards do not skew move targets.
+   * @param {Column} column
+   * @param {number} visibleIndex
+   */
+  function fullIndexFromVisibleDrop(column, visibleIndex) {
+    const visible = visibleColumnCards(column);
+    if (visibleIndex < 0) {
+      return 0;
+    }
+    if (visibleIndex >= visible.length) {
+      if (visible.length === 0) {
+        return column.cards.length;
+      }
+      const lastId = visible[visible.length - 1].id;
+      const lastFull = column.cards.findIndex((card) => card.id === lastId);
+      return lastFull === -1 ? column.cards.length : lastFull + 1;
+    }
+    const targetId = visible[visibleIndex].id;
+    const fullIndex = column.cards.findIndex((card) => card.id === targetId);
+    return fullIndex === -1 ? column.cards.length : fullIndex;
   }
 
   /**
@@ -751,13 +847,20 @@
     cards.dataset.columnId = column.id;
     cards.setAttribute('role', 'list');
     cards.setAttribute('aria-label', `${column.title} cards`);
-    for (const card of column.cards) {
+    const visibleCards = visibleColumnCards(column);
+    for (const card of visibleCards) {
       cards.appendChild(renderCard(card, column));
     }
-    if (column.cards.length === 0) {
-      cards.appendChild(renderColumnEmptyState());
+    if (visibleCards.length === 0) {
+      cards.appendChild(
+        renderColumnEmptyState(
+          column.cards.length > 0 ? 'filtered' : 'empty',
+        ),
+      );
     }
-    wireDropTarget(cards, column.id, (event) => indexFromDropEvent(cards, event));
+    wireDropTarget(cards, column.id, (event) =>
+      fullIndexFromVisibleDrop(column, indexFromDropEvent(cards, event)),
+    );
     el.appendChild(cards);
 
     const add = document.createElement('button');
@@ -820,10 +923,16 @@
     return metrics;
   }
 
-  function renderColumnEmptyState() {
+  /**
+   * @param {'empty' | 'filtered'} [reason]
+   */
+  function renderColumnEmptyState(reason = 'empty') {
     const empty = document.createElement('p');
     empty.className = 'column-empty';
-    empty.textContent = 'No cards yet. Add one to get started.';
+    empty.textContent =
+      reason === 'filtered'
+        ? 'No visible cards. Turn off Hide blocked to show blocked cards.'
+        : 'No cards yet. Add one to get started.';
     return empty;
   }
 

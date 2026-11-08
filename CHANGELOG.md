@@ -5,6 +5,19 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-08
+
+### Added
+- A **Hide blocked** checkbox beside the board zoom controls hides cards that show a Blocked chip (unfinished dependencies, a future schedule, or a latest `STATUS: BLOCKED`). It only changes what is displayed: WIP counts and move rules still use every card, drops land in the right place among hidden cards, and the setting is remembered per workspace.
+
+### Changed
+- Agent CLI Models stage overrides save automatically on blur, suggestion pick, or Enter. The Save button is gone; Remove override remains. Typed text is kept if a save fails.
+- The card-authoring and plan-import skills cover `scheduledFor`: set it only for an explicit start or not-before time, never for a deadline. They also add completion and re-dispatch preflight checks, idempotent plan imports, and how to replace an earlier `STATUS: BLOCKED` marker.
+
+### Fixed
+- Opening the board removes inactive restored board tabs that have not yet reached VS Code's serializer, preventing an extra MWNN Kanban tab from surviving alongside the live panel.
+- Hovering a Blocked chip now highlights the blocking card with an inset ring and tint, so the highlight is no longer clipped to its corners in scrolling columns such as Implement.
+
 ## [1.0.8] - 2026-11-06
 
 ### Fixed
