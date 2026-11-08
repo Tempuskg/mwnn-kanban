@@ -147,9 +147,9 @@ export function initializeProLicenseCommands(
   // Publish false immediately so My Work's `when` clause cannot flash the
   // Pro view before the async license/trial check settles.
   void publishProLicenseContext(false);
-  // First activation may start the local trial; later checks (clear key,
-  // command gates) must not mint a new one.
-  void hasProLicense(deps.getImplicitWorkspaceFolder(), { startTrialIfMissing: true });
+  // Publish any existing key or live trial without starting a new one.
+  // The 14-day trial starts on the first gated Pro feature open instead.
+  void hasProLicense(deps.getImplicitWorkspaceFolder());
 
   return [
     deps.registerCommand(UPGRADE_TO_PRO_COMMAND, async () => {

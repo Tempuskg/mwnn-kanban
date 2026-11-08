@@ -56,8 +56,9 @@ export interface ProLicenseManagerDeps {
 export interface HasProLicenseOptions {
   /**
    * When true and no license key is stored, start the local trial if it has
-   * not started yet. Default false: clearing a key or a routine gate check
-   * must not mint a fresh trial and keep Pro surfaces like My Work visible.
+   * not started yet. Default false: activation, clearing a key, and routine
+   * background checks must not mint a fresh trial. Gated Pro feature opens
+   * pass true once; a stored start (active or expired) is never replaced.
    */
   readonly startTrialIfMissing?: boolean;
 }

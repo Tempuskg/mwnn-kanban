@@ -21,6 +21,8 @@ import {
 const LICENSE_KEY = 'license-key';
 const SECRET_STORAGE_KEY = 'mwnn-kanban-pro.licenseKey';
 const CACHE_STORAGE_KEY = 'mwnn-kanban-pro.licenseCache';
+const TRIAL_STORAGE_KEY = 'mwnn-kanban-pro.trialStartedAt';
+const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
 
 type CommandCallback = (...args: unknown[]) => unknown;
 
@@ -61,7 +63,7 @@ function createConfiguration(): ProLicenseConfiguration {
   };
 }
 
-function createHarness(): Harness {
+function createHarness(options: { readonly now?: () => number } = {}): Harness {
   const commands = new Map<string, CommandCallback>();
   const secrets = new Map<string, string>();
   const globalState = new Map<string, unknown>();
@@ -129,6 +131,7 @@ function createHarness(): Harness {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }),
+    ...(options.now !== undefined ? { now: options.now } : {}),
   };
 
   return {
@@ -154,11 +157,75 @@ function createHarness(): Harness {
 }
 
 suite('Pro upgrade commands', () => {
+  test('activation without a key or trial does not write trialStartedAt', async () => {
+    const harness = createHarness();
+    const disposables = initializeProLicenseCommands(harness.context, harness.deps);
+    // Match activation: publish existing license state only — do not mint a trial.
+    assert.equal(await hasProLicense(), false);
+
+    assert.equal(disposables.length, 4);
+    assert.equal(harness.globalState.has(TRIAL_STORAGE_KEY), false);
+    assert.deepEqual(harness.contextUpdates[0], {
+      key: PRO_LICENSE_CONTEXT_KEY,
+      value: false,
+    });
+    assert.deepEqual(harness.contextUpdates.at(-1), {
+      key: PRO_LICENSE_CONTEXT_KEY,
+      value: false,
+    });
+  });
+
+  test('the first Pro feature open starts the 14-day trial and publishes licensed', async () => {
+    let currentTime = 5_000;
+    const harness = createHarness({ now: () => currentTime });
+    initializeProLicenseCommands(harness.context, harness.deps);
+    assert.equal(await hasProLicense(), false);
+    assert.equal(harness.globalState.has(TRIAL_STORAGE_KEY), false);
+
+    // Gated Pro commands pass startTrialIfMissing when the feature opens.
+    assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 5_000);
+    assert.deepEqual(harness.contextUpdates.at(-1), {
+      key: PRO_LICENSE_CONTEXT_KEY,
+      value: true,
+    });
+  });
+
+  test('a stored trial start is never replaced after clear or a later gated open', async () => {
+    let currentTime = 1_000;
+    const harness = createHarness({ now: () => currentTime });
+    initializeProLicenseCommands(harness.context, harness.deps);
+
+    assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
+
+    await harness.invokeCommand(ENTER_PRO_LICENSE_KEY_COMMAND);
+    await harness.invokeCommand(CLEAR_PRO_LICENSE_KEY_COMMAND);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
+    assert.equal(await hasProLicense(), true);
+
+    currentTime += TRIAL_DURATION_MS;
+    assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), false);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
+  });
+
+  test('existing trial starts from earlier releases are honoured unchanged', async () => {
+    const startedAt = 1_000;
+    let currentTime = startedAt + 60_000;
+    const harness = createHarness({ now: () => currentTime });
+    harness.globalState.set(TRIAL_STORAGE_KEY, startedAt);
+    initializeProLicenseCommands(harness.context, harness.deps);
+
+    assert.equal(await hasProLicense(), true);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), startedAt);
+    assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), startedAt);
+  });
+
   test('registers all commands and round-trips the license secret and context key', async () => {
     const harness = createHarness();
     const disposables = initializeProLicenseCommands(harness.context, harness.deps);
-    // Match activation: only the startup seed may start the local trial.
-    await hasProLicense(undefined, { startTrialIfMissing: true });
+    assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
 
     assert.equal(disposables.length, 4);
     assert.deepEqual([...harness.commands.keys()].sort(), [
@@ -192,6 +259,7 @@ suite('Pro upgrade commands', () => {
     await harness.invokeCommand(CLEAR_PRO_LICENSE_KEY_COMMAND);
     assert.equal(harness.secrets.has(SECRET_STORAGE_KEY), false);
     assert.equal(harness.globalState.has(CACHE_STORAGE_KEY), false);
+    // Trial from the feature-open seed remains; clearing a key must not drop it.
     assert.deepEqual(harness.contextUpdates.at(-1), {
       key: PRO_LICENSE_CONTEXT_KEY,
       value: true,
@@ -205,7 +273,7 @@ suite('Pro upgrade commands', () => {
   test('upgrade prompt activates a key and publishes the licensed context', async () => {
     const harness = createHarness();
     initializeProLicenseCommands(harness.context, harness.deps);
-    await hasProLicense(undefined, { startTrialIfMissing: true });
+    await hasProLicense();
     harness.queueInformationSelection(PRO_ACTIVATE_PROMPT_LABEL);
 
     await showUpgradePrompt();
@@ -220,7 +288,7 @@ suite('Pro upgrade commands', () => {
   test('upgrade prompt opens the landing purchase URL', async () => {
     const harness = createHarness();
     initializeProLicenseCommands(harness.context, harness.deps);
-    await hasProLicense(undefined, { startTrialIfMissing: true });
+    await hasProLicense();
     harness.queueInformationSelection(PRO_UPGRADE_PROMPT_LABEL);
 
     await showUpgradePrompt();

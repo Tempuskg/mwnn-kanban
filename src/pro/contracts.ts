@@ -148,6 +148,7 @@ export interface ProFeatureRegistrationContext {
   readonly capabilities?: ProFeatureCapabilities;
   readonly hasProLicense: (
     workspaceFolder?: vscode.WorkspaceFolder,
+    options?: { readonly startTrialIfMissing?: boolean },
   ) => Promise<boolean>;
   readonly showUpgradePrompt: (
     workspaceFolder?: vscode.WorkspaceFolder,

@@ -2,7 +2,7 @@
   "name": "mwnn-kanban",
   "displayName": "MWNN Kanban",
   "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -1216,8 +1216,7 @@
           "command": "mwnn-kanban.showProLicenseStatus"
         },
         {
-          "command": "mwnn-kanban-pro.openPortfolio",
-          "when": "mwnn-kanban.hasProLicense"
+          "command": "mwnn-kanban-pro.openPortfolio"
         },
         {
           "command": "mwnn-kanban-pro.rescanProjects",

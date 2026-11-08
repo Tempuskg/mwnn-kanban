@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-11-08
+
+### Fixed
+- The 14-day Pro trial starts the first time a gated Pro feature opens (for example Open Portfolio), not on extension activation. Activation still publishes the license context without minting a trial and without flashing Pro views. A stored trial start, active or expired, is never replaced when a key is cleared or a gated command runs again.
+
 ## [1.0.9] - 2026-11-08
 
 ### Added

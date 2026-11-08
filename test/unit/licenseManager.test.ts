@@ -128,7 +128,7 @@ suite('Pro license manager', () => {
     assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
   });
 
-  test('does not mint a trial on a routine license check or after clearing a key', async () => {
+  test('does not mint a trial on activation-style checks or after clearing a key', async () => {
     const harness = createHarness();
     const manager = createProLicenseManager({
       context: harness.context,
