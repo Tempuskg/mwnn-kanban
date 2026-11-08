@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-11-08
+
+### Fixed
+- The 14-day Pro trial now actually starts the first time a gated Pro feature opens. 1.0.10 stopped starting it at activation but bundled Pro 1.0.5, whose gated commands did not request a trial, so no trial started. This release bundles `@tempuskg/mwnn-kanban-pro` 1.0.6.
+
 ## [1.0.10] - 2026-11-08
 
 ### Fixed

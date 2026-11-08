@@ -50,3 +50,6 @@ STATUS: DONE
 
 ### 2026-11-08T20:59:02.440Z - Cursor Agent CLI implementation handoff failed
 Missing or invalid verification inputs. Configure .mwnn/verification.json, with a check mapping for every acceptance criterion, before dispatch.
+
+### 2026-11-08 - Note: 1.0.10 shipped without the Pro half (verified evidence, Claude Code)
+The published free 1.0.10 bundles `@tempuskg/mwnn-kanban-pro` 1.0.5, whose gated commands do not pass `startTrialIfMissing`, so no trial starts. The local tests passed against a locally built Pro. Pro 1.0.6 (published 2026-11-08) carries the gated-command change, and free 1.0.11 (prepared, dependency `^1.0.6`) ships it. See `e:\mwnn-kanban-pro\.mwnn\cards\card-mv5f2w72-2.md`.
