@@ -1374,6 +1374,7 @@
     "presmoke:workspace-model": "npm run compile-tests",
     "smoke:workspace-model": "node ./scripts/smoke-workspace-model-default.cjs",
     "version:build": "node ./scripts/bump-package-version.cjs",
+    "check:pro-package": "node ./scripts/check-pro-package.cjs",
     "lint": "eslint src --ext ts",
     "presmoke:populate-models": "npm run compile-tests",
     "smoke:populate-models": "node ./scripts/smoke-populate-models.cjs"

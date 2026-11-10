@@ -17,8 +17,11 @@ import {
   duplicateCard,
   editCard,
   enforceBlockedCardPlacement,
+  insertIndexForColumnPlacement,
   isCardBlocked,
   moveCard,
+  moveCardIntoColumn,
+  positionForColumnPlacement,
   readyState,
   relocateBlockedCards,
   removeColumn,
@@ -663,6 +666,82 @@ suite('board operations', () => {
     assert.equal(calculateCardPosition({ previous: 1000 }), 2000);
     assert.equal(calculateCardPosition({ next: 1000 }), 0);
     assert.equal(calculateCardPosition({ previous: 1000, next: 2000 }), 1500);
+  });
+
+  test('positionForColumnPlacement inserts Done moves before every existing card', () => {
+    const existing = [1000, 2000, 3000];
+    const first = positionForColumnPlacement('done', existing);
+    assert.ok(first < Math.min(...existing));
+
+    const second = positionForColumnPlacement('done', [first, ...existing]);
+    assert.ok(second < first);
+
+    const ordered = [second, first, ...existing].sort((left, right) => left - right);
+    assert.deepEqual(ordered, [second, first, 1000, 2000, 3000]);
+  });
+
+  test('positionForColumnPlacement still appends for non-done columns', () => {
+    assert.equal(positionForColumnPlacement('ready', [1000, 2000]), 3000);
+    assert.equal(positionForColumnPlacement('in-progress', []), 1000);
+    assert.equal(positionForColumnPlacement('backlog', [500]), 1500);
+  });
+
+  test('moveCardIntoColumn puts successive Done moves at the top without reshuffling others', () => {
+    let board = defaultBoard(['Ready', 'Done']);
+    board = setColumnConfig(board, board.columns[1]!.id, { role: 'done' });
+    const readyId = board.columns[0]!.id;
+    const doneId = board.columns[1]!.id;
+
+    board = addCard(board, doneId, 'Already done A');
+    board = addCard(board, doneId, 'Already done B');
+    const existingA = board.columns[1]!.cards[0]!.id;
+    const existingB = board.columns[1]!.cards[1]!.id;
+
+    board = addCard(board, readyId, 'First finish');
+    board = addCard(board, readyId, 'Second finish');
+    const firstId = board.columns[0]!.cards[0]!.id;
+    const secondId = board.columns[0]!.cards[1]!.id;
+
+    board = moveCardIntoColumn(board, firstId, doneId);
+    assert.deepEqual(
+      board.columns[1]!.cards.map((card) => card.id),
+      [firstId, existingA, existingB],
+    );
+
+    board = moveCardIntoColumn(board, secondId, doneId);
+    assert.deepEqual(
+      board.columns[1]!.cards.map((card) => card.id),
+      [secondId, firstId, existingA, existingB],
+    );
+  });
+
+  test('moveCardIntoColumn appends to non-done columns and honors an explicit index', () => {
+    let board = defaultBoard(['Ready', 'In Progress']);
+    board = setColumnConfig(board, board.columns[1]!.id, { role: 'in-progress' });
+    const readyId = board.columns[0]!.id;
+    const progressId = board.columns[1]!.id;
+
+    board = addCard(board, progressId, 'Existing');
+    const existingId = board.columns[1]!.cards[0]!.id;
+    board = addCard(board, readyId, 'Appended');
+    board = addCard(board, readyId, 'Inserted');
+    const appendedId = board.columns[0]!.cards[0]!.id;
+    const insertedId = board.columns[0]!.cards[1]!.id;
+
+    board = moveCardIntoColumn(board, appendedId, progressId);
+    assert.deepEqual(
+      board.columns[1]!.cards.map((card) => card.id),
+      [existingId, appendedId],
+    );
+
+    board = moveCardIntoColumn(board, insertedId, progressId, 0);
+    assert.deepEqual(
+      board.columns[1]!.cards.map((card) => card.id),
+      [insertedId, existingId, appendedId],
+    );
+    assert.equal(insertIndexForColumnPlacement('done', 3), 0);
+    assert.equal(insertIndexForColumnPlacement('ready', 3), 3);
+    assert.equal(insertIndexForColumnPlacement('done', 3, 2), 2);
   });
 
   test('isBoardState rejects malformed input', () => {

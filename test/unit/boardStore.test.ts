@@ -21,6 +21,7 @@ import {
   type MementoLike,
 } from '../../src/boardStore';
 import type { BoardState } from '../../src/types';
+import { positionForColumnPlacement } from '../../src/utils';
 
 function fakeMemento(initial: Record<string, unknown> = {}): MementoLike {
   const data = new Map<string, unknown>(Object.entries(initial));
@@ -884,6 +885,55 @@ suite('board store', () => {
     assert.equal(movedCard.id, cardId);
     assert.equal(movedCard.activity, 'Agent: did the work');
     assert.equal(parseCard(fileSystem.snapshot().get(cardFile!) ?? '').card.activity, 'Agent: did the work');
+  });
+
+  test('agent file edits that move cards into Done land newest-first on reload', async () => {
+    const fileSystem = createFakeFileSystem();
+    const store = await createBoardStore(createDeps({ fileSystem, defaultColumns: ['Ready', 'Done'] }));
+    const readyId = store.getState().columns[0]!.id;
+    const doneId = store.getState().columns[1]!.id;
+
+    await store.addCard(doneId, 'Already done A');
+    await store.addCard(doneId, 'Already done B');
+    await store.addCard(readyId, 'First finish');
+    await store.addCard(readyId, 'Second finish');
+
+    const existingA = store.getState().columns[1]!.cards[0]!.id;
+    const existingB = store.getState().columns[1]!.cards[1]!.id;
+    const firstId = store.getState().columns[0]!.cards[0]!.id;
+    const secondId = store.getState().columns[0]!.cards[1]!.id;
+
+    const cardPath = (cardId: string): string => `.mwnn/cards/${cardId}.md`;
+    const donePositions = (): number[] =>
+      [...fileSystem.snapshot().entries()]
+        .filter(([filePath]) => filePath.startsWith('.mwnn/cards/'))
+        .map(([, text]) => parseCard(text))
+        .filter((document) => document.columnId === doneId)
+        .map((document) => document.position);
+
+    const moveToDoneOnDisk = async (cardId: string): Promise<void> => {
+      const parsed = parseCard(fileSystem.snapshot().get(cardPath(cardId)) ?? '');
+      const next: CardDocument = {
+        columnId: doneId,
+        position: positionForColumnPlacement('done', donePositions()),
+        card: parsed.card,
+      };
+      await fileSystem.writeFile(cardPath(cardId), serializeCard(next));
+    };
+
+    await moveToDoneOnDisk(firstId);
+    let reloaded = await store.reload();
+    assert.deepEqual(
+      reloaded.columns[1]!.cards.map((card) => card.id),
+      [firstId, existingA, existingB],
+    );
+
+    await moveToDoneOnDisk(secondId);
+    reloaded = await store.reload();
+    assert.deepEqual(
+      reloaded.columns[1]!.cards.map((card) => card.id),
+      [secondId, firstId, existingA, existingB],
+    );
   });
 
   test('setActivity persists and reloads an edit while changing only updatedAt in frontmatter', async (t) => {

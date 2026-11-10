@@ -23,7 +23,7 @@
 
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
-import { isCardBlocked, readyState } from './utils';
+import { insertIndexForColumnPlacement, isCardBlocked, readyState } from './utils';
 import type { Assignee, BoardState, Card, Column } from './types';
 
 export type LoopTriageDecision = 'ai' | 'human';
@@ -822,8 +822,12 @@ export async function runBoardLoop(
         }
         report(`Completing verified card "${card.title}" in ${action.toColumn.title}`);
         // Put the most recently completed AI Loop card first while leaving the
-        // existing Done-card order intact below it.
-        await store.moveCard(card.id, action.toColumn.id, 0);
+        // existing Done-card order intact below it (shared Done-top rule).
+        await store.moveCard(
+          card.id,
+          action.toColumn.id,
+          insertIndexForColumnPlacement(action.toColumn.role, action.toColumn.cards.length),
+        );
         await store.appendActivity(card.id, formatLoopVerificationPassedEntry(action.toColumn.title));
         session.verifications.delete(card.id);
         summary.verified.push(card.title);

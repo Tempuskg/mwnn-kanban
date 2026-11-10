@@ -866,6 +866,65 @@ export function moveCard(state: BoardState, cardId: string, toColumnId: string, 
   return next;
 }
 
+/**
+ * File-edit `position` for placing a card into a column. Done-role columns insert
+ * at the top (newest completed work first); every other role appends after the
+ * current maximum. Existing cards are left untouched — only the new position is
+ * returned.
+ */
+export function positionForColumnPlacement(
+  role: ColumnRole | undefined,
+  existingPositions: readonly number[],
+): number {
+  const finite = existingPositions.filter((value) => Number.isFinite(value));
+  if (finite.length === 0) {
+    return calculateCardPosition({});
+  }
+  if (role === 'done') {
+    return calculateCardPosition({ next: Math.min(...finite) });
+  }
+  return calculateCardPosition({ previous: Math.max(...finite) });
+}
+
+/**
+ * Store/API insert index for a column placement. Done defaults to index 0 (top);
+ * other roles default to append. An explicit `requestedIndex` always wins so
+ * drag-and-drop and other callers can still target a middle slot.
+ */
+export function insertIndexForColumnPlacement(
+  role: ColumnRole | undefined,
+  columnLength: number,
+  requestedIndex?: number,
+): number {
+  if (requestedIndex !== undefined) {
+    return requestedIndex;
+  }
+  return role === 'done' ? 0 : columnLength;
+}
+
+/**
+ * Role-aware move used by agent/API paths that do not pass an explicit index:
+ * Done lands at the top; other columns append. Pass `requestedIndex` to keep
+ * the caller's placement (same as `moveCard`).
+ */
+export function moveCardIntoColumn(
+  state: BoardState,
+  cardId: string,
+  toColumnId: string,
+  requestedIndex?: number,
+): BoardState {
+  const target = state.columns.find((column) => column.id === toColumnId);
+  if (!target) {
+    return moveCard(state, cardId, toColumnId, requestedIndex ?? 0);
+  }
+  return moveCard(
+    state,
+    cardId,
+    toColumnId,
+    insertIndexForColumnPlacement(target.role, target.cards.length, requestedIndex),
+  );
+}
+
 export function setColumnConfig(state: BoardState, columnId: string, config: SetColumnConfig): BoardState {
   const next = cloneBoard(state);
   const column = next.columns.find((candidate) => candidate.id === columnId);

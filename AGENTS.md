@@ -93,7 +93,7 @@ What the slice is.
 Rules for direct board edits:
 
 - Treat `columns.json` and `cards/*.md` as the only canonical board state. Do not look for task state in workspace memento.
-- Move a card by editing its `column` and `position` frontmatter. Column order lives only in `columns.json`.
+- Move a card by editing its `column` and `position` frontmatter. Column order lives only in `columns.json`. When the destination column's `role` is `done`, place the card at the **top** of that column: assign a `position` strictly less than every other card already there (step ~1000 before the current minimum). Leave the relative order of the other Done cards unchanged. For non-`done` columns, append after the current maximum position unless a specific order is required.
 - `scheduledFor` is an optional, JSON-quoted local wall time at minute precision, e.g. `scheduledFor: "2026-11-01T09:30"` (`YYYY-MM-DDTHH:mm`, no timezone or UTC conversion). Date-only `YYYY-MM-DD` normalizes to local midnight (`T00:00`); invalid values are ignored. Omit the key to clear. While now is strictly before the schedule, the card is blocked alongside unfinished dependencies: it cannot advance past Ready, is excluded from Ready reverse-WIP, and the AI Loop skips it. At or after the time, only the schedule hold expires; dependencies still apply. Blocked cards beyond Ready are relocated back to Ready. Import only explicit start/not-before schedules, never deadlines or metadata dates.
 - A card counts as "defined" for Ready reverse-WIP when `## Description` is non-empty.
 - Respect `wipLimit` on flow columns and `reverseWip` on the Ready column when claiming or moving work.
@@ -457,9 +457,14 @@ What the slice of work is.
 - `column` (required) — a real column `id` from `columns.json` (e.g.
   `col-mqwk2njn-1`), **not** the column title.
 - `position` (required) — an integer that orders the card within its column,
-  ascending. New cards go **after** the current maximum position in that column,
-  stepping by ~1000 (so if the column's largest position is 4000, use 5000, 6000,
-  …). This preserves the order in which you write them.
+  ascending. New cards, and moves into non-`done` columns, go **after** the
+  current maximum position in that column, stepping by ~1000 (so if the
+  column's largest position is 4000, use 5000, 6000, …). When moving an
+  existing card into a column whose `role` is `done`, place it at the **top**
+  instead: assign a position strictly less than every other card already in
+  that Done column (step ~1000 before the current minimum — e.g. if the lowest
+  is 1000, use 0; if the lowest is 0, use -1000). Leave the relative order of
+  the other Done cards unchanged so newest completed work stays first.
 - `createdAt` (required) — Unix epoch milliseconds.
 - `updatedAt` (optional) — Unix epoch milliseconds; usually equal to `createdAt`
   for a new card. Omit the key entirely rather than writing an empty value.
@@ -570,6 +575,8 @@ Always include these three level-2 headings in this order, even when empty:
 
 - Keep files minimal and valid; a malformed file is skipped on reload.
 - Preserve the order you intend by assigning ascending `position` values.
+- When moving a card into a `done` column, put it at the top (position strictly
+  below the current minimum). Do not append after the maximum for Done moves.
 - Do not renumber or rewrite existing cards when adding new ones.
 - After writing files, the extension reloads automatically — no command needed.
 <!-- mwnn-kanban:skills:end -->

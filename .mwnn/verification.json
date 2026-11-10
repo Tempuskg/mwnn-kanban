@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "criteria": [
+    {
+      "text": "`.mwnn/verification.json` exists at the repository root and parses as a version-1 profile (`version`, `criteria`, optional `focusedTests`) per `docs/independent-verification.md`",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Every acceptance criterion on this card is mapped by exact checkbox text (without `- [ ]` / `- [x]`) to a non-empty `checks` array of allowed ids (`compile-tests`, `compile`, `focused-tests`, `tests`, `lint`, `diff`), or to `human: true` with empty `checks` when automation cannot prove it",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Every acceptance criterion on cards that already failed with \"Missing or invalid verification inputs\" and still need independent verification (at least `card-mw89f8vw-1` and `card-mw8h6jsj-3`) is likewise mapped by exact text",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Any `focusedTests` entries name only compiled `.test.js` files under `dist-test/test/`",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "With that profile in place, independent-verification input capture no longer fails with \"Missing or invalid verification inputs\" for a card whose criteria are fully mapped",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Activation with no stored trial start and no license key does not write `mwnn-kanban-pro.trialStartedAt`",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "The first time a Pro feature opens with no stored trial start and no key, the 14-day trial starts and the feature opens",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "A stored trial start, active or expired, is never replaced: clearing a key or running a gated command does not start a new trial",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Existing trial starts from 1.0.8 and 1.0.9 are honoured unchanged",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Pro views still do not flash in unlicensed windows during startup",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Unit tests under `node:test` cover each case above, and `npm run compile-tests`, `npm test`, and `npm run lint` pass",
+      "checks": [
+        "compile-tests",
+        "focused-tests",
+        "tests",
+        "lint"
+      ]
+    },
+    {
+      "text": "CHANGELOG `[Unreleased]` records the fix",
+      "checks": [],
+      "human": true
+    },
+    {
+      "text": "A command exits non-zero when the installed `@tempuskg/mwnn-kanban-pro` does not match the published tarball the lockfile resolves, and exits zero after a clean `npm ci`",
+      "checks": [],
+      "human": true
+    },
+    {
+      "text": "The release instructions say to run it before tagging a release",
+      "checks": [],
+      "human": true
+    },
+    {
+      "text": "It makes no network calls beyond the npm registry fetch that `npm ci` and `npm pack` already make, and needs no token beyond the existing `.npmrc`",
+      "checks": [],
+      "human": true
+    },
+    {
+      "text": "`npm run compile-tests`, `npm test`, and `npm run lint` pass",
+      "checks": [
+        "compile-tests",
+        "tests",
+        "lint"
+      ]
+    },
+    {
+      "text": "`Card` supports optional `scheduledFor` string normalized to `YYYY-MM-DDTHH:mm`",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "Round-trip serialize/parse works; invalid values are ignored; date-only expands to `T00:00`",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    },
+    {
+      "text": "`setScheduledFor` updates or clears the field via store and panel message handling",
+      "checks": [
+        "focused-tests",
+        "tests"
+      ]
+    }
+  ],
+  "focusedTests": [
+    "dist-test/test/unit/verificationProfile.test.js",
+    "dist-test/test/unit/outcomeEvidence.test.js",
+    "dist-test/test/unit/upgrade.test.js",
+    "dist-test/test/unit/cardScheduledFor.test.js",
+    "dist-test/test/unit/serialization.test.js"
+  ]
+}

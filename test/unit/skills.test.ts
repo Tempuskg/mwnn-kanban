@@ -327,6 +327,14 @@ suite('bundled skill scheduling guidance', () => {
     assert.match(body, /unfinished\s+dependencies still block the card/);
   });
 
+  test('card authoring teaches Done moves land at the top of the column', () => {
+    const body = authoring.body;
+    assert.match(body, /role` is `done`/);
+    assert.match(body, /place it at the \*\*top\*\*/);
+    assert.match(body, /strictly less than every other card already in\s+that Done column/);
+    assert.match(body, /Do not append after the maximum for Done moves/);
+  });
+
   test('plan import schedule rules stay consistent with card authoring', () => {
     const body = planImport.body;
     assert.match(body, /only explicit start\/not-before schedules/);
