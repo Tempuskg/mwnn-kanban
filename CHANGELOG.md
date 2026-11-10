@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-11-10
+
+### Changed
+- Cards moved into a Done column land at the top, so the most recently completed work comes first. The AI Loop, the board contract, the board-folder README, and the card-authoring skill all follow this rule. Moves into any other column still append to the end.
+
 ## [1.0.11] - 2026-11-08
 
 ### Fixed
