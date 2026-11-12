@@ -51,7 +51,18 @@ export interface ProUpgradeDeps {
   readonly parseUri: (value: string) => vscode.Uri;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => number;
+  /**
+   * Schedules the periodic license re-check. Defaults to a
+   * {@link PRO_LICENSE_RECHECK_INTERVAL_MS} interval.
+   */
+  readonly scheduleLicenseRecheck?: (callback: () => void) => vscode.Disposable;
 }
+
+/**
+ * A trial or cached validity can lapse while the window stays open, and no
+ * user action re-checks it then; without this the context key stays `true`.
+ */
+export const PRO_LICENSE_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 interface ShowUpgradePromptDeps {
   readonly showInformationMessage: (
@@ -73,6 +84,8 @@ let activeLicenseManager: ProLicenseManager | undefined;
 let activeUpgradeDeps: ProUpgradeDeps | undefined;
 /** The last value published to {@link PRO_LICENSE_CONTEXT_KEY}. */
 let publishedProLicense = false;
+/** Only the newest check publishes, so a slow stale check cannot undo a newer one. */
+let latestLicenseCheck = 0;
 
 type ProLicenseListener = (licensed: boolean) => void;
 const proLicenseListeners = new Set<ProLicenseListener>();
@@ -151,7 +164,16 @@ export function initializeProLicenseCommands(
   // The 14-day trial starts on the first gated Pro feature open instead.
   void hasProLicense(deps.getImplicitWorkspaceFolder());
 
+  const scheduleLicenseRecheck = deps.scheduleLicenseRecheck ?? ((callback) => {
+    const handle = setInterval(callback, PRO_LICENSE_RECHECK_INTERVAL_MS);
+    handle.unref?.();
+    return { dispose: () => clearInterval(handle) };
+  });
+
   return [
+    scheduleLicenseRecheck(() => {
+      void hasProLicense(deps.getImplicitWorkspaceFolder());
+    }),
     deps.registerCommand(UPGRADE_TO_PRO_COMMAND, async () => {
       await openProPurchasePage();
     }),
@@ -184,13 +206,21 @@ export async function hasProLicense(
   workspaceFolder?: vscode.WorkspaceFolder,
   options?: { readonly startTrialIfMissing?: boolean },
 ): Promise<boolean> {
-  const licensed = await (
-    activeLicenseManager?.hasProLicense(
-      workspaceFolder,
-      options?.startTrialIfMissing === true ? { startTrialIfMissing: true } : undefined,
-    ) ?? Promise.resolve(false)
-  );
-  await publishProLicenseContext(licensed);
+  const check = ++latestLicenseCheck;
+  let licensed = false;
+  try {
+    licensed = await (
+      activeLicenseManager?.hasProLicense(
+        workspaceFolder,
+        options?.startTrialIfMissing === true ? { startTrialIfMissing: true } : undefined,
+      ) ?? Promise.resolve(false)
+    );
+  } catch {
+    licensed = false;
+  }
+  if (check === latestLicenseCheck) {
+    await publishProLicenseContext(licensed);
+  }
   return licensed;
 }
 

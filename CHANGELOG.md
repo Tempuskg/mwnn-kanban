@@ -5,6 +5,15 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-11-11
+
+### Fixed
+- A trial or cached Pro license that lapses while the window stays open is cleared within about five minutes: a periodic license re-check republishes the Pro context key, so Pro views and commands do not stay enabled after expiry with no user action. A license check that throws now publishes unlicensed instead of leaving the last value, and a slow stale check cannot overwrite a newer result.
+- Pro: Target % edits in Portfolio Allocation and Allocation Targets paint immediately when focus moves to another project, and My Work clears its Activity Bar badge when the view is disposed. Requires `@tempuskg/mwnn-kanban-pro` 1.0.7.
+
+### Changed
+- This release includes the 1.0.12 change that was prepared but not published: cards moved into a Done column land at the top, so the most recently completed work comes first. The AI Loop, the board contract, the board-folder README, and the card-authoring skill all follow this rule. Moves into any other column still append to the end.
+
 ## [1.0.12] - 2026-11-10
 
 ### Changed

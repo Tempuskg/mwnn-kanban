@@ -63,7 +63,10 @@ function createConfiguration(): ProLicenseConfiguration {
   };
 }
 
-function createHarness(options: { readonly now?: () => number } = {}): Harness {
+function createHarness(options: {
+  readonly now?: () => number;
+  readonly scheduleLicenseRecheck?: ProUpgradeDeps['scheduleLicenseRecheck'];
+} = {}): Harness {
   const commands = new Map<string, CommandCallback>();
   const secrets = new Map<string, string>();
   const globalState = new Map<string, unknown>();
@@ -132,6 +135,9 @@ function createHarness(options: { readonly now?: () => number } = {}): Harness {
       headers: { 'Content-Type': 'application/json' },
     }),
     ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(options.scheduleLicenseRecheck !== undefined
+      ? { scheduleLicenseRecheck: options.scheduleLicenseRecheck }
+      : {}),
   };
 
   return {
@@ -163,7 +169,7 @@ suite('Pro upgrade commands', () => {
     // Match activation: publish existing license state only — do not mint a trial.
     assert.equal(await hasProLicense(), false);
 
-    assert.equal(disposables.length, 4);
+    assert.equal(disposables.length, 5);
     assert.equal(harness.globalState.has(TRIAL_STORAGE_KEY), false);
     assert.deepEqual(harness.contextUpdates[0], {
       key: PRO_LICENSE_CONTEXT_KEY,
@@ -209,6 +215,83 @@ suite('Pro upgrade commands', () => {
     assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), 1_000);
   });
 
+  test('a trial that lapses mid-session publishes false on the next periodic re-check', async () => {
+    const startedAt = 1_000;
+    let currentTime = startedAt + 60_000;
+    let recheck: (() => void) | undefined;
+    let recheckDisposed = false;
+    const harness = createHarness({
+      now: () => currentTime,
+      scheduleLicenseRecheck: (callback) => {
+        recheck = callback;
+        return { dispose: () => { recheckDisposed = true; } };
+      },
+    });
+    harness.globalState.set(TRIAL_STORAGE_KEY, startedAt);
+    const disposables = initializeProLicenseCommands(harness.context, harness.deps);
+    assert.equal(await hasProLicense(), true);
+    assert.deepEqual(harness.contextUpdates.at(-1), { key: PRO_LICENSE_CONTEXT_KEY, value: true });
+
+    // No user action happens; only the clock moves past the trial window.
+    currentTime = startedAt + TRIAL_DURATION_MS;
+    assert.ok(recheck);
+    recheck();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(harness.contextUpdates.at(-1), { key: PRO_LICENSE_CONTEXT_KEY, value: false });
+    assert.equal(harness.globalState.get(TRIAL_STORAGE_KEY), startedAt);
+
+    for (const disposable of disposables) {
+      disposable.dispose();
+    }
+    assert.equal(recheckDisposed, true);
+  });
+
+  test('a license check that throws publishes false instead of leaving the key set', async () => {
+    const harness = createHarness();
+    initializeProLicenseCommands(harness.context, harness.deps);
+    assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
+    assert.deepEqual(harness.contextUpdates.at(-1), { key: PRO_LICENSE_CONTEXT_KEY, value: true });
+
+    (harness.context as unknown as { secrets: LicenseStorageContext['secrets'] }).secrets = {
+      get: async () => {
+        throw new Error('secret storage unavailable');
+      },
+      store: async () => undefined,
+      delete: async () => undefined,
+    };
+
+    assert.equal(await hasProLicense(), false);
+    assert.deepEqual(harness.contextUpdates.at(-1), { key: PRO_LICENSE_CONTEXT_KEY, value: false });
+  });
+
+  test('a slow stale check cannot overwrite a newer published result', async () => {
+    const harness = createHarness();
+    initializeProLicenseCommands(harness.context, harness.deps);
+    assert.equal(await hasProLicense(), false);
+
+    let releaseSlow: (() => void) | undefined;
+    const realGet = harness.context.secrets.get.bind(harness.context.secrets);
+    let calls = 0;
+    (harness.context as unknown as { secrets: LicenseStorageContext['secrets'] }).secrets = {
+      ...harness.context.secrets,
+      get: async (key) => {
+        calls += 1;
+        if (calls === 1) {
+          await new Promise<void>((resolve) => { releaseSlow = resolve; });
+          return LICENSE_KEY;
+        }
+        return realGet(key);
+      },
+    };
+
+    const stale = hasProLicense();
+    assert.equal(await hasProLicense(), false);
+    releaseSlow?.();
+    assert.equal(await stale, true);
+    assert.deepEqual(harness.contextUpdates.at(-1), { key: PRO_LICENSE_CONTEXT_KEY, value: false });
+  });
+
   test('existing trial starts from earlier releases are honoured unchanged', async () => {
     const startedAt = 1_000;
     let currentTime = startedAt + 60_000;
@@ -227,7 +310,8 @@ suite('Pro upgrade commands', () => {
     const disposables = initializeProLicenseCommands(harness.context, harness.deps);
     assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
 
-    assert.equal(disposables.length, 4);
+    // Four commands plus the periodic license re-check.
+    assert.equal(disposables.length, 5);
     assert.deepEqual([...harness.commands.keys()].sort(), [
       CLEAR_PRO_LICENSE_KEY_COMMAND,
       ENTER_PRO_LICENSE_KEY_COMMAND,
