@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-11-13
+
+### Fixed
+- Pro: AI Loop eligibility keeps Remove directly beside Enroll (or the enrollment selector), including on narrow layouts. Confirming moves the project into Removed projects, preserving tracked history and allowing Restore. Bundles `@tempuskg/mwnn-kanban-pro` 1.0.9.
+
 ## [1.0.14] - 2026-11-13
 
 ### Added
