@@ -146,6 +146,7 @@ import {
 import { startCardInterview, type InterviewProviderPick } from './cardInterview';
 import {
   activateProFeatures,
+  canUseUsageOrchestrator,
   createBoardCapability,
   createBoardChangeEvent,
   createCopilotUsageCapability,
@@ -2226,6 +2227,10 @@ async function pickAgentCliTarget(
   workspaceCwd: string,
   preference: 'prompt' | 'orchestrator' | AgentCliProviderId,
 ): Promise<{ readonly target: AgentCliTarget; readonly orchestrated: boolean } | undefined> {
+  if (preference === 'orchestrator'
+    && !(await canUseUsageOrchestrator(getImplicitWorkspaceFolder(), true))) {
+    return undefined;
+  }
   const configuredPaths = readAgentCliPaths();
   const allowedProviders = readAllowedAgentCliProviders();
 
@@ -2286,16 +2291,20 @@ async function pickAgentCliTarget(
         target,
         orchestrated: false,
       })),
-      {
+      ...(await canUseUsageOrchestrator(getImplicitWorkspaceFolder()) ? [{
         label: USAGE_ORCHESTRATOR_LABEL,
         description: 'orchestrator',
         detail: USAGE_ORCHESTRATOR_DETAIL,
         target: targets.find((t) => !readUsageOrchestratorExcludedClis().includes(t.provider)) ?? first,
         orchestrated: true,
-      },
+      }] : []),
     ],
     { placeHolder: 'Run the AI loop with which local CLI?' },
   );
+  if (choice?.orchestrated
+    && !(await canUseUsageOrchestrator(getImplicitWorkspaceFolder(), true))) {
+    return undefined;
+  }
   return choice ? { target: choice.target, orchestrated: choice.orchestrated } : undefined;
 }
 
@@ -2390,7 +2399,11 @@ async function pickRunWithAiProvider(
   placeHolder = 'Run this card with which AI provider?',
 ): Promise<RunWithAiProviderChoice | undefined> {
   const { targets } = await discoverChatHandoffTargets();
-  const choices = listRunWithAiProviderChoices(targets, readAllowedAgentCliProviders());
+  const choices = listRunWithAiProviderChoices(
+    targets,
+    readAllowedAgentCliProviders(),
+    await canUseUsageOrchestrator(getImplicitWorkspaceFolder()),
+  );
   if (choices.length === 0) {
     void vscode.window.showWarningMessage(
       'No supported AI chat or enabled local CLI was found. Enable a CLI in the Agent CLI Models settings panel or install a supported AI chat extension.',
@@ -2406,6 +2419,10 @@ async function pickRunWithAiProvider(
     })),
     { placeHolder },
   );
+  if (pick?.choice.kind === 'cli' && pick.choice.provider === 'orchestrator'
+    && !(await canUseUsageOrchestrator(getImplicitWorkspaceFolder(), true))) {
+    return undefined;
+  }
   return pick?.choice;
 }
 

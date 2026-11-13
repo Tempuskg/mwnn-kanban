@@ -64,6 +64,7 @@ export interface HasProLicenseOptions {
 }
 
 export interface ProLicenseManager {
+  readonly hasEnteredKey: () => Promise<boolean>;
   readonly hasProLicense: (
     workspaceFolder?: vscode.WorkspaceFolder,
     options?: HasProLicenseOptions,
@@ -311,6 +312,7 @@ export function createProLicenseManager(deps: ProLicenseManagerDeps): ProLicense
   }
 
   return {
+    hasEnteredKey: async () => Boolean((await deps.context.secrets.get(SECRETS_KEY))?.trim()),
     hasProLicense,
     promptEnterKey,
     clearKey,

@@ -6,8 +6,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createOutcomeEvidenceFactory, digest, parseVerificationProfile, snapshotRevision, resolveNpmCommand,
-  type EvidenceCommandResult, type OutcomeEvidenceDeps, type OutcomeReceipt,
+import { createOutcomeEvidenceFactory, detectVerificationProfile, digest, isVerificationProfileFailure,
+  parseVerificationProfile, snapshotRevision, resolveNpmCommand,
+  type DirectoryEntry, type EvidenceCommand, type EvidenceCommandResult, type OutcomeEvidenceDeps, type OutcomeReceipt,
   type RevisionSnapshot } from '../../src/outcomeEvidence';
 import type { Card } from '../../src/types';
 
@@ -188,15 +189,168 @@ suite('independent outcome evidence', () => {
   });
 });
 
+suite('project-specific verification profiles', () => {
+  const dotnetProfile = (extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1,
+    commands: [{ id: 'build', command: 'dotnet', args: ['build', 'App.sln'] },
+      { id: 'test', command: 'dotnet', args: ['test'], cwd: 'tests/App.Tests' }],
+    defaultChecks: ['build', 'test'], criteria: [], ...extra });
+
+  test('custom commands replace the npm scripts and need no package.json', async () => {
+    const ran: EvidenceCommand[] = [];
+    const f = fixture({
+      readText: async (file) => {
+        if (file.endsWith('verification.json')) { return dotnetProfile(); }
+        if (file.endsWith('package.json')) { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }
+        return 'instructions';
+      },
+      run: async (command) => { ran.push(command); return { ...success(), stdout: 'Passed!' }; },
+    });
+    const result = await (await f.begin()).verify();
+    assert.equal(result.valid, true, JSON.stringify(result));
+    assert.deepEqual(ran.map((command) => [command.id, command.command, command.args]),
+      [['build', 'dotnet', ['build', 'App.sln']], ['test', 'dotnet', ['test']]]);
+    assert.equal(ran[1]?.cwd, path.resolve('/project', 'tests/App.Tests'));
+    if (result.valid) { assert.deepEqual(result.receipt.checks.map((check) => check.id), ['build', 'test']); }
+  });
+
+  test('a failing custom command rejects completion', async () => {
+    const f = fixture({ readText: async (file) => (file.endsWith('verification.json') ? dotnetProfile() : '{}'),
+      run: async (command) => (command.id === 'test' ? { ...success(), exitCode: 1 } : success()) });
+    const result = await (await f.begin()).verify();
+    assert.equal(result.valid, false);
+    assert.match(result.valid ? '' : result.reason, /check test failed/);
+  });
+
+  test('criteria without a mapping fall back to the default checks', async () => {
+    const f = fixture();
+    f.setProfile(JSON.stringify({ version: 1, defaultChecks: ['tests'], criteria: [] }));
+    assert.equal((await (await f.begin()).verify()).valid, true);
+  });
+
+  test('a criterion mapped as needing a human is still rejected despite defaults', async () => {
+    const f = fixture();
+    f.setProfile(JSON.stringify({ version: 1, defaultChecks: ['tests'],
+      criteria: [{ text: 'Feature behaves correctly', checks: ['tests'], human: true }] }));
+    const result = await (await f.begin()).verify();
+    assert.equal(result.valid, false);
+    assert.match(result.valid ? '' : result.reason, /human verification/);
+    assert.equal(f.commands.length, 0);
+  });
+
+  test('an invalid existing profile names the file and the error and is never overwritten', async () => {
+    const created: string[] = [];
+    const f = fixture({ createText: async (file) => { created.push(file); } });
+    f.setProfile(JSON.stringify({ version: 1, defaultChecks: ['nope'], criteria: [] }));
+    const result = await (await f.begin()).verify();
+    assert.equal(result.valid, false);
+    const reason = result.valid ? '' : result.reason;
+    assert.match(reason, /\.mwnn\/verification\.json is invalid/);
+    assert.match(reason, /"defaultChecks" names unknown check "nope"/);
+    assert.doesNotMatch(reason, /Missing or invalid/);
+    assert.equal(isVerificationProfileFailure(reason), true);
+    assert.deepEqual(created, []);
+  });
+
+  test('a missing profile is created before inputs are frozen and then used', async () => {
+    const files = new Map<string, string>([['package.json', JSON.stringify({ scripts: {
+      'compile-tests': 'tsc', compile: 'webpack', test: 'node --test', lint: 'eslint' } })]]);
+    const key = (file: string) => path.relative('/project', file).split(path.sep).join('/');
+    const f = fixture({
+      readText: async (file) => {
+        const text = files.get(key(file));
+        if (text === undefined) { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }
+        return text;
+      },
+      createText: async (file, contents) => { files.set(key(file), contents); },
+    });
+    const session = await f.begin();
+    assert.equal(session.createdProfile, '.mwnn/verification.json');
+    assert.equal((await session.verify()).valid, true);
+    assert.deepEqual(f.commands, ['compile-tests', 'compile', 'tests', 'lint', 'diff']);
+  });
+
+  test('a missing profile without a way to create it reports the file', async () => {
+    const f = fixture({ readText: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } });
+    const result = await (await f.begin()).verify();
+    assert.match(result.valid ? '' : result.reason, /\.mwnn\/verification\.json is missing/);
+  });
+});
+
+suite('verification profile detection', () => {
+  const project = (files: Record<string, string>, entries: Record<string, DirectoryEntry[]> = {}) => ({
+    readText: async (file: string) => {
+      const text = files[path.basename(file)];
+      if (text === undefined) { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }
+      return text;
+    },
+    listDirectory: async (directory: string) => entries[path.relative('/project', directory) || '.'] ?? [],
+  });
+  const file = (name: string): DirectoryEntry => ({ name, directory: false });
+  const folder = (name: string): DirectoryEntry => ({ name, directory: true });
+
+  test('uses the built-in npm checks when all four scripts exist', async () => {
+    const detected = await detectVerificationProfile('/project', project({ 'package.json': JSON.stringify({ scripts: {
+      'compile-tests': 'a', compile: 'b', test: 'c', lint: 'd' } }) }));
+    assert.equal(detected.commands, undefined);
+    assert.deepEqual(detected.defaultChecks, ['compile-tests', 'compile', 'tests', 'lint', 'diff']);
+    parseVerificationProfile(JSON.stringify(detected));
+  });
+
+  test('uses the npm scripts that exist otherwise', async () => {
+    const detected = await detectVerificationProfile('/project', project({ 'package.json': JSON.stringify({ scripts: {
+      build: 'tsc', test: 'vitest', start: 'node .' } }) }, { '.': [file('App.sln')] }));
+    assert.deepEqual(detected.commands?.map((command) => [command.command, ...command.args]),
+      [['npm', 'run', 'build'], ['npm', 'test'], ['git', 'diff', '--check', 'HEAD']]);
+    assert.deepEqual(detected.defaultChecks, ['build', 'test', 'diff']);
+  });
+
+  test('uses dotnet build and test for a root solution, preferring it over a project file', async () => {
+    const detected = await detectVerificationProfile('/project', project({},
+      { '.': [file('App.csproj'), file('App.sln'), folder('tests')] }));
+    assert.deepEqual(detected.commands?.map((command) => [command.command, ...command.args]),
+      [['dotnet', 'build', 'App.sln'], ['dotnet', 'test', 'App.sln'], ['git', 'diff', '--check', 'HEAD']]);
+    parseVerificationProfile(JSON.stringify(detected));
+  });
+
+  test('finds a .NET project one folder down', async () => {
+    const detected = await detectVerificationProfile('/project', project({},
+      { '.': [folder('src'), folder('node_modules')], src: [file('Api.csproj')],
+        node_modules: [file('Ignored.sln')] }));
+    assert.deepEqual(detected.commands?.[0]?.args, ['build', 'src/Api.csproj']);
+  });
+
+  test('falls back to git diff --check only', async () => {
+    const detected = await detectVerificationProfile('/project', project({}, { '.': [file('README.md')] }));
+    assert.deepEqual(detected.commands, [{ id: 'diff', command: 'git', args: ['diff', '--check', 'HEAD'] }]);
+    assert.deepEqual(detected.defaultChecks, ['diff']);
+    parseVerificationProfile(JSON.stringify(detected));
+  });
+});
+
 suite('verification profile validation', () => {
   test('rejects malformed, duplicate, unknown and escaping mappings', () => {
     for (const value of ['null', '{}', '{', JSON.stringify({ version: 2, criteria: [] }),
       JSON.stringify({ version: 1, criteria: [{ text: 'Task', checks: ['unknown'] }] }),
       JSON.stringify({ version: 1, criteria: [{ text: 'Task', checks: [] }, { text: 'Task', checks: [] }] }),
       JSON.stringify({ version: 1, criteria: [{ text: 'Task', checks: [] }],
-        focusedTests: ['dist-test/test/../../outside.test.js'] })]) {
+        focusedTests: ['dist-test/test/../../outside.test.js'] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: [] }),
+      JSON.stringify({ version: 1, criteria: [], commands: [], defaultChecks: ['diff'] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: ['a'],
+        commands: [{ id: 'a', command: 'x' }, { id: 'a', command: 'y' }] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: ['a'], commands: [{ id: 'a', command: '' }] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: ['a'], commands: [{ id: 'a', command: 'x', args: [1] }] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: ['a'], commands: [{ id: 'a', command: 'x', cwd: '../out' }] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: ['a'], commands: [{ id: 'a', command: 'x', cwd: 'C:\\out' }] }),
+      JSON.stringify({ version: 1, criteria: [], defaultChecks: ['tests'], commands: [{ id: 'a', command: 'x' }] })]) {
       assert.throws(() => parseVerificationProfile(value));
     }
+  });
+
+  test('accepts commands with default arguments and defaults without explicit criteria', () => {
+    const parsed = parseVerificationProfile(JSON.stringify({ version: 1, criteria: [],
+      commands: [{ id: 'build', command: 'dotnet' }], defaultChecks: ['build'] }));
+    assert.deepEqual(parsed.commands, [{ id: 'build', command: 'dotnet', args: [] }]);
   });
 });
 

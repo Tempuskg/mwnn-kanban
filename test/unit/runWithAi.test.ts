@@ -203,8 +203,19 @@ function realHandoffWith(
 }
 
 suite('Run with AI provider selection', () => {
+  test('hides orchestration by default without changing individual CLI or chat choices', () => {
+    const hidden = listRunWithAiProviderChoices(CHAT_TARGETS);
+    const visible = listRunWithAiProviderChoices(CHAT_TARGETS, undefined, true);
+    assert.deepEqual(hidden, visible.filter((choice) => choice.kind !== 'cli' || choice.provider !== 'orchestrator'));
+    assert.deepEqual(
+      listRunWithAiProviderChoices([], ['codex'], false).map((choice) => choice.kind === 'cli' && choice.provider),
+      ['codex'],
+    );
+    assert.deepEqual(listRunWithAiProviderChoices([], [], true), []);
+  });
+
   test('offers installed chat extensions followed by all agent CLI providers and the Usage Orchestrator', () => {
-    const choices = listRunWithAiProviderChoices(CHAT_TARGETS);
+    const choices = listRunWithAiProviderChoices(CHAT_TARGETS, undefined, true);
 
     assert.deepEqual(
       choices.map((choice) => choice.kind),
@@ -222,7 +233,7 @@ suite('Run with AI provider selection', () => {
   });
 
   test('labels make clear which entries are CLIs and which are chat extensions', () => {
-    for (const choice of listRunWithAiProviderChoices(CHAT_TARGETS)) {
+    for (const choice of listRunWithAiProviderChoices(CHAT_TARGETS, undefined, true)) {
       if (choice.kind === 'cli' && choice.provider === 'orchestrator') {
         assert.equal(choice.description, 'Local agent CLI');
         assert.match(choice.detail, /remaining usage/);
@@ -238,13 +249,13 @@ suite('Run with AI provider selection', () => {
   });
 
   test('passes chat handoff targets through unchanged', () => {
-    const choices = listRunWithAiProviderChoices(CHAT_TARGETS);
+    const choices = listRunWithAiProviderChoices(CHAT_TARGETS, undefined, true);
     const chatChoices = choices.filter((choice) => choice.kind === 'chat');
     assert.deepEqual(chatChoices.map((choice) => choice.target), [...CHAT_TARGETS]);
   });
 
   test('still offers every CLI provider and the Usage Orchestrator when no chat extension is installed', () => {
-    const choices = listRunWithAiProviderChoices([]);
+    const choices = listRunWithAiProviderChoices([], undefined, true);
     assert.equal(choices.length, AGENT_CLI_PROVIDER_IDS.length + 1);
     assert.ok(choices.every((choice) => choice.kind === 'cli'));
   });

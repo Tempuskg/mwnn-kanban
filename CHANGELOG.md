@@ -5,6 +5,16 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-11-13
+
+### Added
+- Independent outcome verification creates a missing `.mwnn/verification.json` before dispatch, detecting available npm scripts, .NET build/test commands, or a Git diff check. Profiles support custom commands and default checks for acceptance criteria without explicit mappings. Existing profiles are never overwritten, and invalid profiles report the specific error.
+
+### Fixed
+- Pro: Portfolio AI Loop eligibility adds project removal through the existing confirmation flow, preserving board files and tracked history. Read-only and pending controls prevent invalid or duplicate requests; refreshed state permits retries after cancellation or failure. Requires `@tempuskg/mwnn-kanban-pro` 1.0.8.
+- Cards whose latest implementation or verification dispatch reported completion but failed only because the verification profile was missing or invalid are independently re-checked on the next loop run without launching the agent again. Recorded requirements digests prevent reusing completion after requirements change; passing checks produce a fresh receipt before normal advancement.
+- Usage Orchestrator is offered only when an entered license key passes the existing Pro eligibility check. Saved orchestrator preferences are checked before CLI discovery, and picked choices are checked again before dispatch. Individual CLI and chat choices remain available.
+
 ## [1.0.13] - 2026-11-11
 
 ### Fixed

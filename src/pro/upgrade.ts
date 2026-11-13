@@ -224,6 +224,19 @@ export async function hasProLicense(
   return licensed;
 }
 
+/** Key presence controls discovery; the existing Pro gate still controls access. */
+export async function canUseUsageOrchestrator(
+  workspaceFolder?: vscode.WorkspaceFolder,
+  promptOnDenied = false,
+): Promise<boolean> {
+  const allowed = await activeLicenseManager?.hasEnteredKey() === true
+    && await hasProLicense(workspaceFolder);
+  if (!allowed && promptOnDenied) {
+    await showUpgradePrompt(workspaceFolder);
+  }
+  return allowed;
+}
+
 export async function showUpgradePrompt(
   workspaceFolder?: vscode.WorkspaceFolder,
   deps: Partial<ShowUpgradePromptDeps> = {},

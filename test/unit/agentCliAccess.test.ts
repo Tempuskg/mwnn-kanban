@@ -56,7 +56,7 @@ suite('agent CLI access settings', () => {
   });
 
   test('Run with AI offers only enabled CLIs and omits an empty orchestrator choice', () => {
-    const choices = listRunWithAiProviderChoices([], ['codex']);
+    const choices = listRunWithAiProviderChoices([], ['codex'], true);
     assert.deepEqual(
       choices.map((choice) => choice.kind === 'cli' ? choice.provider : choice.target.provider),
       ['codex', 'orchestrator'],

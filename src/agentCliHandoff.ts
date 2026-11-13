@@ -50,7 +50,10 @@ import {
   type AgentCliLaunchGate,
   type AgentCliLaunchScope,
 } from './agentCliLaunchGate';
-import { defaultOutcomeEvidenceFactory, type OutcomeEvidenceFactory, type EvidenceCommand } from './outcomeEvidence';
+import { defaultOutcomeEvidenceFactory, isVerificationProfileFailure, requirementsDigest,
+  type OutcomeEvidenceFactory, type OutcomeEvidenceResult, type OutcomeEvidenceSession,
+  type EvidenceCommand } from './outcomeEvidence';
+import { isStuckOnVerificationProfile, REQUIREMENTS_DIGEST_LABEL } from './outcomeRecheck';
 import type { AgentCliHandoffKind } from './agentCliStages';
 import { cardNeedsDefinition } from './cardDefinition';
 import { parseVerificationVerdict } from './cardVerification';
@@ -1538,6 +1541,14 @@ export async function runAgentCliCardHandoff(
         reloadCard: async () => findCard(await handoff.store.reload(), handoff.cardId),
       })
     : undefined;
+  if (outcomeSession?.createdProfile !== undefined) {
+    await handoff.store.appendActivity(handoff.cardId,
+      formatVerificationProfileCreatedEntry(outcomeSession.createdProfile, now()));
+  }
+  if (outcomeSession && (handoff.kind === 'implementation' || handoff.kind === 'verification')
+    && isStuckOnVerificationProfile(before, handoff.kind, requirementsDigest(before))) {
+    return recheckStuckOutcome(handoff, handoff.kind, outcomeSession, now);
+  }
   // Resolved per dispatch from the card as it is on disk right now, against the
   // provider running *this* attempt, and for *this* handoff's stage. A model
   // edited mid-run is picked up by the next stage, each stage of one loop run
@@ -1889,7 +1900,7 @@ export async function runAgentCliCardHandoff(
     if (!outcome?.valid) {
       const reason = outcome?.reason ?? 'Independent outcome evidence is unavailable.';
       await handoff.store.appendActivity(handoff.cardId,
-        formatAgentCliFailureEntry(handoff.target.label, handoff.kind, reason, now()));
+        formatAgentCliFailureEntry(handoff.target.label, handoff.kind, withRequirementsDigest(reason, before), now()));
       return withDiscovery(withModel({ completed: false, cancelled: handoff.signal.aborted,
         activityBaseline, failure: 'outcome-unverified', reason }));
     }
@@ -1902,28 +1913,101 @@ export async function runAgentCliCardHandoff(
       const reason = 'Card completion marker changed during independent verification; completion was not accepted.';
       return withDiscovery(withModel({ completed: false, cancelled: false,
         activityBaseline, failure: 'outcome-unverified', reason }));
-    }    revalidateOutcome = async () => {
-      if (!await outcomeSession?.revalidate?.()) { return false; }
-      const latest = findCard(await handoff.store.reload(), handoff.cardId);
-      if (!latest) { return false; }
-      if (handoff.kind === 'verification') {
-        return parseVerificationVerdict(latest.activity ?? '', activityBaseline)?.kind === 'pass';
-      }
-      const terminal = parseTerminalCardStatus(latest.activity ?? '', activityBaseline);
-      return terminal.valid && terminal.status.kind === 'done';
-    };    await handoff.store.appendActivity(handoff.cardId, [
-      `### ${now().toISOString()} - MWNN independent verification receipt`,
-      `Checker: ${outcome.receipt.checker}; attempt: ${outcome.receipt.attemptId}`,
-      `Input digest: ${outcome.receipt.inputDigest}`,
-      `Checked revision: ${outcome.receipt.checkedRevision.digest}`,
-      `Receipt: ${outcome.receiptPath}`,
-    ].join('\n'));
+    }
+    revalidateOutcome = createOutcomeRevalidator(handoff, handoff.kind, outcomeSession, activityBaseline);
+    await handoff.store.appendActivity(handoff.cardId, formatOutcomeReceiptEntry(outcome, now()));
   }
   const baseResult = { completed: true, cancelled: false, activityBaseline,
     ...(revalidateOutcome ? { revalidateOutcome } : {}) } as const;
   return withDiscovery(withModel(
     evidence.terminalStatus ? { ...baseResult, terminalStatus: evidence.terminalStatus } : baseResult,
   ));
+}
+
+const RECHECK_LABEL = 'MWNN independent re-check';
+
+function withRequirementsDigest(reason: string, card: Card): string {
+  return isVerificationProfileFailure(reason)
+    ? `${reason}\n${REQUIREMENTS_DIGEST_LABEL} ${requirementsDigest(card)}`
+    : reason;
+}
+
+/** Live proof for a later board move: the receipt and the completion marker must both still hold. */
+function createOutcomeRevalidator(
+  handoff: AgentCliCardHandoff,
+  kind: AgentCliHandoffKind,
+  session: OutcomeEvidenceSession | undefined,
+  activityBaseline: number,
+): () => Promise<boolean> {
+  return async () => {
+    if (!await session?.revalidate?.()) { return false; }
+    const latest = findCard(await handoff.store.reload(), handoff.cardId);
+    if (!latest) { return false; }
+    if (kind === 'verification') {
+      return parseVerificationVerdict(latest.activity ?? '', activityBaseline)?.kind === 'pass';
+    }
+    const terminal = parseTerminalCardStatus(latest.activity ?? '', activityBaseline);
+    return terminal.valid && terminal.status.kind === 'done';
+  };
+}
+
+function formatOutcomeReceiptEntry(
+  outcome: Extract<OutcomeEvidenceResult, { readonly valid: true }>,
+  timestamp: Date,
+): string {
+  return [
+    `### ${timestamp.toISOString()} - MWNN independent verification receipt`,
+    `Checker: ${outcome.receipt.checker}; attempt: ${outcome.receipt.attemptId}`,
+    `Input digest: ${outcome.receipt.inputDigest}`,
+    `Checked revision: ${outcome.receipt.checkedRevision.digest}`,
+    `Receipt: ${outcome.receiptPath}`,
+  ].join('\n');
+}
+
+export function formatVerificationProfileCreatedEntry(profilePath: string, timestamp: Date = new Date()): string {
+  return [
+    `### ${timestamp.toISOString()} - MWNN verification profile created`,
+    `No verification profile existed, so the extension created \`${profilePath}\` with checks detected from this project before freezing the verification inputs.`,
+    'Review or edit its "commands" and "defaultChecks"; an existing profile is never overwritten.',
+  ].join('\n');
+}
+
+/**
+ * The agent already reported completion and only a missing/invalid profile
+ * stopped acceptance, so re-run the independent checks under the current
+ * profile instead of sending the card back to the agent. A pass writes the
+ * host's own completion marker after a fresh baseline; a failure leaves the
+ * card where it is with the reason in Activity.
+ */
+async function recheckStuckOutcome(
+  handoff: AgentCliCardHandoff,
+  kind: 'implementation' | 'verification',
+  session: OutcomeEvidenceSession,
+  now: () => Date,
+): Promise<AgentCliCardHandoffResult> {
+  await handoff.store.appendActivity(handoff.cardId, [
+    `### ${now().toISOString()} - ${RECHECK_LABEL} started`,
+    `The last ${kind} dispatch reported completion but was rejected only because the verification profile was missing or invalid. Re-running the independent checks under the current profile without dispatching the agent again.`,
+  ].join('\n'));
+  const before = findCard(await handoff.store.reload(), handoff.cardId);
+  const activityBaseline = (before?.activity ?? '').length;
+  const outcome = await session.verify();
+  if (!outcome.valid) {
+    await appendIfCardExists(handoff.store, handoff.cardId,
+      formatAgentCliFailureEntry(RECHECK_LABEL, kind, before ? withRequirementsDigest(outcome.reason, before) : outcome.reason, now()));
+    return { completed: false, cancelled: handoff.signal.aborted, activityBaseline,
+      failure: 'outcome-unverified', reason: outcome.reason };
+  }
+  await handoff.store.appendActivity(handoff.cardId, [
+    formatOutcomeReceiptEntry(outcome, now()),
+    '',
+    `### ${now().toISOString()} - ${RECHECK_LABEL} passed`,
+    `The independent checks passed, so the earlier ${kind === 'implementation' ? 'STATUS: DONE report' : 'VERIFY: PASS verdict'} is accepted.`,
+    kind === 'implementation' ? 'STATUS: DONE' : 'VERIFY: PASS',
+  ].join('\n'));
+  const revalidateOutcome = createOutcomeRevalidator(handoff, kind, session, activityBaseline);
+  return { completed: true, cancelled: false, activityBaseline, revalidateOutcome,
+    ...(kind === 'implementation' ? { terminalStatus: { kind: 'done' } as const } : {}) };
 }
 
 /**

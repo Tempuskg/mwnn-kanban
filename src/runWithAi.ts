@@ -88,6 +88,7 @@ export type RunWithAiProviderChoice =
 export function listRunWithAiProviderChoices(
   chatTargets: readonly ChatHandoffTarget[],
   allowedProviders: readonly AgentCliExecutableProviderId[] = AGENT_CLI_EXECUTABLE_PROVIDER_IDS,
+  orchestratorAvailable = false,
 ): readonly RunWithAiProviderChoice[] {
   const chatChoices = chatTargets.map((target) => ({
     kind: 'chat' as const,
@@ -115,7 +116,7 @@ export function listRunWithAiProviderChoices(
   return [
     ...chatChoices,
     ...cliChoices,
-    ...(allowedProviders.length > 0 ? [orchestratorChoice] : []),
+    ...(orchestratorAvailable && allowedProviders.length > 0 ? [orchestratorChoice] : []),
   ];
 }
 

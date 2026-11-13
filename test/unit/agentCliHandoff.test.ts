@@ -1758,18 +1758,25 @@ suite('handoff independent acceptance gate', () => {
     test(`${kind} rejects DONE/PASS without configured host evidence`, async () => {
       const { state, cardId } = boardWithCard();
       const board = fakeStore(state);
-      const result = await rawRunAgentCliCardHandoff({
-        kind, target: target('copilot'), cardId, prompt: 'implement task',
-        cwd: path.join(os.tmpdir(), 'mwnn-missing-verification-profile'),
-        store: board.store, signal: new AbortController().signal,
-      }, handoffOptions(async () => {
-        board.mutate((current) => appendActivity(current, cardId,
-          kind === 'implementation' ? 'STATUS: DONE' : 'VERIFY: PASS'));
-        return successfulProcess();
-      }));
-      assert.equal(result.completed, false);
-      assert.equal(result.failure, 'outcome-unverified');
-      assert.match(result.reason ?? '', /verification inputs/i);
+      // Not a git repository, so the created profile cannot produce checked evidence.
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'mwnn-missing-verification-profile-'));
+      try {
+        const result = await rawRunAgentCliCardHandoff({
+          kind, target: target('copilot'), cardId, prompt: 'implement task',
+          cwd, store: board.store, signal: new AbortController().signal,
+        }, handoffOptions(async () => {
+          board.mutate((current) => appendActivity(current, cardId,
+            kind === 'implementation' ? 'STATUS: DONE' : 'VERIFY: PASS'));
+          return successfulProcess();
+        }));
+        assert.equal(result.completed, false);
+        assert.equal(result.failure, 'outcome-unverified');
+        assert.match(result.reason ?? '', /verification inputs/i);
+        assert.match(board.card(cardId).activity ?? '', /MWNN verification profile created[\s\S]*\.mwnn\/verification\.json/);
+        const created = JSON.parse(await fs.readFile(path.join(cwd, '.mwnn', 'verification.json'), 'utf8')) as
+          { defaultChecks?: string[] };
+        assert.deepEqual(created.defaultChecks, ['diff']);
+      } finally { await fs.rm(cwd, { recursive: true, force: true }); }
     });
   }
 

@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import type * as vscode from 'vscode';
 import {
+  canUseUsageOrchestrator,
   CLEAR_PRO_LICENSE_KEY_COMMAND,
   ENTER_PRO_LICENSE_KEY_COMMAND,
   hasProLicense,
@@ -378,5 +379,54 @@ suite('Pro upgrade commands', () => {
     await showUpgradePrompt();
 
     assert.deepEqual(harness.openedUrls, [PRO_PURCHASE_URL]);
+  });
+});
+
+
+suite('Usage Orchestrator license access', () => {
+  test('requires an entered key even with an active trial and shows existing guidance', async () => {
+    const harness = createHarness();
+    const disposables = initializeProLicenseCommands(harness.context, harness.deps);
+    try {
+      assert.equal(await hasProLicense(undefined, { startTrialIfMissing: true }), true);
+      assert.equal(await canUseUsageOrchestrator(), false);
+      assert.equal(harness.informationMessages.length, 0);
+      assert.equal(await canUseUsageOrchestrator(undefined, true), false);
+      assert.deepEqual(harness.informationMessages.at(-1)?.items, [PRO_ACTIVATE_PROMPT_LABEL, PRO_UPGRADE_PROMPT_LABEL]);
+    } finally {
+      disposables.forEach((item) => item.dispose());
+    }
+  });
+
+  test('entering a valid key enables orchestration; clearing and reloading hides it', async () => {
+    const harness = createHarness();
+    let disposables = initializeProLicenseCommands(harness.context, harness.deps);
+    try {
+      assert.equal(await canUseUsageOrchestrator(), false);
+      await harness.invokeCommand(ENTER_PRO_LICENSE_KEY_COMMAND);
+      assert.equal(await canUseUsageOrchestrator(), true);
+      await harness.invokeCommand(CLEAR_PRO_LICENSE_KEY_COMMAND);
+      assert.equal(await canUseUsageOrchestrator(), false);
+      disposables.forEach((item) => item.dispose());
+      disposables = initializeProLicenseCommands(harness.context, harness.deps);
+      assert.equal(await canUseUsageOrchestrator(), false);
+    } finally {
+      disposables.forEach((item) => item.dispose());
+    }
+  });
+
+  test('a stored invalid key does not bypass the existing Pro gate', async () => {
+    const harness = createHarness();
+    harness.secrets.set(SECRET_STORAGE_KEY, 'invalid');
+    const disposables = initializeProLicenseCommands(harness.context, {
+      ...harness.deps,
+      fetch: async () => new Response(JSON.stringify({ status: 'revoked' })),
+    });
+    try {
+      assert.equal(await canUseUsageOrchestrator(undefined, true), false);
+      assert.deepEqual(harness.informationMessages.at(-1)?.items, [PRO_ACTIVATE_PROMPT_LABEL, PRO_UPGRADE_PROMPT_LABEL]);
+    } finally {
+      disposables.forEach((item) => item.dispose());
+    }
   });
 });
