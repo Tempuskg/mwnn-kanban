@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.17] - 2026-11-15
+
+### Changed
+- Inside Cursor, Run with AI labels the editor chat choice "Cursor" (described as "Editor chat") instead of "GitHub Copilot". It still opens the same chat handoff, and the CLI choices are unchanged. VS Code keeps the GitHub Copilot label.
+
 ## [1.0.16] - 2026-11-15
 
 ### Added
