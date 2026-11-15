@@ -89,11 +89,15 @@ export function listRunWithAiProviderChoices(
   chatTargets: readonly ChatHandoffTarget[],
   allowedProviders: readonly AgentCliExecutableProviderId[] = AGENT_CLI_EXECUTABLE_PROVIDER_IDS,
   orchestratorAvailable = false,
+  editorAppName = 'Visual Studio Code',
 ): readonly RunWithAiProviderChoice[] {
+  const isCursor = /\bcursor\b/i.test(editorAppName);
   const chatChoices = chatTargets.map((target) => ({
     kind: 'chat' as const,
-    label: CHAT_PROVIDER_LABELS[target.provider],
-    description: 'VS Code chat extension',
+    label: isCursor && target.provider === 'copilot'
+      ? 'Cursor'
+      : CHAT_PROVIDER_LABELS[target.provider],
+    description: isCursor ? 'Editor chat' : 'VS Code chat extension',
     detail: describeChatHandoffTarget(target),
     target,
   }));

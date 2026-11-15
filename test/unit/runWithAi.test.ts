@@ -254,6 +254,22 @@ suite('Run with AI provider selection', () => {
     assert.deepEqual(chatChoices.map((choice) => choice.target), [...CHAT_TARGETS]);
   });
 
+  test('uses the Cursor editor chat label in Cursor while preserving its target and CLI choices', () => {
+    const choices = listRunWithAiProviderChoices(CHAT_TARGETS, undefined, true, 'Cursor');
+    const chatChoices = choices.filter((choice) => choice.kind === 'chat');
+    assert.deepEqual(chatChoices.map((choice) => choice.label), ['Cursor', CHAT_PROVIDER_LABELS['claude-code']]);
+    assert.deepEqual(chatChoices.map((choice) => choice.target), [...CHAT_TARGETS]);
+    assert.ok(choices.filter((choice) => choice.kind === 'cli').every((choice, index) =>
+      choice.kind === 'cli' && choice.provider === [...AGENT_CLI_PROVIDER_IDS, 'orchestrator'][index]));
+  });
+
+  test('keeps the GitHub Copilot chat label and handoff target in VS Code', () => {
+    const choices = listRunWithAiProviderChoices(CHAT_TARGETS, undefined, true, 'Visual Studio Code');
+    const copilot = choices.find((choice) => choice.kind === 'chat' && choice.target.provider === 'copilot');
+    assert.equal(copilot?.label, CHAT_PROVIDER_LABELS.copilot);
+    assert.deepEqual(copilot?.kind === 'chat' ? copilot.target : undefined, CHAT_TARGETS[0]);
+  });
+
   test('still offers every CLI provider and the Usage Orchestrator when no chat extension is installed', () => {
     const choices = listRunWithAiProviderChoices([], undefined, true);
     assert.equal(choices.length, AGENT_CLI_PROVIDER_IDS.length + 1);

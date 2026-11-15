@@ -44,7 +44,7 @@ function harness(licensed: boolean) {
       },
       resolveAgentCliTarget: async () => ({ available: true, target: targets[0] }),
     },
-    vscode: { window: {
+    vscode: { env: { appName: 'Visual Studio Code' }, window: {
       showQuickPick: async (choices: readonly { label: string }[]) => {
         offered = choices;
         return choices.find((choice) => choice.label === 'Usage Orchestrator') ?? choices[0];

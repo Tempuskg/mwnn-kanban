@@ -2413,6 +2413,7 @@ async function pickRunWithAiProvider(
     targets,
     readAllowedAgentCliProviders(),
     await canUseUsageOrchestrator(getImplicitWorkspaceFolder()),
+    vscode.env.appName,
   );
   if (choices.length === 0) {
     void vscode.window.showWarningMessage(
