@@ -5,6 +5,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.16] - 2026-11-15
+
 ### Added
 - `mwnn-kanban.agentCliCodexSandbox` chooses the `--sandbox` mode for OpenAI Codex CLI dispatches: `workspace-write` (default) or `danger-full-access` for machines where the Codex sandbox stops shell commands from running.
 
