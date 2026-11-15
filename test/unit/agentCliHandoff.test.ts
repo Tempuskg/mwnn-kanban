@@ -9,6 +9,9 @@ import {
   AGENT_CLI_PROVIDER_IDS,
   agentCliExecutableProvider,
   buildAgentCliInvocation,
+  extractStdoutBlockedReason,
+  readAgentCliCodexSandboxMode,
+  setAgentCliCodexSandboxModeSource,
   parseTerminalCardStatus,
   prepareAgentCliInvocation,
   listInstalledAgentCliExecutableProviders,
@@ -1821,5 +1824,110 @@ suite('handoff independent acceptance gate', () => {
     assert.equal(result.completed, false);
     assert.equal(result.failure, 'outcome-unverified');
     assert.match(result.reason ?? '', /marker changed/);
+  });
+});
+
+suite('stdout-reported blocker fallback', () => {
+  const codexJsonStdout = [
+    JSON.stringify({ type: 'item.started', item: { id: 'item_4', type: 'command_execution', command: 'pwsh Get-Location' } }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'item_8', type: 'agent_message', text: 'STATUS: BLOCKED: Workspace commands are not returning output.' } }),
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1 } }),
+  ].join('\n');
+
+  test('extracts the blocker from Codex JSON agent messages, plain text, and result events', () => {
+    assert.equal(extractStdoutBlockedReason(codexJsonStdout), 'Workspace commands are not returning output.');
+    assert.equal(extractStdoutBlockedReason('Tried.\n`STATUS: BLOCKED: no shell`\n'), 'no shell');
+    assert.equal(
+      extractStdoutBlockedReason(JSON.stringify({ type: 'result', result: 'Done looking.\nSTATUS: BLOCKED: sandbox hang' })),
+      'sandbox hang',
+    );
+  });
+
+  test('ignores DONE, the prompt placeholder, and command output', () => {
+    assert.equal(extractStdoutBlockedReason('STATUS: DONE'), undefined);
+    assert.equal(extractStdoutBlockedReason('  STATUS: BLOCKED: <reason> — you cannot proceed'), undefined);
+    assert.equal(
+      extractStdoutBlockedReason(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', aggregated_output: 'STATUS: BLOCKED: from a file' },
+      })),
+      undefined,
+    );
+  });
+
+  test('records a stdout blocker on the card and returns a blocked terminal status', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('codex'),
+        cardId,
+        prompt: 'do the work',
+        cwd: 'E:\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      handoffOptions(async () => ({ ...successfulProcess(), stdout: codexJsonStdout })),
+    );
+
+    assert.equal(result.completed, true);
+    assert.deepEqual(result.terminalStatus, { kind: 'blocked', reason: 'Workspace commands are not returning output.' });
+    const activity = board.card(cardId).activity ?? '';
+    assert.match(activity, /blocker recorded by MWNN/);
+    assert.match(activity, /^STATUS: BLOCKED: Workspace commands are not returning output\.$/m);
+    assert.doesNotMatch(activity, /handoff failed/);
+  });
+
+  test('never accepts DONE from stdout alone', async () => {
+    const { state, cardId } = boardWithCard();
+    const board = fakeStore(state);
+    const result = await runAgentCliCardHandoff(
+      {
+        kind: 'implementation',
+        target: target('claude-code'),
+        cardId,
+        prompt: 'do the work',
+        cwd: 'E:\workspace',
+        store: board.store,
+        signal: new AbortController().signal,
+      },
+      handoffOptions(async () => ({ ...successfulProcess(), stdout: 'All good.\nSTATUS: DONE' })),
+    );
+
+    assert.equal(result.completed, false);
+    assert.equal(result.failure, 'missing-evidence');
+  });
+});
+
+suite('Codex sandbox mode setting', () => {
+  test('defaults to workspace-write and normalizes unknown values', () => {
+    assert.equal(readAgentCliCodexSandboxMode(undefined), 'workspace-write');
+    assert.equal(readAgentCliCodexSandboxMode('read-only'), 'workspace-write');
+    assert.equal(readAgentCliCodexSandboxMode('danger-full-access'), 'danger-full-access');
+  });
+
+  test('applies the configured mode to Codex invocations only', () => {
+    const restore = setAgentCliCodexSandboxModeSource(() => 'danger-full-access');
+    try {
+      assert.deepEqual(
+        buildAgentCliInvocation(target('codex'), 'Prompt', 'E:\workspace').args,
+        ['exec', '--sandbox', 'danger-full-access', '-'],
+      );
+      assert.deepEqual(
+        buildAgentCliInvocation(target('codex'), 'Prompt', 'E:\workspace', undefined, undefined, true).args,
+        ['exec', '--json', '--sandbox', 'danger-full-access', '-'],
+      );
+      assert.deepEqual(
+        buildAgentCliInvocation(target('claude-code'), 'Prompt', 'E:\workspace').args,
+        ['-p', '--permission-mode', 'bypassPermissions', '--output-format', 'text'],
+      );
+    } finally {
+      restore();
+    }
+    assert.deepEqual(
+      buildAgentCliInvocation(target('codex'), 'Prompt', 'E:\workspace').args,
+      ['exec', '--sandbox', 'workspace-write', '-'],
+    );
   });
 });

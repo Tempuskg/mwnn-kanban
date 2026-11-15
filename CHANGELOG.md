@@ -5,6 +5,12 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `mwnn-kanban.agentCliCodexSandbox` chooses the `--sandbox` mode for OpenAI Codex CLI dispatches: `workspace-write` (default) or `danger-full-access` for machines where the Codex sandbox stops shell commands from running.
+
+### Fixed
+- When an implementation agent cannot write to the card file but ends its final reply with `STATUS: BLOCKED: <reason>`, the AI loop records that blocker on the card instead of reporting a generic missing-status failure. Only agent messages are read (never command output); a DONE reported only in the reply is still not accepted. The hand-off prompt tells agents to use this fallback.
+
 ## [1.0.15] - 2026-11-13
 
 ### Fixed

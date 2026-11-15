@@ -55,9 +55,11 @@ import {
   AGENT_CLI_LABELS,
   AGENT_CLI_PROVIDER_IDS,
   isAgentCliProviderId,
+  readAgentCliCodexSandboxMode,
   resolveAgentCliTarget,
   resolveAllAgentCliTargets,
   runAgentCliCardHandoff,
+  setAgentCliCodexSandboxModeSource,
   type AgentCliHandoffKind,
   type AgentCliPathOverrides,
   type AgentCliProcessObserver,
@@ -489,6 +491,14 @@ function proLicenseStatus(): { readonly licensed: boolean } {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  // Read per launch so a changed sandbox mode applies to the next dispatch.
+  const restoreCodexSandboxSource = setAgentCliCodexSandboxModeSource(() =>
+    readAgentCliCodexSandboxMode(
+      vscode.workspace
+        .getConfiguration('mwnn-kanban', vscode.workspace.workspaceFolders?.[0]?.uri)
+        .get<unknown>('agentCliCodexSandbox', 'workspace-write'),
+    ));
+  context.subscriptions.push({ dispose: restoreCodexSandboxSource });
   context.subscriptions.push(...initializeProLicenseCommands(context, {
     registerCommand: (command, callback) =>
       vscode.commands.registerCommand(command, callback),
@@ -2403,6 +2413,7 @@ async function pickRunWithAiProvider(
     targets,
     readAllowedAgentCliProviders(),
     await canUseUsageOrchestrator(getImplicitWorkspaceFolder()),
+    vscode.env.appName,
   );
   if (choices.length === 0) {
     void vscode.window.showWarningMessage(

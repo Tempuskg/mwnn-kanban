@@ -236,6 +236,48 @@ function providerSpec(provider: AgentCliProviderId): AgentCliProviderSpec {
 }
 
 /**
+ * Codex sandbox modes MWNN may launch with. `workspace-write` is the default;
+ * `danger-full-access` exists for hosts (notably Windows) where the Codex
+ * sandbox makes shell commands hang or fail. `read-only` is deliberately not
+ * offered: a hand-off must be able to write the card file.
+ */
+export const AGENT_CLI_CODEX_SANDBOX_MODES = ['workspace-write', 'danger-full-access'] as const;
+export type AgentCliCodexSandboxMode = (typeof AGENT_CLI_CODEX_SANDBOX_MODES)[number];
+export const AGENT_CLI_CODEX_SANDBOX_SETTING = 'mwnn-kanban.agentCliCodexSandbox';
+
+export function readAgentCliCodexSandboxMode(value: unknown): AgentCliCodexSandboxMode {
+  return (AGENT_CLI_CODEX_SANDBOX_MODES as readonly unknown[]).includes(value)
+    ? value as AgentCliCodexSandboxMode
+    : 'workspace-write';
+}
+
+let codexSandboxModeSource: () => AgentCliCodexSandboxMode = () => 'workspace-write';
+
+/**
+ * Register where the Codex sandbox mode is read from. The extension host binds
+ * this to `mwnn-kanban.agentCliCodexSandbox` so every launch path (Run with AI,
+ * the board loop, the orchestrator, fallbacks) picks up the current value
+ * without threading it through each caller. Returns a restore function.
+ */
+export function setAgentCliCodexSandboxModeSource(
+  source: () => AgentCliCodexSandboxMode,
+): () => void {
+  const previous = codexSandboxModeSource;
+  codexSandboxModeSource = source;
+  return () => {
+    codexSandboxModeSource = previous;
+  };
+}
+
+function currentCodexSandboxMode(): AgentCliCodexSandboxMode {
+  try {
+    return readAgentCliCodexSandboxMode(codexSandboxModeSource());
+  } catch {
+    return 'workspace-write';
+  }
+}
+
+/**
  * The model flag each provider accepts, or undefined for a provider that takes
  * no model selection. Exported as data so callers (and tests) can reason about
  * model support without reaching into the spawn logic. `cursor-other` shares
@@ -482,6 +524,12 @@ function providerArgs(
 ): string[] {
   const spec = providerSpec(provider);
   const args = [...(modelDiscovery ? spec.modelDiscoveryArgs ?? spec.args : spec.args)];
+  if (agentCliExecutableProvider(provider) === 'codex') {
+    const sandboxIndex = args.indexOf('--sandbox');
+    if (sandboxIndex >= 0 && sandboxIndex + 1 < args.length) {
+      args[sandboxIndex + 1] = currentCodexSandboxMode();
+    }
+  }
   const clamp = (index: number | undefined): number =>
     Math.min(Math.max(index ?? args.length, 0), args.length);
 
@@ -1873,7 +1921,24 @@ export async function runAgentCliCardHandoff(
     }));
   }
 
-  const evidence = validateCompletionEvidence(handoff.kind, after, activityBaseline);
+  let evidence = validateCompletionEvidence(handoff.kind, after, activityBaseline);
+  if (!evidence.valid && handoff.kind === 'implementation') {
+    // The agent may have been unable to write the card at all (for example a
+    // CLI sandbox that hangs every shell command) yet still reported a blocker
+    // in its final reply. Record only that blocker on the agent's behalf; a
+    // DONE in stdout is never accepted, because nothing on disk backs it.
+    const reportedBlocker = extractStdoutBlockedReason(processResult.stdout);
+    if (reportedBlocker !== undefined) {
+      await handoff.store.appendActivity(
+        handoff.cardId,
+        formatStdoutBlockedEntry(handoff.target.label, handoff.kind, reportedBlocker, now()),
+      );
+      const recorded = findCard(await handoff.store.reload(), handoff.cardId);
+      if (recorded) {
+        evidence = validateCompletionEvidence(handoff.kind, recorded, activityBaseline);
+      }
+    }
+  }
   if (!evidence.valid) {
     const reason = `${handoff.target.label} exited successfully, but ${evidence.reason}`;
     await handoff.store.appendActivity(
@@ -2190,6 +2255,86 @@ function validateCompletionEvidence(
     };
   }
   return { valid: true, terminalStatus: terminal.status };
+}
+
+/**
+ * The last `STATUS: BLOCKED: <reason>` line in a CLI's final reply, or
+ * undefined. Only agent-authored text is searched: plain-text stdout as-is,
+ * and for JSON event streams only assistant/agent messages and final results
+ * (Codex `item.completed` agent messages, Claude Code / Cursor `assistant` and
+ * `result` events) - never tool or command output, which could echo arbitrary
+ * file contents. The prompt's own `<reason>` placeholder is rejected so an
+ * echoed instruction can never become a blocker.
+ */
+export function extractStdoutBlockedReason(stdout: string): string | undefined {
+  const texts: string[] = [];
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith('{')) {
+      texts.push(rawLine);
+      continue;
+    }
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      texts.push(rawLine);
+      continue;
+    }
+    texts.push(...agentTextFromJsonEvent(event));
+  }
+  let reason: string | undefined;
+  for (const text of texts) {
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.replace(/^[\s>*`-]+/, '').replace(/[\s*`]+$/, '');
+      const match = /^STATUS:\s*BLOCKED:\s*(.+)$/i.exec(line);
+      const candidate = match?.[1]?.trim();
+      if (candidate && !/<reason>/i.test(candidate)) {
+        reason = candidate;
+      }
+    }
+  }
+  return reason;
+}
+
+function agentTextFromJsonEvent(event: unknown): string[] {
+  if (typeof event !== 'object' || event === null) {
+    return [];
+  }
+  const record = event as Record<string, unknown>;
+  const item = record.item as Record<string, unknown> | undefined;
+  if (record.type === 'item.completed' && item?.type === 'agent_message' && typeof item.text === 'string') {
+    return [item.text];
+  }
+  if (record.type === 'result' && typeof record.result === 'string') {
+    return [record.result];
+  }
+  if (record.type === 'assistant') {
+    const message = record.message as Record<string, unknown> | undefined;
+    const content = message?.content;
+    if (Array.isArray(content)) {
+      return content.flatMap((part) =>
+        typeof part === 'object' && part !== null
+          && (part as Record<string, unknown>).type === 'text'
+          && typeof (part as Record<string, unknown>).text === 'string'
+          ? [(part as Record<string, unknown>).text as string]
+          : []);
+    }
+  }
+  return [];
+}
+
+export function formatStdoutBlockedEntry(
+  label: string,
+  kind: AgentCliHandoffKind,
+  reason: string,
+  timestamp: Date = new Date(),
+): string {
+  return [
+    `### ${timestamp.toISOString()} - ${label} ${kind} blocker recorded by MWNN`,
+    `${label} exited without appending a terminal status to this card, but its final reply reported a blocker. MWNN recorded it here from the CLI output.`,
+    `STATUS: BLOCKED: ${reason.replace(/\s+/g, ' ')}`,
+  ].join('\n');
 }
 
 export type TerminalCardStatus =

@@ -559,6 +559,20 @@
           "markdownDescription": "Your acknowledgement that no enabled agent CLI can incur an extra usage charge (for example, every account is on a plan with overage or pay-as-you-go usage turned off). Checked by default and never re-prompted. Unchecking it stops all AI dispatch — Run Card with AI, AI board loop, Portfolio AI loop, fallback, and model escalation — until it is checked again. The extension does not inspect provider accounts or billing; this is your attestation.",
           "scope": "application"
         },
+        "mwnn-kanban.agentCliCodexSandbox": {
+          "type": "string",
+          "enum": [
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "enumDescriptions": [
+            "Codex runs in its workspace-write sandbox: it can edit files in the workspace but is otherwise restricted.",
+            "Codex runs without its sandbox. Use only when the Codex sandbox makes shell commands hang or fail (for example on some Windows hosts); Codex can then run any command and write anywhere your account can."
+          ],
+          "default": "workspace-write",
+          "markdownDescription": "The `--sandbox` mode MWNN passes to OpenAI Codex CLI for Run Card with AI, the AI board loop, Portfolio AI loop, and fallback dispatches. Keep `workspace-write` unless the Codex sandbox prevents commands from running on this machine; `danger-full-access` removes Codex's sandbox entirely.",
+          "scope": "machine-overridable"
+        },
         "mwnn-kanban.agentCliModels": {
           "type": "object",
           "default": {},
