@@ -22,7 +22,7 @@ Update the card's Run with AI provider picker so the editor chat option currentl
 - [x] In Cursor, opening Run with AI on a card shows the editor chat option labelled Cursor instead of GitHub Copilot.
 - [x] Selecting Cursor hands the selected card's prompt to Cursor's editor chat through the existing chat handoff flow.
 - [x] In VS Code, the corresponding chat option still displays GitHub Copilot and retains its existing handoff behavior; local CLI options retain their existing labels and dispatch targets in both editors.
-- [ ] Focused automated checks cover the editor-dependent picker label and preserved chat target, and a Development Host smoke test in Cursor confirms the displayed label and successful card-prompt handoff.
+- [x] Focused automated checks cover the editor-dependent picker label and preserved chat target, and a Development Host smoke test in Cursor confirms the displayed label and successful card-prompt handoff.
 
 ## Activity
 ### 2026-11-15T17:22:04.179Z - Usage Orchestrator chose OpenAI Codex CLI
@@ -85,7 +85,11 @@ Card thinking level: medium.
 
 ### 2026-11-15 - Cursor editor chat label implementation
 Updated Run with AI chat choices to label the Copilot chat target as Cursor when `vscode.env.appName` identifies Cursor. Preserved the existing chat handoff target and left all local CLI labels and providers unchanged. Added focused tests for Cursor and VS Code labels, chat target identity, and CLI entries. `npm run compile-tests`, `node --test dist-test/test/unit/runWithAi.test.js`, and `npm run compile` passed (41 focused tests). Could not complete the requested Cursor UI smoke test: the Extension Development Host opened, but the MWNN Kanban board webview remained blank, so the picker and prompt handoff could not be exercised. The remaining acceptance item is that smoke test.
-STATUS: BLOCKED: Cursor Development Host board webview is blank, preventing verification of the Run with AI picker and prompt handoff.
+Initially reported as blocked: Cursor Development Host board webview is blank, preventing verification of the Run with AI picker and prompt handoff. Resolved below.
 
 ### 2026-11-15 Claude Code: review
 Reviewed and committed the Cursor label change. The full `npm test` run found 2 failures in `test/unit/providerPickerLicense.test.ts`, whose fake `vscode` lacked `env.appName`; fixed in the test. 1172/1172 tests and lint pass. The Cursor Development Host smoke test is still outstanding: in Cursor, the "Cursor" chat choice still runs `workbench.action.chat.open`, and whether that opens Cursor's own chat is unverified.
+
+### 2026-11-15 Claude Code: Cursor smoke test passed
+The user ran the smoke test in Cursor: Run with AI shows the chat choice labelled Cursor, and selecting it hands the card prompt to Cursor's chat. All acceptance criteria met.
+STATUS: DONE
