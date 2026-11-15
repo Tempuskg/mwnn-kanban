@@ -1,7 +1,7 @@
 ---
 id: card-mwdvy060-1
 title: "Running ai loop and it didn't move this card to done column after marking it done e:\\source\\workspaces\\dogsden\\dogsden.ca\\dogsden.admin.ui\\.mwnn\\cards\\card-mwdtzd9t-4.md"
-column: col-mqwk2njn-3
+column: col-mqxta6ho-4
 position: 1000
 assignee: { kind: ai }
 preferredModel.copilot: claude-sonnet-5.5
@@ -12,7 +12,7 @@ thinkingLevel.copilot: high
 thinkingLevel.codex: high
 thinkingLevel.claude-code: high
 createdAt: 1794508359768
-updatedAt: 1794604555210
+updatedAt: 1794763221367
 ---
 
 ## Description
