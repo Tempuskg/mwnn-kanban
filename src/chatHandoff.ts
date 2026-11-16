@@ -184,6 +184,19 @@ export const CHAT_PROVIDER_LABELS: Record<ChatProviderId, string> = {
   'claude-code': 'Claude Code',
 };
 
+/** True when the host editor's `vscode.env.appName` identifies Cursor. */
+export function isCursorEditor(editorAppName: string): boolean {
+  return /\bcursor\b/i.test(editorAppName);
+}
+
+/**
+ * Picker label for a chat target. Inside Cursor the Copilot target opens the
+ * editor's own chat, so it is labelled Cursor; the handoff target is unchanged.
+ */
+export function chatProviderPickerLabel(provider: ChatProviderId, editorAppName: string): string {
+  return isCursorEditor(editorAppName) && provider === 'copilot' ? 'Cursor' : CHAT_PROVIDER_LABELS[provider];
+}
+
 /**
  * Serializes hand-offs per card. The lock is held through prompt delivery and
  * the activity write, so a double activation cannot create two conversations

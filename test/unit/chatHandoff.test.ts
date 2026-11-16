@@ -1,7 +1,9 @@
 import * as assert from 'node:assert/strict';
 import { suite, test } from 'node:test';
 import {
+  CHAT_PROVIDER_LABELS,
   ChatHandoffAbandonedError,
+  chatProviderPickerLabel,
   describeChatHandoffTarget,
   createChatHandoffInFlight,
   createChatHandoffQueue,
@@ -742,5 +744,18 @@ suite('restartable per-card hand-off lock', () => {
     release();
     await Promise.all([a, b]);
     assert.deepEqual(order, ['a', 'b']);
+  });
+});
+
+suite('chat provider picker labels', () => {
+  test('labels the Copilot chat target Cursor inside Cursor', () => {
+    assert.equal(chatProviderPickerLabel('copilot', 'Cursor'), 'Cursor');
+    assert.equal(chatProviderPickerLabel('claude-code', 'Cursor'), CHAT_PROVIDER_LABELS['claude-code']);
+    assert.equal(chatProviderPickerLabel('codex', 'Cursor'), CHAT_PROVIDER_LABELS.codex);
+  });
+
+  test('keeps the GitHub Copilot label in VS Code', () => {
+    assert.equal(chatProviderPickerLabel('copilot', 'Visual Studio Code'), CHAT_PROVIDER_LABELS.copilot);
+    assert.equal(chatProviderPickerLabel('copilot', 'Visual Studio Code - Insiders'), CHAT_PROVIDER_LABELS.copilot);
   });
 });

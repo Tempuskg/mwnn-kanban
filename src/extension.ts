@@ -118,6 +118,7 @@ import {
 import { cardPreferredModelFor, describeBlockedCardRelocation } from './utils';
 import {
   CHAT_PROVIDER_LABELS,
+  chatProviderPickerLabel,
   activateChatHandoffProvider,
   ChatHandoffAbandonedError,
   type ChatHandoffLease,
@@ -2390,7 +2391,7 @@ async function pickInterviewChatProvider(): Promise<InterviewProviderPick> {
   }
   const choice = await vscode.window.showQuickPick(
     targets.map((target) => ({
-      label: CHAT_PROVIDER_LABELS[target.provider],
+      label: chatProviderPickerLabel(target.provider, vscode.env.appName),
       detail: describeChatHandoffTarget(target),
       target,
     })),

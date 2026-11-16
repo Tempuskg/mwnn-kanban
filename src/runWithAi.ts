@@ -54,8 +54,9 @@ import {
   isVerifyColumn,
 } from './boardLoop';
 import {
-  CHAT_PROVIDER_LABELS,
+  chatProviderPickerLabel,
   describeChatHandoffTarget,
+  isCursorEditor,
   type ChatHandoffLease,
   type ChatHandoffTarget,
 } from './chatHandoff';
@@ -91,12 +92,10 @@ export function listRunWithAiProviderChoices(
   orchestratorAvailable = false,
   editorAppName = 'Visual Studio Code',
 ): readonly RunWithAiProviderChoice[] {
-  const isCursor = /\bcursor\b/i.test(editorAppName);
+  const isCursor = isCursorEditor(editorAppName);
   const chatChoices = chatTargets.map((target) => ({
     kind: 'chat' as const,
-    label: isCursor && target.provider === 'copilot'
-      ? 'Cursor'
-      : CHAT_PROVIDER_LABELS[target.provider],
+    label: chatProviderPickerLabel(target.provider, editorAppName),
     description: isCursor ? 'Editor chat' : 'VS Code chat extension',
     detail: describeChatHandoffTarget(target),
     target,
