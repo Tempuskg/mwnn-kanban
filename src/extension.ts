@@ -1094,7 +1094,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     openBoard().postState();
     void vscode.window.showInformationMessage(
-      `Handed the plan to ${CHAT_PROVIDER_LABELS[target.provider]} to import into ${targetColumn.title}. New cards appear as the agent writes them.`,
+      `Handed the plan to ${editorChatLabel(target.provider)} to import into ${targetColumn.title}. New cards appear as the agent writes them.`,
     );
   };
 
@@ -2366,7 +2366,7 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
 
   const choice = await vscode.window.showQuickPick(
     targets.map((target) => ({
-      label: CHAT_PROVIDER_LABELS[target.provider],
+      label: editorChatLabel(target.provider),
       detail: describeChatHandoffTarget(target),
       target,
     })),
@@ -2523,7 +2523,7 @@ async function deliverPromptToChat(
   subject: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const providerLabel = CHAT_PROVIDER_LABELS[target.provider];
+  const providerLabel = editorChatLabel(target.provider);
   const showInformationMessage = (message: string): void => {
     if (!signal?.aborted) {
       void vscode.window.showInformationMessage(message);
