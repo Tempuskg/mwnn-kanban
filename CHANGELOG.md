@@ -5,6 +5,11 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.18] - 2026-11-16
+
+### Changed
+- Inside Cursor, chat handoffs label the editor chat as "Cursor" instead of "GitHub Copilot" in the Start Interview and other chat pickers, Activity notes, plan-import toasts, and delivery messages. Run with AI already used that label in 1.0.17. The handoff target is unchanged; VS Code keeps the GitHub Copilot label.
+
 ## [1.0.17] - 2026-11-15
 
 ### Changed
