@@ -825,7 +825,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       // Record the dispatch ourselves: the hand-off is fire-and-forget, so we
       // cannot rely on the external agent to leave any trace in the activity log.
-      await store.appendActivity(selection.card.id, formatHandoffEntry(CHAT_PROVIDER_LABELS[choice.target.provider]));
+      await store.appendActivity(selection.card.id, formatHandoffEntry(editorChatLabel(choice.target.provider)));
       BoardPanel.postStateIfOpen();
       return true;
     });
@@ -1021,7 +1021,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return false;
       }
 
-      await store.appendActivity(card.id, formatDefinitionHandoffEntry(CHAT_PROVIDER_LABELS[choice.target.provider]));
+      await store.appendActivity(card.id, formatDefinitionHandoffEntry(editorChatLabel(choice.target.provider)));
       BoardPanel.postStateIfOpen();
       return true;
     });
@@ -1189,7 +1189,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     let gateways: LoopGateways;
     if (selectedTarget.kind === 'chat') {
       const chatTarget = selectedTarget.target;
-      const providerLabel = CHAT_PROVIDER_LABELS[chatTarget.provider];
+      const providerLabel = editorChatLabel(chatTarget.provider);
       /**
        * Chat handoffs are counted and capped like CLI ones, but they settle
        * with no model: the chat extension picks the model inside its own UI,
@@ -2375,6 +2375,11 @@ async function pickChatProvider(): Promise<ChatHandoffTarget | undefined> {
   return choice?.target;
 }
 
+/** A chat target's label as this editor presents it: the Copilot target is "Cursor" inside Cursor. */
+function editorChatLabel(provider: ChatHandoffTarget['provider']): string {
+  return chatProviderPickerLabel(provider, vscode.env.appName);
+}
+
 /**
  * Chat picker for AI-guided interviews. Only interactive chat extensions are
  * offered, never a headless CLI, because the person must be able to reply.
@@ -2391,13 +2396,13 @@ async function pickInterviewChatProvider(): Promise<InterviewProviderPick> {
   }
   const choice = await vscode.window.showQuickPick(
     targets.map((target) => ({
-      label: chatProviderPickerLabel(target.provider, vscode.env.appName),
+      label: editorChatLabel(target.provider),
       detail: describeChatHandoffTarget(target),
       target,
     })),
     { placeHolder: 'Run this interview in which AI chat?' },
   );
-  return choice ? { kind: 'picked', target: choice.target } : { kind: 'cancelled' };
+  return choice ? { kind: 'picked', target: choice.target, label: choice.label } : { kind: 'cancelled' };
 }
 
 /**

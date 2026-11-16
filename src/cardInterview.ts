@@ -14,7 +14,8 @@ import type { BoardState } from './types';
 
 /** Result of asking the user which interactive chat should host the interview. */
 export type InterviewProviderPick =
-  | { readonly kind: 'picked'; readonly target: ChatHandoffTarget }
+  /** `label` is how the editor presents the target (e.g. Cursor); defaults to the provider label. */
+  | { readonly kind: 'picked'; readonly target: ChatHandoffTarget; readonly label?: string }
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'unavailable'; readonly message: string };
 
@@ -118,7 +119,7 @@ export async function startCardInterview(cardId: string, deps: CardInterviewDeps
 
     await deps.appendActivity(
       cardId,
-      formatInterviewStartEntry(CHAT_PROVIDER_LABELS[pick.target.provider], deps.now?.() ?? new Date()),
+      formatInterviewStartEntry(pick.label ?? CHAT_PROVIDER_LABELS[pick.target.provider], deps.now?.() ?? new Date()),
     );
     deps.refreshBoard();
     return 'started';

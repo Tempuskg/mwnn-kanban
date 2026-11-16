@@ -245,6 +245,15 @@ suite('startCardInterview dispatch', () => {
     assert.equal(h.getState().columns[1]!.cards[0]!.id, cardId);
   });
 
+  test('records the picked editor label, such as Cursor, in the start note', async () => {
+    const { state, cardId } = interviewBoard();
+    const h = harness(state, { pick: async () => ({ kind: 'picked', target: CLAUDE, label: 'Cursor' }) });
+
+    assert.equal(await startCardInterview(cardId, h.deps), 'started');
+
+    assert.match(findCard(h.getState(), cardId).activity ?? '', /AI-guided interview started in Cursor/);
+  });
+
   test('ineligible cards never open the picker or a chat', async () => {
     for (const options of [{ assignee: 'none' as const }, { assignee: 'ai' as const }, { defined: false }]) {
       const { state, cardId } = interviewBoard(options);
