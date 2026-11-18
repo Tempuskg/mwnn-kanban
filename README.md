@@ -26,6 +26,10 @@ An in-editor Kanban board for VS Code built around the [Methodology With No Name
 - Drag-and-drop card movement plus direct column add, rename, delete, limit, and reorder flows from the board UI.
 - Pro unlocks inside the same extension. A Pro-only `Portfolio` button in the MWNN Kanban sidebar opens the Pro Portfolio dashboard. It is shown only while a Pro license or live trial is active, appears or disappears as soon as a license key is entered or cleared, and is absent entirely otherwise.
 
+![MWNN Kanban AI board loop mid-run: the sidebar's AI Loop controls, an AI card in In Progress at WIP 1/1 with a running OpenAI Codex CLI badge, and the live "MWNN AI loop: exec" progress notification](docs/readme/board-ai-loop.png)
+
+![MWNN Kanban card detail for a completed AI card: title, column, AI assignee, per-CLI preferred model and thinking level, plus the card's Description, checked Acceptance criteria, and Usage Orchestrator Activity entries](docs/readme/card-detail-ai.png)
+
 ## Privacy and network access
 
 MWNN Kanban never sends board, card, tracked-time, or local usage records to MWNN. Pro license validation contacts Polar and sends the license key; the result is cached locally for up to 24 hours. When you open Pro's AI Provider Usage report, the extension can also send your VS Code GitHub authentication token to GitHub's internal, undocumented Copilot endpoint to retrieve your Free premium-request balance and reset time. This user-triggered request may prompt you to sign in, includes no workspace or board data, and may stop working if GitHub changes the endpoint. The report does not send the returned quota or account information to MWNN. The Usage Orchestrator reads usage from locally installed agent CLIs. AI handoffs run through the chat extension or local agent CLI you choose and are subject to that provider's privacy terms.
