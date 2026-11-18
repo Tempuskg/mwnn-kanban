@@ -5,6 +5,12 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.19] - 2026-11-17
+
+### Changed
+- Refreshed the marketplace listing: the display name is now "MWNN Kanban: Markdown Board for AI Agents", with an updated description, keywords, and categories. No extension behavior changed.
+- The README opens with a summary, a board screenshot, and a short "Why MWNN Kanban" section, and notes that Pro unlocks inside the same extension.
+
 ## [1.0.18] - 2026-11-16
 
 ### Changed
