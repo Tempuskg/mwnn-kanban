@@ -1,8 +1,8 @@
 {
   "name": "mwnn-kanban",
-  "displayName": "MWNN Kanban",
-  "description": "An in-editor MWNN Kanban board. No usage, board, or time data is transmitted.",
-  "version": "1.0.18",
+  "displayName": "MWNN Kanban: Markdown Board for AI Agents",
+  "description": "Kanban board in VS Code stored as one Markdown file per card in your repo. Assign cards to Copilot, Codex, Claude Code, or Cursor agents and run an AI board loop. Board and card records are not sent to MWNN.",
+  "version": "1.0.19",
   "icon": "media/icon.png",
   "publisher": "darrenjmcleod",
   "license": "MIT",
@@ -22,14 +22,23 @@
     "vscode": "^1.93.0"
   },
   "categories": [
+    "AI",
     "Other"
   ],
   "keywords": [
     "kanban",
-    "board",
+    "kanban board",
+    "markdown",
     "tasks",
     "todo",
-    "productivity"
+    "project management",
+    "ai agents",
+    "copilot",
+    "codex",
+    "claude code",
+    "cursor",
+    "wip limit",
+    "git"
   ],
   "activationEvents": [
     "onStartupFinished",

@@ -1,7 +1,17 @@
 # MWNN Kanban
 
-[![VS Marketplace v1.0.18](https://img.shields.io/badge/VS%20Marketplace-v1.0.18-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
+[![VS Marketplace v1.0.19](https://img.shields.io/badge/VS%20Marketplace-v1.0.19-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
 [![Open VSX](https://img.shields.io/open-vsx/v/darrenjmcleod/mwnn-kanban?label=Open%20VSX)](https://open-vsx.org/extension/darrenjmcleod/mwnn-kanban)
+
+**A Kanban board that lives in your repo as Markdown files, built for work shared between you and your AI agents.**
+
+![MWNN Kanban board in VS Code showing Backlog, Ready, In Progress, Verify, and Done columns with Human- and AI-assigned cards, a blocked AI card in progress, and the Ready column's Defined 0/3 reverse-WIP indicator](docs/readme/board-overview.png)
+
+### Why MWNN Kanban
+
+- **Your board is plain files.** One Markdown file per card in `.mwnn/`, tracked in git, with live reload when those files change.
+- **Humans and AI share the work.** Assign cards to a human or an AI, hand AI cards off with `Run Card with AI`, or run a cancellable AI board loop across the board.
+- **Flow stays honest.** WIP limits on flow columns and a Ready reverse-WIP minimum keep work moving and the next cards defined.
 
 An in-editor Kanban board for VS Code built around the [Methodology With No Name (MWNN)](https://www.darrenmcleod.com/2025/07/kanban-and-methodology-with-no-name.html). The board lives in workspace files, supports human and AI assignees, and keeps methodology signals like WIP and reverse-WIP visible directly in the editor.
 
@@ -14,7 +24,7 @@ An in-editor Kanban board for VS Code built around the [Methodology With No Name
 - A cancellable AI board loop that runs definition and implementation handoffs through a supported VS Code chat extension or a locally installed Copilot, Codex, Claude Code, or Cursor Agent CLI.
 - AI definition fill for undefined cards: dragging a card without a Description into the Ready column offers to have AI write its Description and Acceptance criteria, and the card detail panel exposes a `Fill in with AI` button whenever both are empty. Definition fills can target a VS Code chat extension or a local agent CLI.
 - Drag-and-drop card movement plus direct column add, rename, delete, limit, and reorder flows from the board UI.
-- A Pro-only `Portfolio` button in the MWNN Kanban sidebar that opens the Pro Portfolio dashboard. It is shown only while a Pro license or live trial is active, appears or disappears as soon as a license key is entered or cleared, and is absent entirely otherwise.
+- Pro unlocks inside the same extension. A Pro-only `Portfolio` button in the MWNN Kanban sidebar opens the Pro Portfolio dashboard. It is shown only while a Pro license or live trial is active, appears or disappears as soon as a license key is entered or cleared, and is absent entirely otherwise.
 
 ## Privacy and network access
 
