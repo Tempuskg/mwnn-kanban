@@ -1,6 +1,6 @@
 # MWNN Kanban
 
-[![VS Marketplace v1.0.19](https://img.shields.io/badge/VS%20Marketplace-v1.0.19-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
+[![VS Marketplace v1.0.20](https://img.shields.io/badge/VS%20Marketplace-v1.0.20-007ACC)](https://marketplace.visualstudio.com/items?itemName=darrenjmcleod.mwnn-kanban)
 [![Open VSX](https://img.shields.io/open-vsx/v/darrenjmcleod/mwnn-kanban?label=Open%20VSX)](https://open-vsx.org/extension/darrenjmcleod/mwnn-kanban)
 
 **A Kanban board that lives in your repo as Markdown files, built for work shared between you and your AI agents.**
