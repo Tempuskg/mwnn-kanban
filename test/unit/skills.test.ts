@@ -335,6 +335,18 @@ suite('bundled skill scheduling guidance', () => {
     assert.match(body, /Do not append after the maximum for Done moves/);
   });
 
+  test('card authoring teaches human-gated criteria and timestamped Activity headings', () => {
+    const body = authoring.body;
+    assert.match(body, /### Criteria that need a human gate/);
+    assert.match(body, /pushing, deploying, publishing, or making paid calls/);
+    assert.match(body, /\*\*Split it out \(preferred\)\.\*\*/);
+    assert.match(body, /`dependsOn: \[<implementation card id>\]`, assigned `\{ kind: human \}`/);
+    assert.match(body, /\*\*Keep it, and plan the stop\.\*\*/);
+    assert.match(body, /`STATUS: BLOCKED: awaiting push\s+approval`/);
+    assert.match(body, /`### <ISO 8601 UTC timestamp> - <summary>`/);
+    assert.match(body, /do not write date-only headings/);
+  });
+
   test('plan import schedule rules stay consistent with card authoring', () => {
     const body = planImport.body;
     assert.match(body, /only explicit start\/not-before schedules/);

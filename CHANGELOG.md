@@ -5,6 +5,9 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The bundled MWNN Card Authoring skill now explains how to write acceptance criteria that need a person's approval, such as a push, deploy, publish or paid call. Either split them into a follow-up card that depends on the implementation card and is assigned to a person, or name the gate and the planned `STATUS: BLOCKED` stop in the description. It also asks for full ISO 8601 UTC timestamps in `## Activity` headings, matching the AI loop's own entries.
+
 ## [1.0.19] - 2026-11-17
 
 ### Changed

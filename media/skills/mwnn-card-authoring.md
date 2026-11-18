@@ -206,7 +206,33 @@ Always include these three level-2 headings in this order, even when empty:
   "defined" (for the Ready column's reverse-WIP) only when this is non-empty.
 - `## Acceptance criteria` — a markdown checklist (`- [ ] …`) of verifiable
   conditions, or empty.
-- `## Activity` — a dated log; leave empty for a freshly created card.
+- `## Activity` — a log of entries, each headed
+  `### <ISO 8601 UTC timestamp> - <summary>`, e.g.
+  `### 2026-11-18T12:45:40.027Z - Workflow pin applied locally`. Use the same
+  form as the AI loop's own entries so agent and loop entries sort and read
+  consistently; do not write date-only headings. Leave empty for a freshly
+  created card.
+
+### Criteria that need a human gate
+
+Some criteria can only be met after an action an agent may not take without
+the person's approval: pushing, deploying, publishing, or making paid calls.
+An unattended AI-loop dispatch cannot get that approval, so a card that mixes
+such a criterion with the implementation can only ever end `STATUS: BLOCKED`.
+When authoring a card, handle every gated criterion in one of two ways:
+
+- **Split it out (preferred).** Move the gated criteria to a follow-up card
+  with `dependsOn: [<implementation card id>]`, assigned `{ kind: human }`, or
+  dispatched to AI only once the approval exists. The implementation card then
+  lists only criteria the agent can verify on its own and can end
+  `STATUS: DONE`.
+- **Keep it, and plan the stop.** Name the gate in `## Description` and state
+  the expected stopping point, e.g. "Stops at `STATUS: BLOCKED: awaiting push
+  approval` once criteria 1–4 are verified." Reviewers then read the block as
+  planned progress rather than a failure.
+
+Never leave a gated criterion on an AI card without one of these, or the
+dispatch runs toward an outcome that was known before it started.
 
 ## Rules
 
