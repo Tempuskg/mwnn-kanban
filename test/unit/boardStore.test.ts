@@ -263,11 +263,19 @@ suite('board store', () => {
       '.mwnn/cards/card-broken.md': 'not a card document',
     });
 
-    await assert.rejects(
-      () => createBoardStore(createDeps({ fileSystem })),
-      /frontmatter/i,
-    );
+    // The board still loads (the unreadable card is left out and reported),
+    // but nothing is written back and mutations stay refused until it is fixed.
+    const reported: string[] = [];
+    const store = await createBoardStore({
+      ...createDeps({ fileSystem }),
+      onDidChangeUnreadableCards: (files) => reported.push(...files.map((file) => file.fileName)),
+    });
+    assert.deepEqual(reported, ['card-broken.md']);
+    assert.deepEqual(store.getState().columns.map((column) => column.cards.length), [0]);
     assert.equal(fileSystem.snapshot().get('.mwnn/columns.json'), serializedColumns);
+    await assert.rejects(() => store.addCard('col-ready', 'New'), /frontmatter/i);
+    assert.equal(fileSystem.snapshot().get('.mwnn/columns.json'), serializedColumns);
+    assert.equal(fileSystem.snapshot().get('.mwnn/cards/card-broken.md'), 'not a card document');
   });
 
   test('keeps a default board in memory without creating files until the first mutation', async () => {

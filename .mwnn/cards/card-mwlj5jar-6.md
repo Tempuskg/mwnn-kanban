@@ -1,11 +1,11 @@
 ---
 id: card-mwlj5jar-6
 title: Apply the proposed listing metadata to package.json and release to both registries
-column: col-mqwk2njn-3
-position: 1000
+column: col-mqwk2njn-4
+position: -125000
 assignee: { kind: ai }
 createdAt: 1794970605555
-updatedAt: 1794973082544
+updatedAt: 1794975254820
 dependsOn: [card-mwlj5jar-1]
 ---
 

@@ -115,7 +115,8 @@ import {
   withPreferredModelNote,
   type PlanImportSource,
 } from './aiCards';
-import { cardPreferredModelFor, describeBlockedCardRelocation } from './utils';
+import { boardsEqual, cardPreferredModelFor, describeBlockedCardRelocation } from './utils';
+import { BOARD_RESYNC_POLL_MS, createBoardReloadScheduler } from './boardReloadScheduler';
 import {
   CHAT_PROVIDER_LABELS,
   chatProviderPickerLabel,
@@ -559,6 +560,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       for (const relocation of relocations) {
         void vscode.window.showWarningMessage(describeBlockedCardRelocation(relocation));
       }
+    },
+    onDidChangeUnreadableCards: (files) => {
+      // A card file an external tool overwrote or truncated no longer freezes
+      // the board, but it is left out (or shown as last read) until fixed, and
+      // board edits are refused meanwhile, so name it instead of failing quietly.
+      const first = files[0];
+      if (first === undefined) {
+        return;
+      }
+      const names = files.map((file) => `${boardFolder}/cards/${file.fileName}`).join(', ');
+      void vscode.window.showWarningMessage(
+        `MWNN Kanban could not read ${files.length === 1 ? 'a card file' : `${files.length} card files`}: ${names} (${first.reason}). ` +
+          'Other cards still refresh; fix or restore the file to edit the board again.',
+      );
     },
   });
 
@@ -1981,42 +1996,45 @@ function registerBoardWatcher(
   const pattern = normalizedBoardFolder.length > 0 ? `${normalizedBoardFolder}/**` : '**';
   const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceRoot, pattern));
 
-  let reloadTimer: ReturnType<typeof setTimeout> | undefined;
-  let reloadInFlight = false;
+  // Watcher events always repost the board. Window focus, the board becoming
+  // visible and a light poll while it is open are a safety net for a watcher
+  // that shut down (e.g. "watched path got deleted") or missed an external
+  // rewrite; those repost only when the reload actually changed the board.
+  const scheduler = createBoardReloadScheduler({
+    reload: async () => {
+      const before = store.getState();
+      const after = await store.reload();
+      return !boardsEqual(before, after);
+    },
+    post: () => BoardPanel.postStateIfOpen(),
+    isActive: () => BoardPanel.status().open,
+    onError: (error) => console.error('MWNN Kanban board reload failed.', error),
+    pollMs: BOARD_RESYNC_POLL_MS,
+  });
+  const scheduleEventReload = (): void => scheduler.schedule('event');
 
-  const scheduleReload = (): void => {
-    if (reloadTimer !== undefined) {
-      clearTimeout(reloadTimer);
-    }
-
-    reloadTimer = setTimeout(() => {
-      reloadTimer = undefined;
-      if (reloadInFlight) {
-        scheduleReload();
-        return;
+  const subscriptions: vscode.Disposable[] = [
+    watcher,
+    watcher.onDidCreate(scheduleEventReload),
+    watcher.onDidChange(scheduleEventReload),
+    watcher.onDidDelete(scheduleEventReload),
+    vscode.window.onDidChangeWindowState((windowState) => {
+      if (windowState.focused) {
+        scheduler.schedule('resync');
       }
-
-      reloadInFlight = true;
-      void store
-        .reload()
-        .then(() => {
-          BoardPanel.postStateIfOpen();
-        })
-        .finally(() => {
-          reloadInFlight = false;
-        });
-    }, 75);
-  };
-
-  watcher.onDidCreate(scheduleReload);
-  watcher.onDidChange(scheduleReload);
-  watcher.onDidDelete(scheduleReload);
+    }),
+    BoardPanel.onDidChangeState(() => {
+      if (BoardPanel.status().open) {
+        scheduler.schedule('resync');
+      }
+    }),
+  ];
 
   return new vscode.Disposable(() => {
-    if (reloadTimer !== undefined) {
-      clearTimeout(reloadTimer);
+    scheduler.dispose();
+    for (const subscription of subscriptions) {
+      subscription.dispose();
     }
-    watcher.dispose();
   });
 }
 

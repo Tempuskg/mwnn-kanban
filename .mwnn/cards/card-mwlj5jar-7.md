@@ -1,11 +1,11 @@
 ---
 id: card-mwlj5jar-7
 title: Backfill GitHub Releases for 1.0.12 through 1.0.18
-column: col-mqwk2njn-3
-position: 1000
+column: col-mqwk2njn-4
+position: -126000
 assignee: { kind: ai }
 createdAt: 1794970605555
-updatedAt: 1794975288370
+updatedAt: 1794975588167
 dependsOn: [card-mwlj5jar-1]
 ---
 

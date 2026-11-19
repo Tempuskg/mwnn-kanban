@@ -101,6 +101,18 @@ export interface BoardStoreDeps extends BoardReaderDeps {
   readonly legacyMemento?: MementoLike;
   readonly onDidChange?: (change: BoardStoreChange) => void;
   readonly onDidRelocateBlockedCards?: (event: BlockedCardRelocationEvent) => void;
+  /**
+   * Card files a reload could not parse. Called whenever the set changes,
+   * including to empty once they are fixed, so the host can warn once per
+   * problem instead of on every reload.
+   */
+  readonly onDidChangeUnreadableCards?: (files: readonly UnreadableCardFile[]) => void;
+}
+
+/** A card file under `cards/` that a reload skipped because it did not parse. */
+export interface UnreadableCardFile {
+  readonly fileName: string;
+  readonly reason: string;
 }
 
 export interface BoardStore {
@@ -143,7 +155,11 @@ export interface BoardStore {
 }
 
 export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore> {
-  let state = await loadOrInitializeState(deps);
+  // Startup reads cards as leniently as reloads do: one card file that an
+  // external tool overwrote with a fragment must not stop the extension from
+  // activating (which only reopening VS Code after a fix could undo).
+  const initialUnreadable: UnreadableCardFile[] = [];
+  let state = await loadOrInitializeState(deps, initialUnreadable);
 
   function reportRelocations(
     relocations: readonly BlockedCardRelocation[],
@@ -168,14 +184,46 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     if (enforced.relocations.length === 0) {
       return;
     }
+    await writeBoardState(deps, enforced.state);
     state = enforced.state;
-    await writeBoardState(deps, state);
     reportRelocations(enforced.relocations, 'reload');
   }
 
-  await enforceAfterReload();
+  try {
+    await enforceAfterReload();
+  } catch (error) {
+    // Writes stay strict while a card file is unreadable; keep the board as
+    // read and let the reload after the file is fixed enforce placement.
+    if (initialUnreadable.length === 0) {
+      throw error;
+    }
+  }
   let published = cloneBoard(state);
 
+  // Starts as "no unreadable files" so a clean startup notifies nobody.
+  let unreadableSignature = '[]';
+  let lastReadDocuments: readonly CardDocument[] = [];
+
+  function reportUnreadable(files: readonly UnreadableCardFile[]): void {
+    const signature = JSON.stringify(files.map((file) => [file.fileName, file.reason]));
+    if (signature === unreadableSignature) {
+      return;
+    }
+    unreadableSignature = signature;
+    try {
+      deps.onDidChangeUnreadableCards?.(files);
+    } catch {
+      // Observers are outside the persistence contract and cannot break its queue.
+    }
+  }
+
+  reportUnreadable(initialUnreadable);
+
+  // Reloads read card files leniently: one card that does not parse (an
+  // external tool truncated it, overwrote it with a fragment, or is mid-write)
+  // keeps its last good version, or is left out if it never parsed, instead of
+  // freezing the whole board at its previous state. Writes stay strict, so a
+  // mutation still refuses to run while such a file exists and never deletes it.
   async function refreshFromDisk(): Promise<void> {
     const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
     if (!(await deps.fileSystem.exists(columnsPath))) {
@@ -183,9 +231,17 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
     }
 
     try {
-      state = await readBoardState(deps);
+      const unreadable: UnreadableCardFile[] = [];
+      // Positions come from the last read so a kept card stays where it was.
+      const fallback = new Map(
+        buildCardDocuments(state, lastReadDocuments).map((document) => [document.card.id, document]),
+      );
+      const snapshot = await readBoardSnapshot(deps, { fallback, unreadable });
+      state = snapshot.state;
+      lastReadDocuments = snapshot.documents;
+      reportUnreadable(unreadable);
     } catch {
-      // Keep the last known good state if the files are mid-write or invalid.
+      // Keep the last known good state if columns.json is mid-write or invalid.
     }
   }
 
@@ -287,14 +343,17 @@ export async function createBoardStore(deps: BoardStoreDeps): Promise<BoardStore
   };
 }
 
-async function loadOrInitializeState(deps: BoardStoreDeps): Promise<BoardState> {
+async function loadOrInitializeState(
+  deps: BoardStoreDeps,
+  unreadable: UnreadableCardFile[],
+): Promise<BoardState> {
   const columnsPath = boardPath(deps.boardFolder, COLUMNS_FILE);
   if (await deps.fileSystem.exists(columnsPath)) {
-    // Existing file-backed boards are authoritative. A malformed card must
-    // surface as a load error, never trigger a fresh set of column ids that can
-    // orphan every pre-existing card from its original column.
-    const loaded = await readBoardSnapshot(deps);
-    if (loaded.recoveredColumnIds) {
+    // Existing file-backed boards are authoritative: columns.json is never
+    // replaced by a fresh set of column ids. A card that does not parse is left
+    // out and reported, and nothing is written back while one exists.
+    const loaded = await readBoardSnapshot(deps, { fallback: new Map(), unreadable });
+    if (loaded.recoveredColumnIds && unreadable.length === 0) {
       await writeBoardState(deps, loaded.state);
     }
     return loaded.state;
@@ -346,11 +405,22 @@ async function readBoardState(deps: BoardReaderDeps): Promise<BoardState> {
 interface BoardReadSnapshot {
   readonly state: BoardState;
   readonly recoveredColumnIds: boolean;
+  readonly documents: readonly CardDocument[];
 }
 
-async function readBoardSnapshot(deps: BoardReaderDeps): Promise<BoardReadSnapshot> {
+/**
+ * Lenient card reading for reloads. A card file that does not parse is
+ * recorded in `unreadable` and replaced by its `fallback` document (keyed by
+ * card id, which is the file's base name) when one exists.
+ */
+interface LenientCardRead {
+  readonly fallback: ReadonlyMap<string, CardDocument>;
+  readonly unreadable: UnreadableCardFile[];
+}
+
+async function readBoardSnapshot(deps: BoardReaderDeps, lenient?: LenientCardRead): Promise<BoardReadSnapshot> {
   const columnsDocument = parseColumns(await deps.fileSystem.readFile(boardPath(deps.boardFolder, COLUMNS_FILE)));
-  const reconciled = reconcileGeneratedColumnIds(columnsDocument, await readCardDocuments(deps));
+  const reconciled = reconcileGeneratedColumnIds(columnsDocument, await readCardDocuments(deps, lenient));
   const cardDocuments = reconciled.documents;
 
   const cardsByColumn = new Map<string, CardDocument[]>();
@@ -383,10 +453,11 @@ async function readBoardSnapshot(deps: BoardReaderDeps): Promise<BoardReadSnapsh
       columns,
     },
     recoveredColumnIds: reconciled.recovered,
+    documents: cardDocuments,
   };
 }
 
-async function readCardDocuments(deps: BoardReaderDeps): Promise<CardDocument[]> {
+async function readCardDocuments(deps: BoardReaderDeps, lenient?: LenientCardRead): Promise<CardDocument[]> {
   const cardsDirectory = boardPath(deps.boardFolder, CARDS_DIR);
   if (!(await deps.fileSystem.exists(cardsDirectory))) {
     return [];
@@ -400,7 +471,20 @@ async function readCardDocuments(deps: BoardReaderDeps): Promise<CardDocument[]>
     }
 
     const content = await deps.fileSystem.readFile(boardPath(deps.boardFolder, CARDS_DIR, name));
-    documents.push(parseCard(content));
+    if (lenient === undefined) {
+      documents.push(parseCard(content));
+      continue;
+    }
+
+    try {
+      documents.push(parseCard(content));
+    } catch (error) {
+      lenient.unreadable.push({ fileName: name, reason: error instanceof Error ? error.message : String(error) });
+      const previous = lenient.fallback.get(name.slice(0, -3));
+      if (previous !== undefined) {
+        documents.push(previous);
+      }
+    }
   }
   return documents;
 }
