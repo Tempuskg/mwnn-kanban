@@ -5,6 +5,8 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.21] - 2026-11-19
+
 ### Fixed
 - The board and an open card's details now refresh after a tool outside VS Code rewrites a card file, including a rewrite that switches it to CRLF line endings. Before, one card file overwritten with a fragment (no frontmatter) made every later reload keep the old board, so changes such as `STATUS: DONE` never appeared. That card now keeps its last good version, the rest of the board refreshes, and a warning names the file. Board edits stay refused until it is fixed, and the file is never deleted.
 - The extension now activates when a card file on disk cannot be read. The card is left out and named in the same warning. Before, activation failed with "Card markdown is missing frontmatter", so reopening VS Code left the board unusable.
