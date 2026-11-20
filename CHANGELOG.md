@@ -5,6 +5,12 @@ All notable changes to MWNN Kanban are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.22] - 2026-11-19
+
+### Fixed
+- Pro: file changes in a project folder no longer count as tracked time when the project's `.gitignore` excludes them, or when they are in build, dependency, cache, or browser-profile folders (for example `bin`, `obj`, `.vs`, `GPUCache`, `chrome-data`). A browser profile or build output inside a project no longer adds hours nobody worked. Typing in an open editor still counts, even in a gitignored file.
+- Pro: timesheet CSV/JSON export no longer counts the same activity more than once when several VS Code windows are open, so exported hours per project match real elapsed time. The timesheet panel still lists each window's entry separately so it can be corrected or deleted.
+
 ## [1.0.21] - 2026-11-19
 
 ### Fixed
